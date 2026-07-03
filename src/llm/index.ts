@@ -3,6 +3,7 @@
  *
  * Multi-provider LLM integration supporting:
  * - OpenRouter (recommended - access to Claude, GPT-4, Llama, etc.)
+ * - Venice (OpenAI-compatible, privacy-focused / uncensored models)
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
  * - Mock (for testing)
@@ -123,7 +124,7 @@ interface OllamaResponse {
 
 class OpenRouterAdapter implements LLMProviderAdapter {
   name = 'openrouter';
-  private config: LLMConfig;
+  protected config: LLMConfig;
 
   constructor(config: LLMConfig) {
     this.config = config;
@@ -334,6 +335,28 @@ class OpenRouterAdapter implements LLMProviderAdapter {
       clearTimeout(idleTimer);
       reader.releaseLock();
     }
+  }
+}
+
+// =============================================================================
+// VENICE ADAPTER
+// =============================================================================
+// Venice AI is OpenAI-compatible on the wire (Bearer auth, POST /chat/completions,
+// identical request/response + tool-calling + SSE stream shape), so it reuses the entire
+// OpenRouter adapter and only differs in its default base URL (set via the `venice` config
+// block), its name, and the key-required error message. The optional HTTP-Referer/X-Title
+// headers the parent sends are harmless (Venice ignores unknown headers).
+class VeniceAdapter extends OpenRouterAdapter {
+  name = 'venice';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'Venice API key is required. Get one at https://venice.ai/settings/api',
+      };
+    }
+    return { valid: true };
   }
 }
 
@@ -996,6 +1019,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
     switch (config.provider) {
       case 'openrouter':
         return new OpenRouterAdapter(config);
+      case 'venice':
+        return new VeniceAdapter(config);
       case 'anthropic':
         return new AnthropicAdapter(config);
       case 'openai':
@@ -1262,6 +1287,12 @@ export function createOpenRouterBackbone(apiKey?: string, model?: string): LLMBa
   return new LLMBackbone(llmConfig);
 }
 
+export function createVeniceBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('venice', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createOpenAIBackbone(apiKey?: string, model?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('openai', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1291,11 +1322,14 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Anthropic > OpenAI > Local > Mock
+  // Priority: OpenRouter > Venice > Anthropic > OpenAI > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
     return createOpenRouterBackbone();
+  }
+  if (providers.includes('venice')) {
+    return createVeniceBackbone();
   }
   if (providers.includes('anthropic')) {
     return createAnthropicBackbone();

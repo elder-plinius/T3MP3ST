@@ -1,0 +1,151 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-daq',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            tag: {value:""},           // Keep: tag name for display and backward compatibility
+            tagId: {value:""},         // New: unique identifier (optional, for backward compatibility)
+            from: {value:""},
+            to: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            if (this.name) {
+                return this.name;
+            }
+            // Display tag name or tagId
+            return this.tag || this.tagId || "get daq";
+        },
+        oneditprepare: function() {
+            var node = this;
+            var tagMap = {}; // Use tag.id as key to avoid tag.name duplication issues
+            
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-tags-daq');
+                datalist.empty();
+                
+                data.forEach(function(device) {
+                    device.tags.forEach(function(tag) {
+                        var fullName = device.name + ' - ' + tag.name;
+                        // datalist option value format: tag.name(tag.id)
+                        var optionValue = tag.name + '(' + tag.id + ')';
+                        datalist.append('<option value="' + optionValue + '">' + fullName + '</option>');
+                        tagMap[tag.id] = {
+                            name: tag.name,
+                            deviceName: device.name,
+                            fullName: fullName
+                        };
+                    });
+                });
+                
+                // Listen for tagSelected input changes
+                $('#node-input-tagSelected').on('change', function() {
+                    var selectedValue = $(this).val();
+                    // Parse format: tag.name(tag.id)
+                    var match = selectedValue.match(/^(.+)\(([^)]+)\)$/);
+                    if (match) {
+                        var tagName = match[1];
+                        var tagId = match[2];
+                        
+                        // Set the actual stored fields
+                        $('#node-input-tag').val(tagName);
+                        $('#node-input-tagId').val(tagId);
+                    }
+                });
+                
+                // Initialize display (when editing existing node)
+                if (node.tagId && tagMap[node.tagId]) {
+                    // Has tagId, construct tagSelected value
+                    var tagName = node.tag || tagMap[node.tagId].name;
+                    $('#node-input-tagSelected').val(tagName + '(' + node.tagId + ')');
+                } else if (node.tag && !node.tagId) {
+                    // Old node: only has tag (tag.name), need to find corresponding tagId
+                    // Note: if there are duplicate names, only the first match will be found
+                    for (var tagId in tagMap) {
+                        if (tagMap[tagId].name === node.tag) {
+                            $('#node-input-tagSelected').val(node.tag + '(' + tagId + ')');
+                            $('#node-input-tagId').val(tagId);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Convert timestamp format for datetime-local inputs
+            function formatForInput(timestamp) {
+                if (!timestamp) return '';
+                // Convert from "YYYY-MM-DD HH:MM:SS" to "YYYY-MM-DDTHH:MM"
+                return timestamp.replace(' ', 'T').substring(0, 16);
+            }
+
+            function formatForStorage(datetimeLocal) {
+                if (!datetimeLocal) return '';
+                // Convert from "YYYY-MM-DDTHH:MM" to "YYYY-MM-DD HH:MM:SS"
+                return datetimeLocal.replace('T', ' ') + ':00';
+            }
+
+            // Set initial values
+            $("#node-input-from").val(formatForInput(this.from));
+            $("#node-input-to").val(formatForInput(this.to));
+
+            // Handle changes to convert back to storage format
+            $("#node-input-from").on('change', function() {
+                $("#node-input-from").data('stored-value', formatForStorage($(this).val()));
+            });
+            $("#node-input-to").on('change', function() {
+                $("#node-input-to").data('stored-value', formatForStorage($(this).val()));
+            });
+        },
+        oneditsave: function() {
+            // Save the converted values
+            this.from = $("#node-input-from").data('stored-value') || $("#node-input-from").val();
+            this.to = $("#node-input-to").data('stored-value') || $("#node-input-to").val();
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-daq">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-tagSelected"><i class="fa fa-tag"></i> Tag</label>
+        <input type="text" id="node-input-tagSelected" list="fuxa-tags-daq" placeholder="Select Tag">
+        <datalist id="fuxa-tags-daq"></datalist>
+    </div>
+    <input type="hidden" id="node-input-tag">
+    <input type="hidden" id="node-input-tagId">
+    <div class="form-row">
+        <label for="node-input-from"><i class="fa fa-clock-o"></i> From (timestamp)</label>
+        <input type="datetime-local" id="node-input-from" placeholder="From timestamp (optional)">
+    </div>
+    <div class="form-row">
+        <label for="node-input-to"><i class="fa fa-clock-o"></i> To (timestamp)</label>
+        <input type="datetime-local" id="node-input-to" placeholder="To timestamp (optional)">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-daq">
+    <p>Get DAQ data for a FUXA tag between timestamps.</p>
+    <p>The data array is set to <code>msg.payload</code>.</p>
+    <h4>Timestamp Configuration</h4>
+    <p><strong>Static timestamps</strong> can be set in the node configuration.</p>
+    <p><strong>Dynamic timestamps</strong> can override the configured values:</p>
+    <ul>
+        <li><code>msg.from</code> - Start timestamp (Unix timestamp or ISO string)</li>
+        <li><code>msg.to</code> - End timestamp (Unix timestamp or ISO string)</li>
+    </ul>
+    <p>If no timestamps are provided, defaults to the last hour.</p>
+    <h4>Examples</h4>
+    <pre>// Get data for last 24 hours
+msg.from = Date.now() - 86400000;
+msg.to = Date.now();
+
+// Get data for specific date range
+msg.from = "2025-01-01 00:00:00";
+msg.to = "2025-01-01 23:59:59";</pre>
+</script>

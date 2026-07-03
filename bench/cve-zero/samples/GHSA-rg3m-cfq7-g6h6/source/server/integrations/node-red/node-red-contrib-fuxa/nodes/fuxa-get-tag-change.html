@@ -1,0 +1,104 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-tag-change',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            tag: {value:""},           // Keep: tag name for display and backward compatibility
+            tagId: {value:""}          // New: unique identifier (optional, for backward compatibility)
+        },
+        inputs:0,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            if (this.name) {
+                return this.name;
+            }
+            // Display tag name or tagId
+            return this.tag || this.tagId || "get tag change";
+        },
+        oneditprepare: function() {
+            var node = this;
+            var tagMap = {}; // Use tag.id as key to avoid tag.name duplication issues
+            
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-change-tags');
+                datalist.empty();
+                
+                data.forEach(function(device) {
+                    device.tags.forEach(function(tag) {
+                        var fullName = device.name + ' - ' + tag.name;
+                        // datalist option value format: tag.name(tag.id)
+                        var optionValue = tag.name + '(' + tag.id + ')';
+                        datalist.append('<option value="' + optionValue + '">' + fullName + '</option>');
+                        tagMap[tag.id] = {
+                            name: tag.name,
+                            deviceName: device.name,
+                            fullName: fullName
+                        };
+                    });
+                });
+                
+                // Listen for tagSelected input changes
+                $('#node-input-tagSelected').on('change', function() {
+                    var selectedValue = $(this).val();
+                    // Parse format: tag.name(tag.id)
+                    var match = selectedValue.match(/^(.+)\(([^)]+)\)$/);
+                    if (match) {
+                        var tagName = match[1];
+                        var tagId = match[2];
+                        
+                        // Set the actual stored fields
+                        $('#node-input-tag').val(tagName);
+                        $('#node-input-tagId').val(tagId);
+                    }
+                });
+                
+                // Initialize display (when editing existing node)
+                if (node.tagId && tagMap[node.tagId]) {
+                    // Has tagId, construct tagSelected value
+                    var tagName = node.tag || tagMap[node.tagId].name;
+                    $('#node-input-tagSelected').val(tagName + '(' + node.tagId + ')');
+                } else if (node.tag && !node.tagId) {
+                    // Old node: only has tag (tag.name), need to find corresponding tagId
+                    // Note: if there are duplicate names, only the first match will be found
+                    for (var tagId in tagMap) {
+                        if (tagMap[tagId].name === node.tag) {
+                            $('#node-input-tagSelected').val(node.tag + '(' + tagId + ')');
+                            $('#node-input-tagId').val(tagId);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-tag-change">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-tagSelected"><i class="fa fa-tag"></i> Tag</label>
+        <input type="text" id="node-input-tagSelected" list="fuxa-change-tags" placeholder="Select Tag">
+        <datalist id="fuxa-change-tags"></datalist>
+    </div>
+    <input type="hidden" id="node-input-tag">
+    <input type="hidden" id="node-input-tagId">
+</script>
+
+<script type="text/x-red" data-help-name="get-tag-change">
+    <p>Monitor a FUXA tag for value changes in real-time.</p>
+    <p>This node listens for tag change events and outputs the new value whenever the specified tag changes.</p>
+    <h4>Output</h4>
+    <ul>
+        <li><code>msg.payload</code>: The new tag value</li>
+        <li><code>msg.topic</code>: The tag name</li>
+        <li><code>msg.tagId</code>: The internal tag ID</li>
+        <li><code>msg.tagName</code>: The tag name</li>
+        <li><code>msg.timestamp</code>: Timestamp of the change</li>
+    </ul>
+    <p>This node is event-driven and does not poll for changes, making it efficient for real-time monitoring. Use multiple instances to monitor different tags.</p>
+</script>

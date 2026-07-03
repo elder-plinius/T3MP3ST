@@ -1,0 +1,53 @@
+<script type="text/javascript">
+    RED.nodes.registerType('set-device-property',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            deviceName: {value:"", required:true},
+            property: {value:"", required:true},
+            value: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.deviceName||"set device property";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-devices-set-property');
+                datalist.empty();
+                data.forEach(function(device) {
+                    datalist.append('<option value="' + device.name + '">' + device.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="set-device-property">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-deviceName"><i class="fa fa-cogs"></i> Device Name</label>
+        <input type="text" id="node-input-deviceName" list="fuxa-devices-set-property" placeholder="Device Name">
+        <datalist id="fuxa-devices-set-property"></datalist>
+    </div>
+    <div class="form-row">
+        <label for="node-input-property"><i class="fa fa-info-circle"></i> Property</label>
+        <input type="text" id="node-input-property" placeholder="Property name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-value"><i class="fa fa-edit"></i> Value</label>
+        <input type="text" id="node-input-value" placeholder="Property value">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="set-device-property">
+    <p>Set a property value on a FUXA device.</p>
+    <p>The result is set to <code>msg.payload</code>.</p>
+    <p>Use message properties to override: <code>msg.deviceName</code>, <code>msg.property</code>, <code>msg.value</code>.</p>
+</script>

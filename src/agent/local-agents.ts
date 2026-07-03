@@ -14,7 +14,7 @@
 
 import { execFile, execFileSync, spawn } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { homedir, tmpdir, userInfo } from 'os';
 import { join } from 'path';
 
 // t3mp3st injects its OWN provider keys (from .env) into the server process. If we let those leak into
@@ -27,8 +27,47 @@ const PROVIDER_ENV_TO_STRIP = [
   'OPENROUTER_API_KEY',
 ];
 
-const HOME = homedir();
-const expand = (p: string): string => (p.startsWith('~') ? HOME + p.slice(1) : p);
+/**
+ * The REAL user home where the agent CLIs keep their own auth artifacts
+ * (~/.claude.json, ~/.codex/auth.json, ~/.hermes/.env, macOS keychain).
+ *
+ * DELIBERATELY separate from os.homedir()/$HOME: T3MP3ST may run with HOME redirected
+ * (e.g. an isolated app-config dir), and os.homedir() returns that redirected path. Detecting
+ * OR spawning the user's CLIs against a redirected HOME makes an installed-and-authed agent
+ * look unavailable — the Settings checkboxes go dead and it reads like a UI bug. Resolution
+ * order:
+ *   1. T3MP3ST_AGENT_HOME    — explicit override (a launcher that redirects HOME sets this).
+ *   2. os.userInfo().homedir — the real home from the OS user DB (getpwuid), NOT affected by a
+ *                              $HOME redirect, so this AUTO-recovers the correct home with no config.
+ *   3. os.homedir()          — last-resort fallback.
+ * os.homedir()/$HOME is intentionally left untouched for app-config storage (src/config reads it).
+ */
+export function agentHome(): string {
+  const override = (process.env.T3MP3ST_AGENT_HOME || '').trim();
+  if (override) return override;
+  try {
+    const real = userInfo().homedir;
+    if (real) return real;
+  } catch { /* userInfo can throw in some sandboxes — fall through to homedir() */ }
+  return homedir();
+}
+const expand = (p: string): string => (p.startsWith('~') ? agentHome() + p.slice(1) : p);
+
+/**
+ * Env for a spawned agent CLI. Two adjustments to our own env:
+ *   - strip the injected provider keys so the CLI falls back to its OWN native login (not t3mp3st's).
+ *   - point HOME (and USERPROFILE on Windows) at the agentHome() so the CLI finds that login even
+ *     when t3mp3st itself runs with HOME redirected for app-config storage. Same home the detector
+ *     used, so "detected as authed" and "actually authenticates when spawned" stay consistent.
+ */
+function childEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
+  const home = agentHome();
+  env.HOME = home;
+  if (process.platform === 'win32') env.USERPROFILE = home;
+  return env;
+}
 
 export type LocalAgentId = 'claude' | 'codex' | 'hermes';
 
@@ -199,9 +238,8 @@ export function runLocalAgent(
   const args = spec.oneShot(prompt, opts.model);
   const timeoutMs = opts.timeoutMs ?? 120000;
   const maxChars = opts.maxChars ?? 4000;
-  // child env = ours minus the injected provider keys, so the CLI uses its OWN native login.
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
+  // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
+  const env = childEnv();
   return new Promise((resolve) => {
     // stdin:'ignore' so the agent doesn't stall waiting on piped input (e.g. `claude -p`'s 3s stdin wait).
     const child = spawn(spec.bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -243,8 +281,8 @@ export function pingLocalAgent(id: string, prompt?: string, timeoutMs?: number):
 export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
   const spec = getSpec(id);
   if (!spec) return Promise.reject(new Error(`unknown local agent: ${id}`));
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
+  // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
+  const env = childEnv();
   const model = opts.model && opts.model !== 'codex-default' && opts.model !== id ? opts.model : undefined;
   const timeoutMs = opts.timeoutMs ?? 240000;
 

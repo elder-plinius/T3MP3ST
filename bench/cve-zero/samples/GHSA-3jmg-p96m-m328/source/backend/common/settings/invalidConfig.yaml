@@ -1,0 +1,47 @@
+server:
+  indexingInterval: 5
+  numImageProcessors: 4
+  socket: ""
+  tlsKey: ""
+  tlsCert: ""
+  enableThumbnails: false
+  resizePreview: true
+  port: 80
+  baseURL: "/"
+  database: "mydb.db"
+  root: "."
+auth:
+  recaptcha:
+    host: ""
+    key: ""
+    secret: ""
+  header: ""
+  command: ""
+  signup: false
+  shell: ""
+frontend:
+  name: ""
+  disableExternal: true
+  disableUsedPercentage: true
+  files: ""
+  color: ""
+userDefaults:
+  scope: ""
+  locale: ""
+  viewMode: ""
+  darkMode: true
+  disableSettings: false
+  singleClick: true
+  sorting:
+    by: ""
+    asc: true
+  permissions:
+    admin: true
+    execute: true
+    create: true
+    rename: true
+    modify: true
+    delete: true
+    share: true
+    download: true
+  dateFormat: false

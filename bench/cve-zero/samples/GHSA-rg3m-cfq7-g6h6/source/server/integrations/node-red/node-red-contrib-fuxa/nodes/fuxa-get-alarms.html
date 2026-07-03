@@ -1,0 +1,27 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-alarms',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||"get alarms";
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-alarms">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-alarms">
+    <p>Get current alarms from FUXA.</p>
+    <p>The alarms array is set to <code>msg.payload</code>.</p>
+</script>

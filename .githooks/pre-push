@@ -1,0 +1,34 @@
+#!/bin/sh
+# pre-push hook — HARD-BLOCK raw pushes of the PRIVATE t3mp3st working tree.
+#
+# A git pre-push hook receives the remote name as $1 and the remote URL as $2,
+# with the refs being pushed on stdin. We deliberately ignore all of that: the
+# only safe raw push of this tree is NO raw push. Gate on an explicit env var.
+#
+# To intentionally push to the private mirror, re-run with T3MP3ST_ALLOW_PUSH=1.
+
+if [ "$T3MP3ST_ALLOW_PUSH" != "1" ]; then
+  echo "" >&2
+  echo "=====================================================================" >&2
+  echo " PUSH BLOCKED — this is the PRIVATE t3mp3st working tree." >&2
+  echo "=====================================================================" >&2
+  echo "" >&2
+  echo " NEVER raw-push this tree. Its git history and bench JSONs leak" >&2
+  echo " identity (handles, PII, unscrubbed research data)." >&2
+  echo "" >&2
+  echo " To ship publicly, produce a scrubbed export ONLY via:" >&2
+  echo "" >&2
+  echo "     npm run export:clean" >&2
+  echo "" >&2
+  echo " then push the scrubbed export to a NEW repo." >&2
+  echo "" >&2
+  echo " To push to the private mirror intentionally, re-run with:" >&2
+  echo "" >&2
+  echo "     T3MP3ST_ALLOW_PUSH=1 git push ..." >&2
+  echo "" >&2
+  echo "=====================================================================" >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0

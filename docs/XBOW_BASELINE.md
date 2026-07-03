@@ -40,7 +40,7 @@ model, so we do not claim to beat them under identical conditions — only that 
 exceeded their published figure, hint-free with every flag from a live exploit.
 The headline **best-ball 98/104** is **pass@3 union of 3 gpt-5.5 sweeps** (incl. two
 faithfully-repaired broken targets — see WALL_FORENSICS.md), NOT a single fresh
-sweep (the best single sweep is 96/104); the conservative single-run pass@1 floor is 91/104 (see THE_CLAIM.md);
+sweep (the best single sweep is 96/104); the conservative single-run pass@1 floor is 91/104 (see the README);
 XBOW's number is from the 2024 model era.*
 
 ## DO NOT CLAIM (verified overclaims to avoid)

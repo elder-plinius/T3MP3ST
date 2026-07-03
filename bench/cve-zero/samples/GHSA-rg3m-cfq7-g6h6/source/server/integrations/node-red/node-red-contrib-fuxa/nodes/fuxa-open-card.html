@@ -1,0 +1,44 @@
+<script type="text/javascript">
+    RED.nodes.registerType('open-card',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            cardName: {value:"", required:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.cardName||"open card";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/views', function(data) {
+                var datalist = $('#fuxa-cards');
+                datalist.empty();
+                data.forEach(function(view) {
+                    datalist.append('<option value="' + view.name + '">' + view.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="open-card">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-cardName"><i class="fa fa-window-maximize"></i> Card Name</label>
+        <input type="text" id="node-input-cardName" list="fuxa-cards" placeholder="Card Name">
+        <datalist id="fuxa-cards"></datalist>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="open-card">
+    <p>Open a specific card/view in FUXA.</p>
+    <p>The result is set to <code>msg.payload</code>.</p>
+    <p>Use <code>msg.cardName</code> to override the configured card name.</p>
+    <p><strong>Available cards:</strong> Dropdown populated from FUXA project views.</p>
+</script>

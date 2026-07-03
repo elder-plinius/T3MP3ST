@@ -1,0 +1,49 @@
+<script type="text/javascript">
+    RED.nodes.registerType('ack-alarm',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            alarmName: {value:"", required:true},
+            types: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||"ack alarm";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/alarms', function(data) {
+                var datalist = $('#fuxa-alarms');
+                datalist.empty();
+                data.forEach(function(alarm) {
+                    datalist.append('<option value="' + alarm.name + '">' + alarm.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="ack-alarm">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-alarmName"><i class="fa fa-bell"></i> Alarm Name</label>
+        <input type="text" id="node-input-alarmName" list="fuxa-alarms" placeholder="Alarm name">
+        <datalist id="fuxa-alarms"></datalist>
+    </div>
+    <div class="form-row">
+        <label for="node-input-types"><i class="fa fa-list"></i> Types (comma separated)</label>
+        <input type="text" id="node-input-types" placeholder="Alarm types (optional)">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="ack-alarm">
+    <p>Acknowledge an alarm in FUXA.</p>
+    <p>Use <code>alarmName</code> and optional <code>types</code> array.</p>
+    <p>Use <code>msg.alarmName</code>, <code>msg.types</code>, or <code>msg.payload</code> to override.</p>
+    <p><strong>Available alarms:</strong> Dropdown populated from FUXA project alarms.</p>
+</script>

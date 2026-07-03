@@ -1,0 +1,49 @@
+<script type="text/javascript">
+    RED.nodes.registerType('enable-device',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            deviceName: {value:"", required:true},
+            enabled: {value:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.deviceName||"enable device";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-devices-enable');
+                datalist.empty();
+                data.forEach(function(device) {
+                    datalist.append('<option value="' + device.name + '">' + device.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="enable-device">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-deviceName"><i class="fa fa-cogs"></i> Device Name</label>
+        <input type="text" id="node-input-deviceName" list="fuxa-devices-enable" placeholder="Device Name">
+        <datalist id="fuxa-devices-enable"></datalist>
+    </div>
+    <div class="form-row">
+        <label for="node-input-enabled">&nbsp;</label>
+        <input type="checkbox" id="node-input-enabled" style="display:inline-block; width:15px; vertical-align:baseline;" checked>
+        <span>Enabled</span>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="enable-device">
+    <p>Enable or disable a FUXA device.</p>
+    <p>The result is set to <code>msg.payload</code>.</p>
+    <p>Use <code>msg.deviceName</code> and <code>msg.enabled</code> to override the configured values.</p>
+</script>

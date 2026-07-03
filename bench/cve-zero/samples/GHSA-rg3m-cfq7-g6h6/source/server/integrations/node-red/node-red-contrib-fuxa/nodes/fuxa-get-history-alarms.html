@@ -1,0 +1,88 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-history-alarms',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            start: {value:""},
+            end: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||"get history alarms";
+        },
+        oneditprepare: function() {
+            // Convert timestamp format for datetime-local inputs
+            function formatForInput(timestamp) {
+                if (!timestamp) return '';
+                // Convert from "YYYY-MM-DD HH:MM:SS" to "YYYY-MM-DDTHH:MM"
+                return timestamp.replace(' ', 'T').substring(0, 16);
+            }
+
+            function formatForStorage(datetimeLocal) {
+                if (!datetimeLocal) return '';
+                // Convert from "YYYY-MM-DDTHH:MM" to "YYYY-MM-DD HH:MM:SS"
+                return datetimeLocal.replace('T', ' ') + ':00';
+            }
+
+            // Set initial values
+            $("#node-input-start").val(formatForInput(this.start));
+            $("#node-input-end").val(formatForInput(this.end));
+
+            // Handle changes to convert back to storage format
+            $("#node-input-start").on('change', function() {
+                $("#node-input-start").data('stored-value', formatForStorage($(this).val()));
+            });
+            $("#node-input-end").on('change', function() {
+                $("#node-input-end").data('stored-value', formatForStorage($(this).val()));
+            });
+        },
+        oneditsave: function() {
+            // Save the converted values
+            this.start = $("#node-input-start").data('stored-value') || $("#node-input-start").val();
+            this.end = $("#node-input-end").data('stored-value') || $("#node-input-end").val();
+        }
+    });
+</script><script type="text/x-red" data-template-name="get-history-alarms">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-start"><i class="fa fa-clock-o"></i> Start (timestamp)</label>
+        <input type="datetime-local" id="node-input-start" placeholder="Start timestamp (optional)">
+    </div>
+    <div class="form-row">
+        <label for="node-input-end"><i class="fa fa-clock-o"></i> End (timestamp)</label>
+        <input type="datetime-local" id="node-input-end" placeholder="End timestamp (optional)">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-history-alarms">
+    <p>Get historical alarms from FUXA between timestamps.</p>
+    <p>The alarms array is set to <code>msg.payload</code>.</p>
+    <h4>Timestamp Configuration</h4>
+    <p><strong>Static timestamps</strong> can be set in the node configuration using datetime picker.</p>
+    <p><strong>Dynamic timestamps</strong> can override the configured values:</p>
+    <ul>
+        <li><code>msg.start</code> - Start timestamp (Unix timestamp in milliseconds, or ISO date string)</li>
+        <li><code>msg.end</code> - End timestamp (Unix timestamp in milliseconds, or ISO date string)</li>
+    </ul>
+    <p>If no timestamps are provided, defaults to the last 24 hours.</p>
+    <h4>Supported Timestamp Formats</h4>
+    <ul>
+        <li><strong>Unix timestamp:</strong> <code>1693526400000</code> (milliseconds since epoch)</li>
+        <li><strong>ISO string:</strong> <code>"2025-10-26T13:54:21.000Z"</code></li>
+        <li><strong>Date string:</strong> <code>"2025-10-26 13:54:21"</code></li>
+    </ul>
+    <h4>Examples</h4>
+    <pre>// Get alarms for last week
+msg.start = Date.now() - 604800000; // 7 days ago
+msg.end = Date.now();
+
+// Get alarms for specific date range
+msg.start = "2025-10-20T00:00:00.000Z";
+msg.end = "2025-10-26T23:59:59.999Z";</pre>
+</script>

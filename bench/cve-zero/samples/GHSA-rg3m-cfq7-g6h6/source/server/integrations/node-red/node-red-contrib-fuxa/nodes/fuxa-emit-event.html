@@ -1,0 +1,31 @@
+<script type="text/javascript">
+    RED.nodes.registerType('emit-event',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            eventType: {value:"", required:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.eventType||"emit event";
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="emit-event">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-eventType"><i class="fa fa-bolt"></i> Event Type</label>
+        <input type="text" id="node-input-eventType" placeholder="Event type">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="emit-event">
+    <p>Emit a FUXA event with <code>msg.payload</code> as data.</p>
+</script>

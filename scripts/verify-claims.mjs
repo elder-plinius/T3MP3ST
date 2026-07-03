@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * verify-claims — re-derives every headline number in docs/THE_CLAIM.md straight
+ * verify-claims — re-derives every headline number in the README straight
  * from the JSON artifacts in bench/, with the same integrity rules the harness
  * enforces (case-insensitive flag match, fabrication rejection, canary check).
  *

@@ -1,0 +1,50 @@
+<script type="text/javascript">
+    RED.nodes.registerType('execute-script',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            script: {value:"", required:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.script||"execute script";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/scripts', function(data) {
+                var datalist = $('#fuxa-scripts');
+                datalist.empty();
+                data.forEach(function(script) {
+                    datalist.append('<option value="' + script.name + '">' + script.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="execute-script">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-script"><i class="fa fa-code"></i> Script</label>
+        <input type="text" id="node-input-script" list="fuxa-scripts" placeholder="Script Name">
+        <datalist id="fuxa-scripts"></datalist>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="execute-script">
+    <p>Execute a FUXA script.</p>
+    <p><strong>Available scripts:</strong> Dropdown populated from FUXA project scripts.</p>
+    <p>The output <code>msg.payload</code> contains execution status:</p>
+    <ul>
+        <li><code>success</code>: boolean indicating if execution succeeded</li>
+        <li><code>script</code>: name of the executed script</li>
+        <li><code>result</code>: script return value (on success)</li>
+        <li><code>error</code>: error message (on failure)</li>
+        <li><code>timestamp</code>: execution timestamp</li>
+    </ul>
+</script>

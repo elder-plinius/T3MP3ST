@@ -1,0 +1,152 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-historical-tags',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            tags: {value:"[]"},
+            from: {value:""},
+            to: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||"get historical tags";
+        },
+        oneditprepare: function() {
+            var node = this;
+            
+            // Load available tags for autocomplete
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-tags-historical');
+                datalist.empty();
+                data.forEach(function(device) {
+                    device.tags.forEach(function(tag) {
+                        datalist.append('<option value="' + tag.name + '">' + device.name + ' - ' + tag.name + '</option>');
+                    });
+                });
+            });
+
+            // Convert timestamp format for datetime-local inputs
+            function formatForInput(timestamp) {
+                if (!timestamp) return '';
+                // Convert from "YYYY-MM-DD HH:MM:SS" to "YYYY-MM-DDTHH:MM"
+                return timestamp.replace(' ', 'T').substring(0, 16);
+            }
+
+            function formatForStorage(datetimeLocal) {
+                if (!datetimeLocal) return '';
+                // Convert from "YYYY-MM-DDTHH:MM" to "YYYY-MM-DD HH:MM:SS"
+                return datetimeLocal.replace('T', ' ') + ':00';
+            }
+
+            // Set initial values for timestamps
+            $("#node-input-from").val(formatForInput(this.from));
+            $("#node-input-to").val(formatForInput(this.to));
+
+            // Handle timestamp changes
+            $("#node-input-from").on('change', function() {
+                $("#node-input-from").data('stored-value', formatForStorage($(this).val()));
+            });
+            $("#node-input-to").on('change', function() {
+                $("#node-input-to").data('stored-value', formatForStorage($(this).val()));
+            });
+
+            // Initialize tags container
+            var tagsContainer = $('#tags-container');
+            var tags = [];
+            try {
+                tags = JSON.parse(this.tags || "[]");
+            } catch(e) {
+                // Fallback for old comma-separated format
+                if (this.tags && typeof this.tags === 'string') {
+                    tags = this.tags.split(',').map(tag => tag.trim()).filter(tag => tag);
+                }
+            }
+
+            // Function to add a tag input
+            function addTagInput(tagValue) {
+                var tagRow = $('<div class="tag-row" style="display: flex; align-items: center; margin-bottom: 5px;">');
+                var tagInput = $('<input type="text" class="tag-input" list="fuxa-tags-historical" placeholder="Tag Name" style="flex: 1; margin-right: 5px;">');
+                var removeBtn = $('<button type="button" class="red-ui-button red-ui-button-small" style="min-width: 20px; padding: 0 5px;">-</button>');
+                
+                tagInput.val(tagValue || '');
+                tagRow.append(tagInput);
+                tagRow.append(removeBtn);
+                tagsContainer.append(tagRow);
+
+                // Remove button handler
+                removeBtn.on('click', function() {
+                    tagRow.remove();
+                });
+            }
+
+            // Add existing tags
+            if (tags.length === 0) {
+                addTagInput(''); // Add at least one empty input
+            } else {
+                tags.forEach(function(tag) {
+                    addTagInput(tag);
+                });
+            }
+
+            // Add tag button handler
+            $('#add-tag-btn').on('click', function() {
+                addTagInput('');
+            });
+        },
+        oneditsave: function() {
+            // Save timestamp values
+            this.from = $("#node-input-from").data('stored-value') || $("#node-input-from").val();
+            this.to = $("#node-input-to").data('stored-value') || $("#node-input-to").val();
+            
+            // Collect all tag inputs
+            var tags = [];
+            $('.tag-input').each(function() {
+                var tagValue = $(this).val().trim();
+                if (tagValue) {
+                    tags.push(tagValue);
+                }
+            });
+            this.tags = JSON.stringify(tags);
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-historical-tags">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="tags-container"><i class="fa fa-tags"></i> Tags</label>
+        <div id="tags-container" style="border: 1px solid #ccc; padding: 5px; min-height: 40px; background-color: #f9f9f9;">
+            <!-- Tag inputs will be added here dynamically -->
+        </div>
+        <button type="button" id="add-tag-btn" class="red-ui-button" style="margin-top: 5px;">+ Add Tag</button>
+        <datalist id="fuxa-tags-historical"></datalist>
+    </div>
+    <div class="form-row">
+        <label for="node-input-from"><i class="fa fa-clock-o"></i> From (timestamp)</label>
+        <input type="datetime-local" id="node-input-from" placeholder="From timestamp (optional)">
+    </div>
+    <div class="form-row">
+        <label for="node-input-to"><i class="fa fa-clock-o"></i> To (timestamp)</label>
+        <input type="datetime-local" id="node-input-to" placeholder="To timestamp (optional)">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-historical-tags">
+    <p>Get historical data for multiple FUXA tags.</p>
+    <p>The data array is set to <code>msg.payload</code>.</p>
+    <h4>Configuration</h4>
+    <p><strong>Tags:</strong> Select multiple tag names using the individual input fields. Click "+ Add Tag" to add more fields.</p>
+    <p><strong>Timestamps:</strong> Can be set in config or overridden via message</p>
+    <h4>Message Properties</h4>
+    <ul>
+        <li><code>msg.tags</code> - Array of tag names (overrides config)</li>
+        <li><code>msg.from</code> - Start timestamp</li>
+        <li><code>msg.to</code> - End timestamp</li>
+    </ul>
+</script>

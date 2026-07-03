@@ -1,0 +1,34 @@
+name: T3MP3ST CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run doctor
+      # Honesty gates: prove the headline numbers re-derive and that no
+      # challenge-fitting has crept in. Public contributors / CI can verify.
+      - run: npm run verify-claims
+      - run: npm run test:no-fitting
+      - run: npm run test:no-self-fitting
+      # The provenance gate itself, in the compiled engine path (builds first).
+      - run: npm run test:gate
+      # The operator doctrine / prompt-pack contract must hold.
+      - run: npm run prompt:audit
+      # Non-network smoke: core traps run deterministically; server/live tiers
+      # auto-skip when no server/LLM is present (they are absent in CI).
+      - run: npm run smoke

@@ -3653,10 +3653,10 @@
                     <!-- ═══════════ ZERO-DAY HUNT — primary call to action ═══════════ -->
                     <div id="zeroDayHuntHero" style="margin: 0 0 16px 0; padding: 20px 24px; background: linear-gradient(135deg, rgba(0,255,136,0.09), rgba(0,136,255,0.05)); border: 1px solid rgba(0,255,136,0.38); border-radius: 12px; box-shadow: 0 0 28px rgba(0,255,136,0.10);">
                         <div style="font-size: 19px; font-weight: 800; color: #00ff88; letter-spacing: 0.5px; display: flex; align-items: center; gap: 9px;">🎯 START A ZERO-DAY HUNT</div>
-                        <div style="font-size: 12.5px; color: #9fb0bb; margin-top: 5px;">Point t3mp3st at any authorized target and watch it work: live recon with real tools (nmap, DNS, HTTP probes), every finding provenance-gated to the command that produced it — no phantom flags. An LLM reasons over that ground truth in the open. Kill-chain phases past recon are labeled for what they are — no fake pwns, no vibes. Don't take our word for it: <span style="color:#7fd8b0; font-weight:600;">run <code style="background:rgba(0,0,0,0.4); padding:1px 5px; border-radius:3px; color:#00ff88;">npm run verify-claims</code></span> and re-derive every number yourself. Only test what you own or have written permission to assess.</div>
+                        <div style="font-size: 12.5px; color: #9fb0bb; margin-top: 5px;">Point T3MP3ST at any authorized target and watch it work: live recon with real tools (nmap, DNS, HTTP probes), every finding provenance-gated to the command that produced it — no phantom flags. An LLM reasons over that ground truth in the open. Kill-chain phases past recon are labeled for what they are — no fake pwns, no vibes. Don't take our word for it: <span style="color:#7fd8b0; font-weight:600;">run <code style="background:rgba(0,0,0,0.4); padding:1px 5px; border-radius:3px; color:#00ff88;">npm run verify-claims</code></span> and re-derive every number yourself. Only test what you own or have written permission to assess.</div>
                         <div id="keylessCallout" style="margin-top: 9px; font-size: 11.5px; color: #7fd8b0; background: rgba(0,255,136,0.06); border: 1px solid rgba(0,255,136,0.2); border-radius: 7px; padding: 7px 11px; display: flex; align-items: center; gap: 7px;">
                             <span style="font-size: 13px;">⚡</span>
-                            <span id="keylessCalloutText">Run keyless — <b>connect Claude Code, Codex, or Hermes</b> and t3mp3st drives missions through your agent's own login (no API key). To run, connect a local agent <b>or</b> add a key. <span onclick="navigateTo('settings')" style="cursor:pointer; color:#00ff88; text-decoration:underline; font-weight:600;">Set up in Settings →</span></span>
+                            <span id="keylessCalloutText">Run keyless — <b>connect Claude Code, Codex, or Hermes</b> and T3MP3ST drives missions through your agent's own login (no API key). To run, connect a local agent <b>or</b> add a key. <span onclick="navigateTo('settings')" style="cursor:pointer; color:#00ff88; text-decoration:underline; font-weight:600;">Set up in Settings →</span></span>
                         </div>
                         <div style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
                             <input id="heroHuntTarget" type="text" placeholder="github.com/org/repo   ·   npm / pypi package   ·   host or IP" onkeydown="if(event.key==='Enter'){event.preventDefault();startZeroDayHunt();}" style="flex: 1; min-width: 280px; padding: 13px 16px; font-size: 14px; background: rgba(0,0,0,0.45); border: 1px solid rgba(0,255,136,0.3); border-radius: 8px; color: #e8f0f3; outline: none; font-family: 'JetBrains Mono', monospace;">
@@ -3666,7 +3666,7 @@
                         <div style="display: flex; align-items: center; gap: 16px; margin-top: 11px; flex-wrap: wrap;">
                             <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #ffaa00; font-weight: 600;">
                                 <input type="checkbox" id="heroAutonomousMode" style="accent-color: #ffaa00;">
-                                <span title="Point and go — t3mp3st drives the hunt without stopping for step-by-step approval. Recon runs live with real tools; later kill-chain phases are scaffolded, not full auto-pwn. Every step is receipted.">🤖 AUTONOMOUS MODE</span>
+                                <span title="Point and go — T3MP3ST drives the hunt without stopping for step-by-step approval. Recon runs live with real tools; later kill-chain phases are scaffolded, not full auto-pwn. Every step is receipted.">🤖 AUTONOMOUS MODE</span>
                             </label>
                             <span id="autonomousHint" style="font-size: 10.5px; color: #b08a3a; display: none;">No per-step approval · live recon, scaffolded kill-chain · every step receipted</span>
                         </div>
@@ -5511,6 +5511,18 @@
                         </div>
 
                         <div class="card">
+                            <h4 style="margin-bottom: 12px; font-size: 14px;">Venice API Key</h4>
+                            <div class="form-group">
+                                <div class="api-key-input">
+                                    <input type="password" class="form-input" id="veniceKey" placeholder="venice key…">
+                                    <button class="api-key-toggle" onclick="toggleApiKey('veniceKey')">Show</button>
+                                </div>
+                                <div class="form-hint">OpenAI-compatible, privacy-focused. Get key from <a href="https://venice.ai/settings/api" target="_blank" style="color: var(--accent);">venice.ai/settings/api</a></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="saveApiKey('venice')">Save</button>
+                        </div>
+
+                        <div class="card">
                             <h4 style="margin-bottom: 12px; font-size: 14px;">Anthropic API Key</h4>
                             <div class="form-group">
                                 <div class="api-key-input">
@@ -5537,7 +5549,7 @@
 
                     <div class="settings-section">
                         <h2 class="settings-title">🔌 Local Agents</h2>
-                        <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">Enlist agents you've already authed on this machine — <b style="color:#bcd;">no API keys needed</b>. t3mp3st detects each CLI and can drive it as an operator. Tick several and connect them all at once.</p>
+                        <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">Enlist agents you've already authed on this machine — <b style="color:#bcd;">no API keys needed</b>. T3MP3ST detects each CLI and can drive it as an operator. Tick several and connect them all at once.</p>
                         <div id="localAgentsCard" style="padding: 18px 20px; background: linear-gradient(135deg, rgba(0,200,255,0.06), rgba(160,90,255,0.04)); border: 1px solid rgba(0,200,255,0.25); border-radius: 12px;">
                             <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
                                 <div style="font-size: 15px; font-weight: 800; color: #2fd6ff; letter-spacing: 0.4px; display:flex; align-items:center; gap:8px;">🔌 Connect Local Agents</div>
@@ -5779,11 +5791,11 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
     <div class="modal-overlay" id="welcomeOverlay" onclick="if(event.target===this)dismissWelcome()">
         <div class="modal" style="max-width: 460px;">
             <div class="modal-header">
-                <h3 class="modal-title">👋 Welcome to t3mp3st</h3>
+                <h3 class="modal-title">👋 Welcome to T3MP3ST</h3>
                 <button class="modal-close" onclick="dismissWelcome()">×</button>
             </div>
             <div class="modal-body" style="padding: 16px; line-height: 1.6; font-size: 13px;">
-                <p style="margin: 0 0 12px;">t3mp3st is an AI-driven offensive-security workbench — you point operators at a target and it hunts, validates, and reports findings.</p>
+                <p style="margin: 0 0 12px;">T3MP3ST is an AI-driven offensive-security workbench — you point operators at a target and it hunts, validates, and reports findings.</p>
                 <p style="margin: 0 0 8px;"><b>To start (keyless):</b> connect a local agent in <b>Settings</b>, or paste an API key there.</p>
                 <p style="margin: 0 0 14px;"><b>Then:</b> type a target and hit <b>HUNT</b>.</p>
                 <button onclick="dismissWelcome(); if(window.t3mpTour)t3mpTour.start();" style="width: 100%; padding: 11px; margin: 0 0 8px; border: none; border-radius: 6px; background: var(--accent, #2fffd2); color: #04120e; font-weight: bold; cursor: pointer;">▶ Take the guided tour</button>
@@ -7001,9 +7013,11 @@ Correlating findings across agents, identifying patterns, producing actionable i
             }
             // Set form values after DOM is ready
             const orKey = document.getElementById('openrouterKey');
+            const veKey = document.getElementById('veniceKey');
             const anKey = document.getElementById('anthropicKey');
             const oaKey = document.getElementById('openaiKey');
             if (orKey) orKey.value = state.settings.openrouterKey || '';
+            if (veKey) veKey.value = state.settings.veniceKey || '';
             if (anKey) anKey.value = state.settings.anthropicKey || '';
             if (oaKey) oaKey.value = state.settings.openaiKey || '';
         }
@@ -18758,7 +18772,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         _kc.style.color = '#7fd8b0';
                         _kc.style.background = 'rgba(0,255,136,0.06)';
                         _kc.style.borderColor = 'rgba(0,255,136,0.2)';
-                        _kt.innerHTML = 'Run keyless — <b>connect Claude Code, Codex, or Hermes</b> and t3mp3st drives missions through your agent\'s own login (no API key). To run, connect a local agent <b>or</b> add a key. <span onclick="navigateTo(\'settings\')" style="cursor:pointer; color:#00ff88; text-decoration:underline; font-weight:600;">Set up in Settings →</span>';
+                        _kt.innerHTML = 'Run keyless — <b>connect Claude Code, Codex, or Hermes</b> and T3MP3ST drives missions through your agent\'s own login (no API key). To run, connect a local agent <b>or</b> add a key. <span onclick="navigateTo(\'settings\')" style="cursor:pointer; color:#00ff88; text-decoration:underline; font-weight:600;">Set up in Settings →</span>';
                     }
                 }
             }
@@ -29703,7 +29717,7 @@ Format as precise JSON.`;
       render(lastDetected, data.connected || []);
     } catch(e) {
       const list = document.getElementById('localAgentsList');
-      if (list) list.innerHTML = '<div style="color:#ff6b6b;font-size:12px;">Detect failed: '+e.message+' — is the t3mp3st server running on :3333?</div>';
+      if (list) list.innerHTML = '<div style="color:#ff6b6b;font-size:12px;">Detect failed: '+e.message+' — is the T3MP3ST server running on :3333?</div>';
     }
   };
 
@@ -29856,7 +29870,7 @@ Format as precise JSON.`;
         + '<input id="admTarget" type="text" value="'+esc(S.target)+'" placeholder="'+esc(t.ph)+'" style="width:100%;box-sizing:border-box;margin-top:10px;padding:12px 14px;font-size:14px;background:rgba(0,0,0,0.45);border:1px solid rgba(0,200,255,0.3);border-radius:8px;color:#e8f0f3;font-family:\'JetBrains Mono\',monospace;outline:none;">'
         + '<label style="display:flex;align-items:flex-start;gap:8px;margin-top:16px;cursor:pointer;font-size:12.5px;color:#ffcf6b;font-weight:600;">'
         +   '<input type="checkbox" id="admAuth" '+(S.authorized?'checked':'')+' style="accent-color:#ffaa00;margin-top:2px;">'
-        +   '<span>I own this target, or have <b>written permission</b> to test it. (Required — t3mp3st only tests authorized targets.)</span></label>'
+        +   '<span>I own this target, or have <b>written permission</b> to test it. (Required — T3MP3ST only tests authorized targets.)</span></label>'
         + '<div style="margin-top:18px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.07);">'
         +   '<div style="font-size:11.5px;color:#7f93a5;margin-bottom:8px;">🎲 No target in mind? The Admiral will scout a <b style="color:#9cf">legal</b> one for you — a deliberately-vulnerable lab, a public CTF, or under-audited OSS for <b style="color:#9cf">source-only</b> audit + coordinated disclosure (never an arbitrary live system).</div>'
         +   '<button onclick="admiralPickTarget()" style="padding:10px 16px;font-size:12.5px;font-weight:700;background:rgba(0,136,255,0.12);border:1px solid rgba(0,136,255,0.45);border-radius:8px;color:#5bb8ff;cursor:pointer;">🛰 Let the Admiral pick a '+esc(t.label)+' target</button>'
@@ -30418,7 +30432,7 @@ Format as precise JSON.`;
 
   // ── Steps (honest content — reflects what actually works) ──
   var steps = [
-    { page: 'warroom', selector: null, title: 'Welcome to t3mp3st',
+    { page: 'warroom', selector: null, title: 'Welcome to T3MP3ST',
       body: 'An offensive-security agent harness. ~90-second tour to your first mission. (You can skip anytime.)' },
     { page: 'warroom', selector: '#heroHuntTarget', title: 'Start a hunt',
       body: 'Type a target — a host, IP, or a repo/package — and hit HUNT. That is the whole launch.' },

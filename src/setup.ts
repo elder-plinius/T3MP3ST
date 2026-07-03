@@ -101,6 +101,53 @@ async function setupOpenRouterKey(): Promise<boolean> {
   }
 }
 
+async function setupVeniceKey(): Promise<boolean> {
+  console.log('');
+  showInfo('Venice AI is an OpenAI-compatible, privacy-focused provider (uncensored models).');
+  showInfo('Get your API key at: ' + chalk.underline('https://venice.ai/settings/api'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your Venice API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  // Test the API key
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'venice',
+      model: 'llama-3.3-70b',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('venice', apiKey);
+    showSuccess('Venice API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupAnthropicKey(): Promise<boolean> {
   console.log('');
   showInfo('Anthropic provides direct access to Claude models.');
@@ -326,6 +373,10 @@ async function setupApiKeys(): Promise<void> {
           checked: !hasApiKey('openrouter'),
         },
         {
+          name: `Venice ${hasApiKey('venice') ? chalk.green('(configured)') : ''}`,
+          value: 'venice',
+        },
+        {
           name: `Anthropic ${hasApiKey('anthropic') ? chalk.green('(configured)') : ''}`,
           value: 'anthropic',
         },
@@ -339,6 +390,9 @@ async function setupApiKeys(): Promise<void> {
 
   for (const provider of providers) {
     switch (provider) {
+      case 'venice':
+        await setupVeniceKey();
+        break;
       case 'openrouter':
         await setupOpenRouterKey();
         break;
@@ -356,6 +410,7 @@ async function setupProvider(): Promise<void> {
   const configuredProviders = [];
 
   if (hasApiKey('openrouter')) configuredProviders.push({ name: 'OpenRouter', value: 'openrouter' });
+  if (hasApiKey('venice')) configuredProviders.push({ name: 'Venice', value: 'venice' });
   if (hasApiKey('anthropic')) configuredProviders.push({ name: 'Anthropic', value: 'anthropic' });
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
 
@@ -396,6 +451,7 @@ function viewConfiguration(): void {
   console.log('');
   console.log(chalk.cyan('  API Keys:'));
   console.log('    OpenRouter: ' + (hasApiKey('openrouter') ? chalk.green('configured') : chalk.red('not set')));
+  console.log('    Venice: ' + (hasApiKey('venice') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    Anthropic: ' + (hasApiKey('anthropic') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    OpenAI: ' + (hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set')));
   console.log('');

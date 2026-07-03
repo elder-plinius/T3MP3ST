@@ -19,6 +19,7 @@ export interface TempestSettings {
   // API Keys
   apiKeys: {
     openrouter?: string;
+    venice?: string;
     anthropic?: string;
     openai?: string;
   };
@@ -33,6 +34,12 @@ export interface TempestSettings {
     defaultModel: string;
     siteUrl?: string;
     siteName?: string;
+  };
+
+  // Venice AI — OpenAI-compatible, privacy-focused (same wire shape as OpenRouter)
+  venice: {
+    baseUrl: string;
+    defaultModel: string;
   };
 
   // Anthropic specific
@@ -90,6 +97,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
     siteName: 'T3MP3ST',
   },
 
+  venice: {
+    baseUrl: 'https://api.venice.ai/api/v1',
+    defaultModel: 'llama-3.3-70b',
+  },
+
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
     defaultModel: 'claude-opus-4-6',
@@ -140,6 +152,25 @@ export interface ModelInfo {
 }
 
 export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
+  venice: [
+    {
+      id: 'llama-3.3-70b',
+      name: 'Llama 3.3 70B (Venice)',
+      provider: 'Venice',
+      contextWindow: 65536,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'uncensored', 'tools'],
+    },
+    {
+      id: 'venice-uncensored',
+      name: 'Venice Uncensored',
+      provider: 'Venice',
+      contextWindow: 32768,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'uncensored'],
+    },
+  ],
+
   openrouter: [
     // Anthropic (Feb 2026)
     {
@@ -454,6 +485,7 @@ class ConfigManager {
     // Check environment variables for API keys
     const envKeys = {
       openrouter: process.env.OPENROUTER_API_KEY,
+      venice: process.env.VENICE_API_KEY,
       anthropic: process.env.ANTHROPIC_API_KEY,
       openai: process.env.OPENAI_API_KEY,
     };
@@ -463,7 +495,7 @@ class ConfigManager {
 
     for (const [provider, envKey] of Object.entries(envKeys)) {
       if (envKey && !currentKeys[provider as keyof typeof currentKeys]) {
-        this.setApiKey(provider as 'openrouter' | 'anthropic' | 'openai', envKey);
+        this.setApiKey(provider as 'openrouter' | 'venice' | 'anthropic' | 'openai', envKey);
       }
     }
 
@@ -494,7 +526,7 @@ class ConfigManager {
   /**
    * Set an API key for a provider
    */
-  setApiKey(provider: 'openrouter' | 'anthropic' | 'openai', key: string): void {
+  setApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai', key: string): void {
     const apiKeys = this.config.get('apiKeys');
     apiKeys[provider] = key;
     this.config.set('apiKeys', apiKeys);
@@ -503,10 +535,11 @@ class ConfigManager {
   /**
    * Get an API key for a provider
    */
-  getApiKey(provider: 'openrouter' | 'anthropic' | 'openai'): string | undefined {
+  getApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai'): string | undefined {
     // First check environment variables (highest priority)
     const envVarMap = {
       openrouter: 'OPENROUTER_API_KEY',
+      venice: 'VENICE_API_KEY',
       anthropic: 'ANTHROPIC_API_KEY',
       openai: 'OPENAI_API_KEY',
     };
@@ -527,7 +560,7 @@ class ConfigManager {
   /**
    * Check if a provider has a valid API key configured
    */
-  hasApiKey(provider: 'openrouter' | 'anthropic' | 'openai'): boolean {
+  hasApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai'): boolean {
     const key = this.getApiKey(provider);
     return !!key && key.length > 10;
   }
@@ -535,7 +568,7 @@ class ConfigManager {
   /**
    * Remove an API key
    */
-  removeApiKey(provider: 'openrouter' | 'anthropic' | 'openai'): void {
+  removeApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai'): void {
     const apiKeys = this.config.get('apiKeys');
     delete apiKeys[provider];
     this.config.set('apiKeys', apiKeys);
@@ -548,6 +581,7 @@ class ConfigManager {
     const providers: LLMProvider[] = [];
 
     if (this.hasApiKey('openrouter')) providers.push('openrouter');
+    if (this.hasApiKey('venice')) providers.push('venice');
     if (this.hasApiKey('anthropic')) providers.push('anthropic');
     if (this.hasApiKey('openai')) providers.push('openai');
 
@@ -575,6 +609,11 @@ class ConfigManager {
         apiKey = this.getApiKey('openrouter');
         baseUrl = this.config.get('openrouter').baseUrl;
         actualModel = model || this.config.get('openrouter').defaultModel;
+        break;
+      case 'venice':
+        apiKey = this.getApiKey('venice');
+        baseUrl = this.config.get('venice').baseUrl;
+        actualModel = model || this.config.get('venice').defaultModel;
         break;
       case 'anthropic':
         apiKey = this.getApiKey('anthropic');
@@ -617,7 +656,7 @@ class ConfigManager {
    * model failure that the model can't self-recover from — a refusal, an empty 200,
    * or a hard error that survives same-model retries (rate-limit, 5xx, timeout, dead
    * key, missing model, context blowout) — escalates across the OTHER configured
-   * providers in priority order (openrouter → anthropic → openai), each with its own
+   * providers in priority order (openrouter → venice → anthropic → openai), each with its own
    * key/model. OFF by default (no surprise model-switching). On a refusal the real
    * authorization context is restated — honest escalation, no jailbreak prompts
    * (see LLMBackbone.chat).
@@ -626,7 +665,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'anthropic' | 'openai') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai') => {
       if (p === primary || !this.hasApiKey(p)) return;
       chain.push({
         provider: p,
@@ -636,6 +675,7 @@ class ConfigManager {
       });
     };
     add('openrouter');
+    add('venice');
     add('anthropic');
     add('openai');
     return chain;
@@ -651,6 +691,9 @@ class ConfigManager {
     switch (provider) {
       case 'openrouter':
         this.config.set('defaultModel', this.config.get('openrouter').defaultModel);
+        break;
+      case 'venice':
+        this.config.set('defaultModel', this.config.get('venice').defaultModel);
         break;
       case 'anthropic':
         this.config.set('defaultModel', this.config.get('anthropic').defaultModel);
@@ -671,6 +714,9 @@ class ConfigManager {
     switch (provider) {
       case 'openrouter':
         this.config.set('openrouter', { ...this.config.get('openrouter'), defaultModel: model });
+        break;
+      case 'venice':
+        this.config.set('venice', { ...this.config.get('venice'), defaultModel: model });
         break;
       case 'anthropic':
         this.config.set('anthropic', { ...this.config.get('anthropic'), defaultModel: model });
@@ -749,8 +795,8 @@ OPENAI_API_KEY=
 export const config = new ConfigManager();
 
 // Helper functions for quick access
-export const getApiKey = (provider: 'openrouter' | 'anthropic' | 'openai') => config.getApiKey(provider);
-export const setApiKey = (provider: 'openrouter' | 'anthropic' | 'openai', key: string) => config.setApiKey(provider, key);
-export const hasApiKey = (provider: 'openrouter' | 'anthropic' | 'openai') => config.hasApiKey(provider);
+export const getApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai') => config.getApiKey(provider);
+export const setApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai', key: string) => config.setApiKey(provider, key);
+export const hasApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai') => config.hasApiKey(provider);
 export const getLLMConfig = (provider?: LLMProvider, model?: string) => config.getLLMConfig(provider, model);
 export const getConfiguredProviders = () => config.getConfiguredProviders();

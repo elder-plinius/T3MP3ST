@@ -1,0 +1,1 @@
+// This file can be empty if using node-red.nodes in package.json
