@@ -1052,6 +1052,17 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   validateConfig(): { valid: boolean; error?: string } {
     return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes)' };
   }
+  private compactContent(content: string, role: LLMMessage['role']): string {
+    let text = content;
+    if (role === 'user') {
+      text = text.replace(/\n### Arsenal \([\s\S]*?\n### Standing Orders/, '\n### Standing Orders');
+    }
+    const cap = role === 'tool' ? 2500 : 6000;
+    if (text.length <= cap) return text;
+    const head = Math.floor(cap * 0.65);
+    const tail = cap - head;
+    return `${text.slice(0, head)}\n... trimmed for local-agent CLI prompt ...\n${text.slice(-tail)}`;
+  }
   private formatPrompt(messages: LLMMessage[], options?: ChatOptions): string {
     const parts = [
       'You are the local-agent planning brain for T3MP3ST, an authorized offensive-security harness.',
@@ -1066,6 +1077,15 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     if (options?.maxTokens) parts.push(`Target max output tokens: ${options.maxTokens}.`);
     for (const m of messages) parts.push(renderCliMessage(m));
     return parts.join('\n');
+  }
+  private parseJsonEnvelope(content: string): unknown | null {
+    const raw = content.trim();
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidates = [fenced?.[1], raw, raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)].filter(Boolean) as string[];
+    for (const candidate of candidates) {
+      try { return JSON.parse(candidate); } catch { /* try next */ }
+    }
+    return null;
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const agentId = this.config.model || 'codex';

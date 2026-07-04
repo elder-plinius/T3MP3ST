@@ -1018,6 +1018,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
       // Auto-spawn an operator if none exists for this archetype
       if (!operator) {
+        if (this.llm.getProvider() === 'local-agent') continue;
         const allOps = this.cell.getAllOperators();
         const archetypeCount = allOps.filter(op => op.archetype === task.operatorType).length;
         // Spawn up to 3 operators per archetype for parallelism
@@ -1166,6 +1167,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Auto-spawn operators needed for a given kill chain phase
    */
   private autoSpawnForPhase(phase: KillChainPhase): void {
+    if (this.llm.getProvider() === 'local-agent') {
+      return;
+    }
     const phaseOperators: Record<string, OperatorArchetype[]> = {
       [KillChainPhase.RECON]: ['recon'],
       [KillChainPhase.WEAPONIZE]: ['scanner'],

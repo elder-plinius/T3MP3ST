@@ -133,6 +133,54 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext, sharedContext) },
     ];
 
+    const bootstrapCall = this.getLocalReconBootstrap(task, target, toolDefs);
+    if (bootstrapCall) {
+      const toolStep = await this.executeTool(bootstrapCall, target, -1);
+      steps.push(toolStep);
+
+      if (toolStep.toolResult?.findings) {
+        const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
+        for (const tf of toolStep.toolResult.findings) {
+          allFindings.push({ ...tf, provenance: 'tool', toolName: bootstrapCall.name, toolOutput: out || tf.details });
+        }
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: 'Running an initial low-noise recon check before planning deeper actions.',
+        toolCalls: [bootstrapCall],
+      });
+      messages.push({
+        role: 'tool',
+        content: this.formatToolResult(toolStep.toolResult),
+        toolCallId: bootstrapCall.id,
+        name: bootstrapCall.name,
+      });
+      messages.push({
+        role: 'user',
+        content: 'Use the bootstrap observation above. If it is enough for a concise recon debrief, return the final JSON finding block now. Only call another listed tool if it will materially improve the evidence.',
+      });
+
+      if (toolStep.toolResult?.success) {
+        const summary = [
+          'Local-agent recon bootstrap completed with tool-backed evidence.',
+          this.formatToolResult(toolStep.toolResult),
+        ].join('\n\n');
+        const result: AgentResult = {
+          success: true,
+          summary,
+          steps,
+          findings: allFindings,
+          iterations: 0,
+          tokensUsed,
+          durationMs: Date.now() - startTime,
+          hitLimit: false,
+        };
+        this.emit('agent:complete', result);
+        return result;
+      }
+    }
+
     for (let i = 0; i < this.options.maxIterations; i++) {
       try {
         // Ask the LLM what to do next
@@ -296,6 +344,38 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
 
     this.emit('agent:complete', result);
     return result;
+  }
+
+  private getLocalReconBootstrap(
+    task: Task,
+    target: Target | undefined,
+    tools: LLMToolDefinition[]
+  ): LLMToolCall | undefined {
+    if (this.llm.getProvider() !== 'local-agent') return undefined;
+    if (!target?.address) return undefined;
+    if (task.phase !== 'reconnaissance' && task.operatorType !== 'recon') return undefined;
+
+    const hasTool = (name: string) => tools.some((tool) => tool.name === name);
+    const taskName = task.name.toLowerCase();
+    const id = `local-agent-bootstrap-${Date.now()}`;
+
+    if (taskName.includes('dns') && hasTool('dns_lookup')) {
+      return { id, name: 'dns_lookup', arguments: { domain: target.address, type: 'A' } };
+    }
+
+    if (taskName.includes('port') && hasTool('port_scan')) {
+      return { id, name: 'port_scan', arguments: { target: target.address, ports: '80,443', timeout: 2000 } };
+    }
+
+    if ((taskName.includes('web') || taskName.includes('fingerprint')) && hasTool('header_analysis')) {
+      return { id, name: 'header_analysis', arguments: { url: `https://${target.address}` } };
+    }
+
+    if ((taskName.includes('content') || taskName.includes('discover')) && hasTool('robots_txt_fetch')) {
+      return { id, name: 'robots_txt_fetch', arguments: { url: `https://${target.address}` } };
+    }
+
+    return undefined;
   }
 
   /**
