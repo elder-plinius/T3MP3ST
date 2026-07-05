@@ -65,6 +65,18 @@ describe('egress scope gate', () => {
     expect(scopeViolation(s2, ctx({ target: '203.0.113.10' }))).toBeNull(); // the host itself is fine
   });
 
+  it('blocks cloud link-local / metadata (169.254 + IPv6 IMDS) even under allowPrivate, unless explicitly authorized', () => {
+    // implicit private allowance must NEVER reach the IMDS / 169.254.0.0/16 link-local range
+    expect(scopeViolation(scope, ctx({ url: 'http://169.254.169.254/latest/meta-data/iam/' }))).toBe('169.254.169.254');
+    expect(scopeViolation(scope, ctx({ target: '169.254.0.1' }))).toBe('169.254.0.1');
+    expect(scopeViolation(scope, ctx({ url: 'http://[fd00:ec2::254]/latest/meta-data/' }))).toBe('fd00:ec2::254');
+    // a normal RFC1918 private host is still allowed under allowPrivate (zero regression)
+    expect(scopeViolation(scope, ctx({ target: '10.1.2.3' }))).toBeNull();
+    // an operator can still explicitly authorize a metadata host if they really mean to
+    const explicit: ArsenalScope = { allowedHosts: ['169.254.169.254'], allowLoopback: false, allowPrivate: false };
+    expect(scopeViolation(explicit, ctx({ url: 'http://169.254.169.254/x' }))).toBeNull();
+  });
+
   it('no scope set = enforcement off (backward-compat)', () => {
     expect(scopeViolation(null, ctx({ url: 'https://evil.com' }))).toBeNull();
   });

@@ -321,6 +321,9 @@ export interface Task {
   status: 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'skipped';
   priority: number;
   dependencies: string[];
+  /** Exact target address this task is scoped to (routing key). Optional for backward-compat; when
+   *  absent, callers fall back to matching an address inside the free-text `description`. */
+  targetAddress?: string;
   assignedTo?: string;
   result?: TaskResult;
   createdAt: number;
@@ -415,6 +418,9 @@ export interface ToolContext {
   operator?: string;
   mission?: string;
   parameters: Record<string, unknown>;
+  /** Active egress scope, injected by Arsenal.execute() so scope-aware handlers (scopedFetch) can
+   *  re-validate redirect hops against the same allowlist the initial request passed. */
+  scope?: import('../arsenal/index.js').ArsenalScope | null;
 }
 
 /**

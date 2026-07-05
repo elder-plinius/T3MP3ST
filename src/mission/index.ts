@@ -293,15 +293,17 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     const mission = this.getActiveMission();
     if (!mission) return;
 
-    // Check if we already have tasks for this target (avoid duplicates)
+    // Dedup on the EXACT target address (routing key), not a substring of the free-text description —
+    // otherwise a target whose address is a prefix of another (e.g. 10.0.0.1 vs 10.0.0.10) is wrongly
+    // treated as already-seeded and never assessed. Tasks predating the field fall back to the old test.
     const existingTasks = this.taskQueue.getForMission(mission.id);
     const alreadyHasTasksForTarget = existingTasks.some(t =>
-      t.description.includes(targetAddress)
+      t.targetAddress != null ? t.targetAddress === targetAddress : t.description.includes(targetAddress)
     );
     if (alreadyHasTasksForTarget) return;
 
-    // Always start with recon tasks
-    const reconTasks = createReconTasks(mission.id, targetAddress);
+    // Always start with recon tasks, tagged with the exact target address for routing.
+    const reconTasks = createReconTasks(mission.id, targetAddress).map(t => ({ ...t, targetAddress }));
     this.taskQueue.addMany(reconTasks);
   }
 
@@ -329,7 +331,7 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     }
 
     if (tasks.length > 0) {
-      this.taskQueue.addMany(tasks);
+      this.taskQueue.addMany(tasks.map(t => ({ ...t, targetAddress })));
     }
   }
 

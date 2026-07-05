@@ -71,6 +71,32 @@ describe('Arsenal.execute() — approval gate', () => {
     expect((await ars.execute('httpx_tool', ctx())).success).toBe(true);
     expect(t.ran()).toBe(true);
   });
+
+  it('an UNGATED spicy (credential) built-in still runs but always warns + audits (never silent)', async () => {
+    const ars = new Arsenal();
+    const onWarning = vi.fn();
+    const onDecision = vi.fn();
+    const t = probe('password_spray'); // spicy NAME but no riskTier = the default ungated posture
+    ars.register(t);
+    ars.setApprovalController(new ApprovalController({ onWarning, onDecision }));
+    const res = await ars.execute('password_spray', ctx({ url: 'https://target.example.com/login', username: 'admin' }));
+    expect(res.success).toBe(true); // NOT blocked — default posture preserved
+    expect(t.ran()).toBe(true);
+    expect(onWarning).toHaveBeenCalledTimes(1); // credential is spicy → warned
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(ars.getApprovalController()?.getAudit().some(r => r.tool === 'password_spray' && r.outcome === 'allowed-ungated')).toBe(true);
+  });
+
+  it('an ungated intrusive built-in is audited without a (spicy-only) warning', async () => {
+    const ars = new Arsenal();
+    const onWarning = vi.fn();
+    const t = probe('sqli_scan'); // intrusive tier — audited but not "spicy"
+    ars.register(t);
+    ars.setApprovalController(new ApprovalController({ onWarning }));
+    await ars.execute('sqli_scan', ctx({ url: 'https://target.example.com/?id=1', param: 'id' }));
+    expect(onWarning).not.toHaveBeenCalled();
+    expect(ars.getApprovalController()?.getAudit().some(r => r.tool === 'sqli_scan' && r.outcome === 'allowed-ungated')).toBe(true);
+  });
 });
 
 describe('opt-in built-in gating (T3MP3ST_GATE_BUILTINS) — stampSpicyBuiltin', () => {

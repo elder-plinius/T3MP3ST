@@ -441,6 +441,24 @@ describe('Wedged-dispatch timeout backstop', () => {
   }, 15000);
 });
 
+describe('Egress scope derivation from mission targets', () => {
+  it('a public-only mission leaves loopback + private ranges OUT of implicit scope', async () => {
+    const { TempestCommand } = await import('../index.js');
+    const command = new TempestCommand({ name: 'Scope Op', llm: { provider: 'mock', model: 'mock-model' } });
+    command.targetEnv.addTarget({ name: 'shop', address: 'shop.example.com', type: 'web_application', zone: 'external' });
+    const scope = command.arsenal.getScope();
+    expect(scope).toMatchObject({ allowLoopback: false, allowPrivate: false });
+    expect(scope?.allowedHosts).toContain('shop.example.com');
+  });
+
+  it('admits private ranges only when the mission explicitly targets one', async () => {
+    const { TempestCommand } = await import('../index.js');
+    const command = new TempestCommand({ name: 'Lab Op', llm: { provider: 'mock', model: 'mock-model' } });
+    command.targetEnv.addTarget({ name: 'lab', address: '10.0.0.5', type: 'host', zone: 'internal' });
+    expect(command.arsenal.getScope()).toMatchObject({ allowPrivate: true });
+  });
+});
+
 describe('Codex account provider', () => {
   it('should expose Codex as an API-keyless planning backend', () => {
     const llm = new LLMBackbone({

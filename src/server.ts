@@ -5809,10 +5809,12 @@ app.get('/api/selfimprove/ledger', async (_req: Request, res: Response): Promise
   const tactics = await readText('current.md');
   const generations = ledger && Array.isArray(ledger.generations) ? ledger.generations : [];
   res.json({
+    // Evolution artifacts are LLM-authored and can incorporate tool/target output, so scrub them at
+    // the serve boundary like every other findings-bearing response.
     available: generations.length > 0,
-    generations,
-    proposalsLedger: proposalsLedger || null,
-    tactics,
+    generations: redactSecrets(generations),
+    proposalsLedger: proposalsLedger ? redactSecrets(proposalsLedger) : null,
+    tactics: redactLedgerText(tactics),
   });
 });
 
@@ -6164,7 +6166,7 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
   const findings = cmd.vault.getAllFindings();
   const allOperators = cmd.cell.getAllOperators().map(op => op.getSummary());
 
-  res.json({
+  res.json(redactSecrets({
     active: status.running,
     paused: status.paused,
     name: status.name,
@@ -6192,7 +6194,7 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
       operatorId: f.operatorId,
       discoveredAt: f.discoveredAt,
     })),
-  });
+  }));
 });
 
 /**
@@ -6401,7 +6403,9 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
   }
 
   res.json({
-    findings: cmd.vault.getAllFindings(),
+    // Scrub findings before serving: a title/description/evidence field can echo a target-supplied
+    // secret, so pass the whole set through the same redactor used by /api/findings and the SSE feed.
+    findings: redactSecrets(cmd.vault.getAllFindings()),
     // Redact: never return raw harvested secrets over the API (only metadata + a
     // secretCaptured flag). Loopback-only mitigates, but a security tool must not dump
     // secrets in its own responses (external-audit P0).

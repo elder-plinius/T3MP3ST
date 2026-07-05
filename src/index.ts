@@ -232,6 +232,8 @@ import {
   scopeViolation,
   runSubprocess,
   isToolAvailable,
+  isLoopbackTargetHost,
+  isPrivateTargetHost,
 } from './arsenal/index.js';
 import { buildAdapterTools } from './arsenal/adapter-tools.js';
 import { buildPostExTools } from './arsenal/post-ex.js';
@@ -527,7 +529,13 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     const allowedHosts = this.targetEnv.getAllTargets()
       .map((t) => hostFromTargetValue(t.address))
       .filter((h): h is string => !!h);
-    this.arsenal.setScope({ allowedHosts, allowLoopback: true, allowPrivate: true });
+    // Admit loopback / RFC1918 ranges IMPLICITLY only when the mission itself explicitly targets one.
+    // A public-only engagement must not leave the entire private internet + loopback (incl. the local
+    // War Room control plane and cloud IMDS) in scope for an LLM-supplied target. An explicitly-added
+    // private/loopback target is still reachable via the exact-host allowlist regardless of these flags.
+    const allowLoopback = allowedHosts.some(isLoopbackTargetHost);
+    const allowPrivate = allowedHosts.some(isPrivateTargetHost);
+    this.arsenal.setScope({ allowedHosts, allowLoopback, allowPrivate });
   }
 
   /**
@@ -591,6 +599,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
             status: 'pending',
             priority: 20,
             dependencies: [],
+            targetAddress: this.targetEnv.getTarget(finding.targetId)?.address,
             createdAt: Date.now(),
           });
           this.followupsSpawned++;
@@ -950,7 +959,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       // must leave the task pending (not permanently assigned + stuck in
       // activeDispatches with no completion path to clear it).
       const allTargets = this.targetEnv.getAllTargets();
-      const target = allTargets.find(t => task.description.includes(t.address)) || allTargets[0];
+      // Resolve by the task's EXACT target address first (set at creation); fall back to the legacy
+      // substring scan only for tasks predating the field, so a prefix-collision (10.0.0.1 vs
+      // 10.0.0.10) can't misroute a dispatch to the wrong target.
+      const target = (task.targetAddress ? allTargets.find(t => t.address === task.targetAddress) : undefined)
+        || allTargets.find(t => task.description.includes(t.address)) || allTargets[0];
       if (!target) continue; // No targets available — leave task pending, skip dispatch
 
       // Dispatch task (fire and forget — don't block the tick loop)
@@ -1077,14 +1090,26 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     };
 
     const needed = phaseOperators[phase] || [];
+    const mission = this.mission.getActiveMission();
+    const queue = this.mission.getTaskQueue();
     for (const archetype of needed) {
+      // Only spawn when this phase ACTUALLY has pending/assigned work for the archetype. Eagerly
+      // spawning on every phase transition (even for task-less phases like INSTALL/C2) fills the pool
+      // with idle operators and can throw at the final phase — leaving the analyst unspawnable and the
+      // mission wedged. The dispatch loop already spawns on demand (capped per archetype) for real work.
+      const hasWork = !!mission && !!queue && queue.getForMission(mission.id).some(
+        t => t.operatorType === archetype && (t.status === 'pending' || t.status === 'assigned')
+      );
+      if (!hasWork) continue;
       const existing = this.cell.getAvailableOperator(archetype);
       if (!existing) {
         const allOps = this.cell.getAllOperators();
         const hasArchetype = allOps.some(op => op.archetype === archetype);
         if (!hasArchetype) {
           const callsign = `${archetype.charAt(0).toUpperCase() + archetype.slice(1)}-Auto`;
-          this.spawnOperator(callsign, archetype);
+          // A full pool / dup callsign throws — treat as "spawn deferred to the dispatch loop", never
+          // abort the tick (which would strand the mission short of completion).
+          try { this.spawnOperator(callsign, archetype); } catch { /* pool full — dispatch loop retries */ }
         }
       }
     }

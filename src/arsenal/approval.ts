@@ -70,6 +70,7 @@ export interface ApprovalRequest {
 export type ApprovalOutcome =
   | 'allowed-preapproved' // already on the allowlist or approved earlier this session
   | 'allowed-interactive' // the operator said yes just now (and the tool is now free)
+  | 'allowed-ungated' // an ungated spicy built-in that ran without a gate but is warned + audited
   | 'denied-declined' // the operator said no
   | 'denied-no-approver'; // fail-safe: gated, not approved, and no approver was wired
 
@@ -126,6 +127,20 @@ export class ApprovalController {
   /** Approve a tool for the rest of the session ("approve once, then free"). */
   approveTool(name: string): void {
     this.approved.add(name);
+  }
+
+  /**
+   * Record + surface an UNGATED spicy built-in call. Such tools (the default-posture credential /
+   * intrusive probes) are NOT blocked — they still run — but a live credential or injection probe must
+   * never fire silently: this always lands the call in the audit trail and, for a spicy tier, fires the
+   * non-blocking warning. Distinct from gate(): no allow/deny decision, only visibility.
+   */
+  noteUngated(req: ApprovalRequest): void {
+    const spicy = isSpicyRisk(req.risk);
+    if (spicy && this.policy.onWarning) this.policy.onWarning(req);
+    const rec: ApprovalRecord = { ...req, outcome: 'allowed-ungated', spicy, at: this.now() };
+    this.audit.push(rec);
+    this.policy.onDecision?.(rec);
   }
 
   /** Is this tool currently approved (via the allowlist or an earlier interactive yes)? */

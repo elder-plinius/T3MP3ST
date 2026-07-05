@@ -25,6 +25,7 @@
 
 import type { ToolAdapter } from './catalog.js';
 import type { CustomTool, ToolContext, ToolResult } from '../types/index.js';
+import { isSensitiveFilePath } from './path-guard.js';
 
 // =============================================================================
 // INJECTED DEPENDENCIES
@@ -120,6 +121,7 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     build: (target, params) => {
       const wordlist = str(params.wordlist) ?? '/usr/share/wordlists/dirb/common.txt';
       const mc = str(params.mc) ?? '200,301,302,403';
+      if (isSensitiveFilePath(wordlist)) throw new Error(`wordlist '${wordlist}' resolves to sensitive local material (keys/credentials) — refused (its lines would be sent to the target)`);
       return ['-u', target, '-w', wordlist, '-mc', mc, '-o', '/dev/stdout', '-of', 'json', '-s'];
     },
   },
@@ -139,6 +141,7 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     build: (target, params) => {
       const mode = str(params.mode) ?? 'dir';
       const wordlist = str(params.wordlist) ?? '/usr/share/wordlists/dirb/common.txt';
+      if (isSensitiveFilePath(wordlist)) throw new Error(`wordlist '${wordlist}' resolves to sensitive local material (keys/credentials) — refused (its lines would be sent to the target)`);
       return [mode, '-u', target, '-w', wordlist, '-q'];
     },
   },

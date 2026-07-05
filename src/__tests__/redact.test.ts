@@ -32,6 +32,22 @@ describe('redactString — URL userinfo (basic-auth) scrub', () => {
   });
 });
 
+describe('redactString — hashes must survive redaction (no over-redaction)', () => {
+  it('does NOT corrupt a 40-hex SHA-1 / git commit SHA', () => {
+    const sha1 = 'da39a3ee5e6b4b0d3255bfef95601890afd80709';
+    expect(redactString(`checksum ${sha1} ok`)).toBe(`checksum ${sha1} ok`);
+  });
+
+  it('does NOT corrupt a 64-hex SHA-256', () => {
+    const sha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    expect(redactString(`digest ${sha256}`)).toBe(`digest ${sha256}`);
+  });
+
+  it('still redacts a genuine mixed-case AWS secret key (base64 with / )', () => {
+    expect(redactString('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')).toBe('[redacted]');
+  });
+});
+
 describe('redactSecrets — approval-audit record shape', () => {
   it('scrubs a userinfo password in the audit target/action a gated credential tool would record', () => {
     // mirrors what Arsenal.execute() records for password_spray({ url: 'https://user:pass@host/login' })
