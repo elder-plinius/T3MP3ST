@@ -4,12 +4,16 @@ import { join } from 'path';
 
 const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
 
-function routeBlock(startMarker: string, endMarker: string): string {
+function sourceBlock(startMarker: string, endMarker: string): string {
   const start = serverSource.indexOf(startMarker);
-  expect(start, `missing route marker ${startMarker}`).toBeGreaterThanOrEqual(0);
+  expect(start, `missing source marker ${startMarker}`).toBeGreaterThanOrEqual(0);
   const end = serverSource.indexOf(endMarker, start);
   expect(end, `missing end marker ${endMarker}`).toBeGreaterThan(start);
   return serverSource.slice(start, end);
+}
+
+function routeBlock(startMarker: string, endMarker: string): string {
+  return sourceBlock(startMarker, endMarker);
 }
 
 describe('local API authorization hardening invariants', () => {
@@ -28,6 +32,16 @@ describe('local API authorization hardening invariants', () => {
     expect(route).not.toMatch(/body\.target\s*\|\|\s*inferCommandTarget\(parsed\)/);
     expect(route).toMatch(/resolveCommandExecutionTarget\(body, parsed\)/);
     expect(route).toMatch(/guardAction\(body,\s*['"]command_execution['"],\s*targetResolution\.target/);
+  });
+
+  it('/api/tools/execute rejects curl flags that change the effective destination', () => {
+    const parser = sourceBlock('const CURL_TRANSPORT_OVERRIDE_FLAGS', 'function inferCommandTarget');
+
+    for (const flag of ['--resolve', '--connect-to', '--proxy', '--preproxy', '--socks5', '--socks5-hostname', '--unix-socket', '--interface']) {
+      expect(parser).toContain(`'${flag}'`);
+    }
+    expect(parser).toMatch(/findCurlTransportOverrideFlag\(args\)/);
+    expect(parser).toMatch(/changes the effective network destination/);
   });
 
   it('Admiral live launch re-checks every General-produced execution target before mission bring-up', () => {

@@ -344,6 +344,30 @@ interface ParsedCommand {
 
 const SHELL_META = /[|&;$<>`\\]/;
 const COMMAND_CONTROL = /[\x00-\x1F\x7F-\x9F\u2028\u2029]/;
+const CURL_TRANSPORT_OVERRIDE_FLAGS = new Set([
+  '--resolve',
+  '--connect-to',
+  '--proxy',
+  '--preproxy',
+  '--socks4',
+  '--socks4a',
+  '--socks5',
+  '--socks5-hostname',
+  '--unix-socket',
+  '--abstract-unix-socket',
+  '--interface',
+  '-x',
+]);
+
+function findCurlTransportOverrideFlag(args: string[]): string | undefined {
+  for (const arg of args) {
+    if (!arg) continue;
+    const flag = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+    if (CURL_TRANSPORT_OVERRIDE_FLAGS.has(flag)) return flag;
+    if (arg.startsWith('-x') && arg !== '-X' && arg.length > 2) return '-x';
+  }
+  return undefined;
+}
 
 function parseCommand(command: string): ParsedCommand | { error: string } {
   if (SHELL_META.test(command) || COMMAND_CONTROL.test(command)) return { error: 'Shell control characters are not allowed; use direct argv-style commands only.' };
@@ -354,6 +378,12 @@ function parseCommand(command: string): ParsedCommand | { error: string } {
   const adapter = adapterForBinary(bin);
   if (adapter?.execution === 'catalog_only' || adapter?.execution === 'import_only') {
     return { error: `Tool is catalog-only and cannot be executed directly: ${bin}` };
+  }
+  if (bin === 'curl') {
+    const overrideFlag = findCurlTransportOverrideFlag(args);
+    if (overrideFlag) {
+      return { error: `curl flag ${overrideFlag} changes the effective network destination and is not allowed through /api/tools/execute.` };
+    }
   }
   return { bin, args };
 }
