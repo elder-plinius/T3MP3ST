@@ -28,9 +28,16 @@ export const SECRET_PATTERNS: Record<string, { pattern: RegExp; severity: string
 
 export function redactString(value: string): string {
   let redacted = value;
-  for (const { pattern } of Object.values(SECRET_PATTERNS)) {
+  for (const [name, { pattern }] of Object.entries(SECRET_PATTERNS)) {
     pattern.lastIndex = 0;
-    redacted = redacted.replace(pattern, '[redacted]');
+    if (name === 'aws_secret_key') {
+      // Skip a pure-hex 40/64-char run (SHA-1 / git commit SHA / TLS fingerprint / hex blob): a real
+      // AWS secret is mixed-case base64 with /,+,= and is never all-hex, so this never misses one but
+      // stops the pattern from corrupting legitimate hashes in served evidence.
+      redacted = redacted.replace(pattern, (m) => (/^[0-9a-fA-F]+$/.test(m) ? m : '[redacted]'));
+    } else {
+      redacted = redacted.replace(pattern, '[redacted]');
+    }
   }
   return redacted
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [redacted]')
