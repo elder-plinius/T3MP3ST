@@ -6212,7 +6212,7 @@ app.post('/api/mission/resume', (_req: Request, res: Response) => {
 app.get('/api/mission/status', (_req: Request, res: Response) => {
   const cmd = getTempestCommand();
   if (!cmd) {
-    res.json({ active: false });
+    res.json({ active: false, progress: [], tasks: [] });
     return;
   }
 
@@ -6242,6 +6242,8 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
     targets: status.targets,
     vault: status.vault,
     opsec: status.opsec,
+    tasks: status.tasks,
+    progress: status.progress,
     findings: findings.map(f => ({
       id: f.id,
       title: f.title,

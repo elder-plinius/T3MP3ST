@@ -295,6 +295,11 @@
 
         .page { display: none; }
         .page.active { display: block; animation: fadeIn 0.3s ease; }
+        .live-scan-grid { display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.4fr); gap: 14px; align-items: start; }
+
+        @media (max-width: 900px) {
+            .live-scan-grid { grid-template-columns: 1fr; }
+        }
 
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
@@ -3305,6 +3310,9 @@
                 <div class="nav-item active" data-page="warroom">
                     <span class="icon">⚔️</span> War Room
                 </div>
+                <div class="nav-item" data-page="live-scan">
+                    <span class="icon">📡</span> Live Scan
+                </div>
                 <div class="nav-item" data-page="operators">
                     <span class="icon">🤖</span> Operatives
                     <span class="badge" id="activeOperatorCount">0</span>
@@ -4171,6 +4179,48 @@
 
                     <!-- Hidden compat elements -->
                     <div id="targetList" style="display: none;"></div>
+                </div>
+
+                <!-- Live Scan - per-agent execution progress -->
+                <div class="page" id="page-live-scan">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px;flex-wrap:wrap;">
+                        <div>
+                            <div style="font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:2px;margin-bottom:6px;">Live Scan</div>
+                            <div style="font-size:24px;font-weight:800;color:var(--text-primary);line-height:1.15;">Agent Progress</div>
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <button class="btn btn-secondary btn-sm" onclick="refreshLiveScanPage()">Refresh</button>
+                            <button class="btn btn-secondary btn-sm" onclick="clearLiveScanFeed()">Clear Feed</button>
+                        </div>
+                    </div>
+
+                    <div id="liveScanSummary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px;"></div>
+
+                    <div class="live-scan-grid">
+                        <section style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">
+                            <div style="padding:12px 14px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;">Operators</div>
+                                <div id="liveScanOperatorCount" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);">0 active</div>
+                            </div>
+                            <div id="liveScanOperators" style="max-height:360px;overflow:auto;"></div>
+                        </section>
+
+                        <section style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">
+                            <div style="padding:12px 14px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;">Task Queue</div>
+                                <div id="liveScanTaskCount" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);">0 tasks</div>
+                            </div>
+                            <div id="liveScanTasks" style="max-height:360px;overflow:auto;"></div>
+                        </section>
+                    </div>
+
+                    <section style="margin-top:14px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">
+                        <div style="padding:12px 14px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;">Reasoning And Tool Stream</div>
+                            <div id="liveScanFeedCount" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);">0 events</div>
+                        </div>
+                        <div id="liveScanFeed" style="height:min(48vh,520px);min-height:300px;overflow:auto;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.18);"></div>
+                    </section>
                 </div>
 
                 <!-- Operators - Tactical Unit Command -->
@@ -5979,6 +6029,14 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                             if (data.operators) {
                                 this._updateOperatorStatusUI(data.operators);
                             }
+                            window.updateLiveScanStatus?.(data);
+                        } catch {}
+                    });
+
+                    this._eventSource.addEventListener('scan:progress', (e) => {
+                        try {
+                            const data = JSON.parse(e.data);
+                            window.recordLiveScanEvent?.(data);
                         } catch {}
                     });
 
@@ -6907,13 +6965,202 @@ Correlating findings across agents, identifying patterns, producing actionable i
             }));
         }
 
+        const LiveScanState = {
+            status: null,
+            events: [],
+            seen: new Set()
+        };
+
+        function liveScanEscape(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[ch]));
+        }
+
+        function liveScanTime(ts) {
+            const date = ts ? new Date(ts) : new Date();
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+
+        function liveScanStatusColor(status) {
+            const s = String(status || '').toLowerCase();
+            if (s === 'completed' || s === 'idle') return '#00ff88';
+            if (s === 'failed' || s === 'burned') return '#ff4444';
+            if (s === 'running' || s === 'tasked' || s === 'executing' || s === 'in_progress') return '#00aaff';
+            if (s === 'pending' || s === 'cooldown') return '#ffaa00';
+            return 'var(--text-secondary)';
+        }
+
+        function liveScanKindLabel(kind) {
+            return ({
+                task_started: 'START',
+                thinking: 'THINK',
+                tool_call: 'TOOL',
+                tool_result: 'RESULT',
+                task_completed: 'DONE',
+                task_failed: 'FAIL'
+            })[kind] || String(kind || 'EVENT').toUpperCase();
+        }
+
+        function liveScanMergeEvents(events) {
+            if (!Array.isArray(events)) return;
+            events.forEach(ev => {
+                const id = ev?.id || `${ev?.timestamp || Date.now()}-${ev?.operatorId || ''}-${ev?.kind || ''}-${ev?.detail || ''}`;
+                if (LiveScanState.seen.has(id)) return;
+                LiveScanState.seen.add(id);
+                LiveScanState.events.push({ ...ev, id });
+            });
+            LiveScanState.events.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            if (LiveScanState.events.length > 300) {
+                const trimmed = LiveScanState.events.splice(0, LiveScanState.events.length - 300);
+                trimmed.forEach(ev => LiveScanState.seen.delete(ev.id));
+            }
+        }
+
+        window.recordLiveScanEvent = function recordLiveScanEvent(event) {
+            liveScanMergeEvents([event]);
+            renderLiveScanPage();
+        };
+
+        window.updateLiveScanStatus = function updateLiveScanStatus(status) {
+            LiveScanState.status = status || null;
+            liveScanMergeEvents(status?.progress);
+            renderLiveScanPage();
+        };
+
+        window.refreshLiveScanPage = async function refreshLiveScanPage() {
+            const status = await T3MP3ST_API.get('/api/mission/status');
+            window.updateLiveScanStatus(status);
+        };
+
+        window.clearLiveScanFeed = function clearLiveScanFeed() {
+            LiveScanState.events = [];
+            LiveScanState.seen = new Set();
+            renderLiveScanPage();
+        };
+
+        function renderLiveScanPage() {
+            const page = document.getElementById('page-live-scan');
+            if (!page) return;
+
+            const status = LiveScanState.status || {};
+            const active = status.active ?? status.running ?? false;
+            const mission = status.mission || {};
+            const operators = Array.isArray(status.operators?.details) ? status.operators.details : [];
+            const operatorSummary = status.operators?.summary || status.operators || {};
+            const tasks = Array.isArray(status.tasks) ? status.tasks : [];
+            const events = LiveScanState.events.slice().reverse();
+            const currentPhase = mission.currentPhase || status.currentPhase || 'none';
+            const progress = typeof mission.progress === 'number' ? `${Math.round(mission.progress)}%` : '-';
+
+            const summary = document.getElementById('liveScanSummary');
+            if (summary) {
+                const cells = [
+                    ['State', status.paused ? 'Paused' : (active ? 'Running' : 'Stopped'), active ? '#00ff88' : '#ffaa00'],
+                    ['Phase', currentPhase, '#00aaff'],
+                    ['Progress', progress, '#00ff88'],
+                    ['Operators', String(operatorSummary.total ?? operators.length ?? 0), '#ffaa00'],
+                    ['Tasks', String(tasks.length), '#00aaff'],
+                    ['Stall', status.stallReason || '-', status.stallReason ? '#ff4444' : 'var(--text-secondary)']
+                ];
+                summary.innerHTML = cells.map(([label, value, color]) => `
+                    <div style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px;min-height:74px;">
+                        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">${liveScanEscape(label)}</div>
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:18px;color:${color};overflow-wrap:anywhere;">${liveScanEscape(value)}</div>
+                    </div>
+                `).join('');
+            }
+
+            const opCount = document.getElementById('liveScanOperatorCount');
+            if (opCount) opCount.textContent = `${operatorSummary.busy ?? operators.filter(op => ['tasked', 'executing'].includes(op.status)).length ?? 0} busy`;
+            const opEl = document.getElementById('liveScanOperators');
+            if (opEl) {
+                if (!operators.length) {
+                    opEl.innerHTML = '<div style="padding:18px;color:var(--text-muted);font-size:12px;">No operator details available yet.</div>';
+                } else {
+                    opEl.innerHTML = operators.map(op => {
+                        const statusColor = liveScanStatusColor(op.status);
+                        return `
+                            <div style="padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.06);display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start;">
+                                <div>
+                                    <div style="font-size:13px;color:var(--text-primary);font-weight:700;">${liveScanEscape(op.callsign || op.id)}</div>
+                                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${liveScanEscape(op.archetype || 'operator')}</div>
+                                    <div style="font-size:10px;color:var(--text-secondary);margin-top:7px;">${Number(op.completedTasks || 0)} done · ${Number(op.failedTasks || 0)} failed · risk ${Number(op.detectionRisk || 0)}</div>
+                                </div>
+                                <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${statusColor};text-transform:uppercase;">${liveScanEscape(op.status || 'unknown')}</div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+
+            const taskCount = document.getElementById('liveScanTaskCount');
+            if (taskCount) taskCount.textContent = `${tasks.length} tasks`;
+            const taskEl = document.getElementById('liveScanTasks');
+            if (taskEl) {
+                if (!tasks.length) {
+                    taskEl.innerHTML = '<div style="padding:18px;color:var(--text-muted);font-size:12px;">No mission tasks are queued.</div>';
+                } else {
+                    taskEl.innerHTML = tasks.map(task => {
+                        const color = liveScanStatusColor(task.status);
+                        const output = task.result?.error || task.result?.output || '';
+                        return `
+                            <div style="padding:11px 14px;border-bottom:1px solid rgba(255,255,255,0.06);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;">
+                                <div style="min-width:0;">
+                                    <div style="font-size:12px;color:var(--text-primary);font-weight:700;overflow-wrap:anywhere;">${liveScanEscape(task.name || task.id)}</div>
+                                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">${liveScanEscape(task.phase || '-')} · ${liveScanEscape(task.operatorType || '-')} ${task.assignedTo ? '· ' + liveScanEscape(task.assignedTo) : ''}</div>
+                                    ${output ? `<div style="font-size:10px;color:var(--text-secondary);margin-top:6px;overflow-wrap:anywhere;">${liveScanEscape(output).slice(0, 260)}</div>` : ''}
+                                </div>
+                                <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:${color};text-transform:uppercase;">${liveScanEscape(task.status || 'unknown')}</div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+
+            const feedCount = document.getElementById('liveScanFeedCount');
+            if (feedCount) feedCount.textContent = `${LiveScanState.events.length} events`;
+            const feed = document.getElementById('liveScanFeed');
+            if (feed) {
+                if (!events.length) {
+                    feed.innerHTML = '<div style="padding:18px;color:var(--text-muted);font-size:12px;">No live reasoning events yet. Start or refresh a scan to populate this stream.</div>';
+                } else {
+                    feed.innerHTML = events.map(ev => {
+                        const color = ev.kind === 'task_failed' || ev.success === false ? '#ff6666'
+                            : ev.kind === 'tool_call' ? '#ffaa00'
+                            : ev.kind === 'tool_result' ? '#00aaff'
+                            : ev.kind === 'thinking' ? '#cfd6e6'
+                            : '#00ff88';
+                        return `
+                            <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.055);display:grid;grid-template-columns:76px 74px minmax(110px,180px) minmax(0,1fr);gap:10px;align-items:start;">
+                                <div style="font-size:10px;color:var(--text-muted);">${liveScanTime(ev.timestamp)}</div>
+                                <div style="font-size:10px;color:${color};font-weight:800;">${liveScanEscape(liveScanKindLabel(ev.kind))}</div>
+                                <div style="font-size:10px;color:var(--accent);overflow-wrap:anywhere;">${liveScanEscape(ev.callsign || ev.archetype || ev.operatorId || '-')}</div>
+                                <div style="min-width:0;">
+                                    <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;overflow-wrap:anywhere;">${liveScanEscape(ev.taskName || ev.toolName || '-')}</div>
+                                    <div style="font-size:12px;color:var(--text-primary);line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;">${liveScanEscape(ev.detail || '')}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+            }
+        }
+
+        setInterval(() => {
+            if (document.getElementById('page-live-scan')?.classList.contains('active')) {
+                window.refreshLiveScanPage?.();
+            }
+        }, 3000);
+
         // Navigation
         function navigateTo(page) {
             document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === page));
             document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
-            const titles = { warroom: 'War Room', operators: 'Operatives', evidence: 'Evidence Vault', arsenal: 'Arsenal', terminal: 'Terminal', benchmarks: 'Benchmarks', configs: 'Config Library', 'ctf-range': 'CTF Range', general: 'Op Admiral', selfimprove: 'Self-Improvement', settings: 'Settings', about: 'About' };
+            const titles = { warroom: 'War Room', 'live-scan': 'Live Scan', operators: 'Operatives', evidence: 'Evidence Vault', arsenal: 'Arsenal', terminal: 'Terminal', benchmarks: 'Benchmarks', configs: 'Config Library', 'ctf-range': 'CTF Range', general: 'Op Admiral', selfimprove: 'Self-Improvement', settings: 'Settings', about: 'About' };
             document.getElementById('pageTitle').textContent = titles[page] || 'War Room';
             document.getElementById('sidebar').classList.remove('open');
+            if (page === 'live-scan') setTimeout(() => window.refreshLiveScanPage?.(), 50);
             if (page === 'operators' && typeof window.loadOperativesRoster === 'function') setTimeout(window.loadOperativesRoster, 80);
             if (page === 'evidence' && typeof window.hydrateFindings === 'function') setTimeout(window.hydrateFindings, 60);
             if (page === 'selfimprove' && typeof window.renderSelfImprove === 'function') setTimeout(window.renderSelfImprove, 60);
