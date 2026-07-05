@@ -32,9 +32,6 @@ import type { OperatorArchetype } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveContainedRepoPath, RepoPathError } from './recon/whitebox.js';
 import { redactCredential } from './evidence/index.js';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const execFileAsync = promisify(execFile);
 
