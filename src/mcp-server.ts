@@ -16,12 +16,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { mcpTargetDecision, mcpAllowlistFromEnv } from './mcp-guards.js';
+import { redactString } from './redact.js';
 
 const execFileAsync = promisify(execFile);
-
-// Strict target allowlist: hostnames, IPv4/IPv6, no shell metacharacters.
-// Anything outside this set is rejected before it can reach a subprocess.
-const TARGET_RE = /^[A-Za-z0-9._:-]+$/;
 
 // =============================================================================
 // COMPREHENSIVE PAYLOAD DATABASES
@@ -114,15 +112,16 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'security_recon': {
       const { target, scan_type = 'quick' } = args as any;
 
-      // Validate the target BEFORE it reaches any subprocess. Only hostnames /
-      // IPv4 / IPv6 literals are permitted; shell metacharacters (';', '|',
-      // '&', '$', spaces, backticks, ...) are rejected here. Combined with the
-      // no-shell execFile call below, "evil.com; id" is refused and, even if it
-      // slipped through, would be passed as a single inert argv entry.
-      if (typeof target !== 'string' || !TARGET_RE.test(target)) {
+      // Authorize the target BEFORE it reaches any subprocess. Only hostnames / IPv4 / IPv6 literals
+      // are permitted (shell metacharacters and option-looking "-…" targets are rejected), AND a
+      // public target must be listed in T3MP3ST_MCP_ALLOWED_TARGETS — parity with the HTTP recon
+      // endpoint's approval gate — while local/lab targets stay frictionless. Combined with the
+      // no-shell execFile call below, a metacharacter target is refused and would be inert anyway.
+      const decision = mcpTargetDecision(target, mcpAllowlistFromEnv());
+      if (!decision.allowed) {
         return JSON.stringify({
-          error: 'Invalid target: only hostnames, IPv4/IPv6 addresses are allowed ([A-Za-z0-9._:-]).',
-          target: typeof target === 'string' ? target : String(target)
+          error: decision.reason,
+          target: typeof target === 'string' ? target : String(target),
         }, null, 2);
       }
 
@@ -157,12 +156,12 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         results: {
           dns: {
             success: dns.success,
-            records: dns.output.trim().split('\n').filter(Boolean)
+            records: redactString(dns.output).trim().split('\n').filter(Boolean)
           },
           ports: {
             success: ports.success,
-            output: ports.output,
-            error: ports.error
+            output: redactString(ports.output),
+            error: ports.error ? redactString(ports.error) : ports.error
           }
         },
         commands_executed: [
