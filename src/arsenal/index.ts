@@ -12,6 +12,7 @@ import * as net from 'net';
 import * as dns from 'dns';
 import * as tls from 'tls';
 import { ApprovalController, isGatedRisk, type ApprovalRequest } from './approval.js';
+import { isSensitiveFilePath } from './path-guard.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -112,15 +113,24 @@ export function hostFromTargetValue(v: unknown): string | null {
   return s.toLowerCase() || null;
 }
 
-function isLoopbackTargetHost(h: string): boolean {
+export function isLoopbackTargetHost(h: string): boolean {
   return h === 'localhost' || h === '::1' || /^127(?:\.\d{1,3}){3}$/.test(h);
 }
-function isPrivateTargetHost(h: string): boolean {
+export function isPrivateTargetHost(h: string): boolean {
   return /^10(?:\.\d{1,3}){3}$/.test(h)
     || /^192\.168(?:\.\d{1,3}){2}$/.test(h)
     || /^172\.(1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/.test(h)
     || /^169\.254(?:\.\d{1,3}){2}$/.test(h)          // link-local
     || /^(fc|fd)[0-9a-f]{2}:/i.test(h);              // IPv6 ULA
+}
+
+/** Cloud link-local / instance-metadata endpoints (IMDS). Never a legitimate IMPLICIT lab target —
+ *  AWS/GCP/Azure all serve credentials at 169.254.169.254, and the whole 169.254.0.0/16 link-local
+ *  block plus the IPv6 IMDS address are refused on the implicit-private path even under allowPrivate.
+ *  An operator who genuinely means to reach one must add it to allowedHosts explicitly. */
+export function isMetadataOrLinkLocalHost(h: string): boolean {
+  return /^169\.254(?:\.\d{1,3}){2}$/.test(h)   // 169.254.0.0/16 link-local (incl. IMDS 169.254.169.254)
+    || h === 'fd00:ec2::254';                    // AWS IMDSv6
 }
 
 /** The narrowest CIDR prefix that keeps a private/loopback host's whole block in scope — a wider
@@ -159,9 +169,11 @@ export function scopeViolation(scope: ArsenalScope | null, context: ToolContext)
     // sweep the entire internet past a scope authorizing only that base. Validate the range, not the
     // base. (adversarial-review CIDR mask-strip escape)
     let minMask: number;
-    if (scope.allowLoopback && isLoopbackTargetHost(h)) minMask = 8;              // 127/8, ::1
-    else if (scope.allowPrivate && isPrivateTargetHost(h)) minMask = privateBlockMinMask(h);
-    else if (allow.some(a => a === h || h.endsWith('.' + a))) minMask = 32;        // exact-allowed host → only /32
+    if (allow.some(a => a === h || h.endsWith('.' + a))) minMask = 32;             // exact-allowed host → only /32
+    else if (scope.allowLoopback && isLoopbackTargetHost(h)) minMask = 8;          // 127/8, ::1
+    // implicit private allowance never reaches IMDS / link-local — an explicit allowlist entry above
+    // is the only way in (checked first), so a metadata host that isn't authorized falls through to deny.
+    else if (scope.allowPrivate && isPrivateTargetHost(h) && !isMetadataOrLinkLocalHost(h)) minMask = privateBlockMinMask(h);
     else return h; // base host out of scope
     // treat a trailing "/N" as a CIDR mask ONLY on a bare host/ip (no scheme) — not a URL path segment.
     const cidr = !v.includes('://') && v.match(/^[^/]+\/(\d{1,3})$/);
@@ -191,6 +203,72 @@ function describeToolAction(toolName: string, context: ToolContext): string {
     .join(' ');
   const target = approvalTargetOf(context);
   return `${toolName}${summary ? ` (${summary})` : ''}${target ? ` → ${target}` : ''}`;
+}
+
+/** Max redirect hops scopedFetch follows before giving up (undici's default is 20; capped lower). */
+const SCOPED_FETCH_MAX_REDIRECTS = 10;
+
+/** Thrown by scopedFetch when a redirect points at a host outside the authorized egress scope. */
+export class ScopeRedirectError extends Error {}
+
+/**
+ * Decide a single redirect hop: resolve the `Location` against the current URL and re-validate the
+ * destination host against the SAME egress scope the initial request already passed. Returns the
+ * absolute next URL when in scope, or `{ blocked }` naming the out-of-scope host. `scope == null`
+ * (enforcement off / library mode) always allows — preserving the legacy follow behavior. Pure.
+ */
+export function resolveScopedRedirect(
+  scope: ArsenalScope | null | undefined,
+  currentUrl: string,
+  location: string,
+): { url: string } | { blocked: string } {
+  const next = new URL(location, currentUrl).toString();
+  const violation = scopeViolation(scope ?? null, { parameters: { url: next } });
+  return violation ? { blocked: violation } : { url: next };
+}
+
+/**
+ * fetch() that re-validates every redirect hop against the egress scope. The initial host is already
+ * gated by Arsenal.execute(); this closes the redirect bypass where an in-scope target 30x-es the
+ * request to an off-scope host and the tool transparently follows. Same-host http→https / trailing-
+ * slash redirects re-validate to the same in-scope host and are followed normally (zero regression);
+ * a cross-host off-scope hop throws ScopeRedirectError (surfaced by the handler's existing try/catch).
+ */
+export async function scopedFetch(
+  url: string,
+  scope: ArsenalScope | null | undefined,
+  init?: RequestInit,
+): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= SCOPED_FETCH_MAX_REDIRECTS; hop++) {
+    const resp = await fetch(current, { ...init, redirect: 'manual' });
+    const location = resp.status >= 300 && resp.status < 400 ? resp.headers.get('location') : null;
+    if (!location) return resp;
+    const decision = resolveScopedRedirect(scope, current, location);
+    if ('blocked' in decision) {
+      throw new ScopeRedirectError(
+        `SCOPE DENIED: redirect to '${decision.blocked}' is outside the authorized scope — not followed.`,
+      );
+    }
+    current = decision.url;
+  }
+  throw new ScopeRedirectError(`too many redirects (> ${SCOPED_FETCH_MAX_REDIRECTS})`);
+}
+
+/**
+ * Resolve the authoritative WHOIS server for a TLD. Registry egress is protocol-mandated
+ * infrastructure (like a DNS resolver), so it is intentionally NOT scope-checked against the target
+ * allowlist — the registry is by definition never the target. But a model controls the domain (hence
+ * the derived server), so an unknown/malformed TLD returns null and the handler reports a clean
+ * "unsupported TLD" error instead of blindly connecting to an arbitrary whois.nic.<x> host. The
+ * IANA-convention whois.nic.<tld> covers the many gTLDs/ccTLDs not in the hardcoded map.
+ */
+export function resolveWhoisServer(tld: string, servers: Record<string, string>): string | null {
+  if (servers[tld]) return servers[tld];
+  // Only a well-formed TLD becomes a whois.nic.<tld> connect: ASCII letters (2–24) or a punycode IDN
+  // TLD (xn--…). Anything else is not a registry TLD and must not be turned into a blind connect.
+  if (/^[a-z]{2,24}$/.test(tld) || /^xn--[a-z0-9]{2,59}$/.test(tld)) return `whois.nic.${tld}`;
+  return null;
 }
 
 export class Arsenal extends EventEmitter<ArsenalEvents> {
@@ -289,7 +367,26 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         this.emit('tool:error', { tool, error: new Error(denied.error) });
         return denied;
       }
+    } else if (SPICY_BUILTIN_TIERS[toolName] && !isGatedRisk(tool.riskTier)) {
+      // An ungated spicy built-in (the default posture for password_spray / sqli_scan / xss_scan /
+      // hash_crack) is NOT blocked, but a live credential / injection probe must never fire silently:
+      // always warn + audit so the action is seen even when the approval fail-safe doesn't fence it.
+      // Opting in with T3MP3ST_GATE_BUILTINS=1 stamps a riskTier and routes it through the gate above.
+      const request: ApprovalRequest = {
+        tool: toolName,
+        risk: SPICY_BUILTIN_TIERS[toolName],
+        operator: context.operator,
+        target: approvalTargetOf(context),
+        action: describeToolAction(toolName, context),
+      };
+      if (this.approval) this.approval.noteUngated(request);
+      // eslint-disable-next-line no-console
+      else console.warn(`⚠️  SPICY ACTION [${request.risk}] ${request.operator ? request.operator + ' → ' : ''}${request.action}`);
     }
+
+    // Expose the active egress scope to scope-aware handlers (scopedFetch) so they can re-validate
+    // redirect hops against the same allowlist the initial host already passed.
+    context.scope = this.scope;
 
     const execution: ToolExecution = {
       id: randomUUID(),
@@ -660,7 +757,13 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         'au': 'whois.auda.org.au',
       };
 
-      const whoisServer = whoisServers[tld] || `whois.nic.${tld}`;
+      const whoisServer = resolveWhoisServer(tld, whoisServers);
+      if (!whoisServer) {
+        return {
+          success: false,
+          error: `Unsupported or malformed TLD '.${tld}' — no known WHOIS registry server; refusing to connect to an arbitrary host.`,
+        };
+      }
 
       return new Promise((resolve) => {
         const socket = new net.Socket();
@@ -752,7 +855,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       const body = context.parameters.body as string | undefined;
 
       try {
-        const response = await fetch(url, {
+        const response = await scopedFetch(url, context.scope, {
           method,
           headers,
           body: body && method !== 'GET' ? body : undefined,
@@ -787,7 +890,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         'Permissions-Policy', 'Cross-Origin-Opener-Policy', 'Cross-Origin-Resource-Policy',
       ];
       try {
-        const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+        const response = await scopedFetch(url, context.scope, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
         const analysis = securityHeaders.map(h => {
           const value = response.headers.get(h);
           return `${h}: ${value ? `✓ ${value}` : '✗ Missing'}`;
@@ -895,7 +998,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await scopedFetch(url, context.scope, {
           signal: AbortSignal.timeout(10000),
         });
 
@@ -1022,7 +1125,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await scopedFetch(testUrl.toString(), context.scope, {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -1099,7 +1202,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       try {
         const baselineUrl = new URL(baseUrl);
         baselineUrl.searchParams.set(param, 'normalvalue');
-        const baselineResp = await fetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
+        const baselineResp = await scopedFetch(baselineUrl.toString(), context.scope, { signal: AbortSignal.timeout(5000) });
         const baselineBody = await baselineResp.text();
         baselineLength = baselineBody.length;
       } catch {
@@ -1111,7 +1214,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), { signal: AbortSignal.timeout(5000) });
+          const response = await scopedFetch(testUrl.toString(), context.scope, { signal: AbortSignal.timeout(5000) });
           const body = await response.text();
           const bodyLower = body.toLowerCase();
 
@@ -1605,7 +1708,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       try {
         const robotsUrl = `${baseUrl}/robots.txt`;
-        const response = await fetch(robotsUrl, {
+        const response = await scopedFetch(robotsUrl, context.scope, {
           signal: AbortSignal.timeout(10000),
         });
 
@@ -1766,7 +1869,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       try {
         // Fetch main page
-        const response = await fetch(url, {
+        const response = await scopedFetch(url, context.scope, {
           signal: AbortSignal.timeout(10000),
         });
         const headers = Object.fromEntries(response.headers.entries());
@@ -1994,7 +2097,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await scopedFetch(url, context.scope, {
           method: 'GET',
           signal: AbortSignal.timeout(10000),
         });
@@ -2231,7 +2334,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       // First try OPTIONS to see if Allow header is returned
       let optionsAllow: string | null = null;
       try {
-        const optResp = await fetch(url, {
+        const optResp = await scopedFetch(url, context.scope, {
           method: 'OPTIONS',
           signal: AbortSignal.timeout(5000),
         });
@@ -2332,7 +2435,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       for (const test of testOrigins) {
         try {
-          const response = await fetch(url, {
+          const response = await scopedFetch(url, context.scope, {
             method: 'GET',
             headers: { 'Origin': test.origin },
             signal: AbortSignal.timeout(5000),
@@ -2613,7 +2716,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       try {
         const baselineUrl = new URL(baseUrl);
         baselineUrl.searchParams.set(param, 'nonexistent_file_xyz');
-        const baseResp = await fetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
+        const baseResp = await scopedFetch(baselineUrl.toString(), context.scope, { signal: AbortSignal.timeout(5000) });
         const baseBody = await baseResp.text();
         baselineLength = baseBody.length;
       } catch {
@@ -2625,7 +2728,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await scopedFetch(testUrl.toString(), context.scope, {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -2727,7 +2830,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await scopedFetch(testUrl.toString(), context.scope, {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -2803,7 +2906,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await scopedFetch(url, context.scope, {
           method: 'GET',
           signal: AbortSignal.timeout(10000),
         });
@@ -2908,14 +3011,13 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
         `  ${cve.id} (CVSS: ${cve.cvss})\n    ${cve.description}`
       ).join('\n\n');
 
+      // Reference lookup, not a target probe — return the CVE list as output only and emit NO
+      // finding. A finding here would carry tool-output evidence and be stamped a "verified" critical
+      // attributed to the mission target, despite reflecting nothing about that target. The output
+      // already lists each CVE with its CVSS, so the model can still reason over the criticals.
       return {
         success: true,
         output: `CVE Lookup for "${query}":\nFound ${matches.length} matching CVE(s):\n\n${output}`,
-        findings: matches.filter(m => m.cvss >= 9.0).length > 0 ? [{
-          title: 'Critical CVEs Found',
-          severity: 'critical' as const,
-          details: `Found ${matches.filter(m => m.cvss >= 9.0).length} critical CVEs (CVSS >= 9.0): ${matches.filter(m => m.cvss >= 9.0).map(m => m.id).join(', ')}`,
-        }] : undefined,
       };
     },
   },
@@ -3204,6 +3306,12 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const url = context.parameters.url as string;
       const wordlist = context.parameters.wordlist as string || '/usr/share/wordlists/dirb/common.txt';
       const mc = context.parameters.mc as string || '200,301,302,403';
+
+      // A wordlist path is LLM-controlled and its lines are sent to the target — refuse one that points
+      // at local keys/credentials so the tool can't be turned into a file-exfiltration primitive.
+      if (isSensitiveFilePath(wordlist)) {
+        return { success: false, error: `Refused: wordlist path '${wordlist}' resolves to sensitive local material (keys/credentials) — its contents would be sent to the target.` };
+      }
 
       const args = ['-u', url, '-w', wordlist, '-mc', mc, '-o', '/dev/stdout', '-of', 'json', '-s'];
       const result = await runSubprocess('ffuf', args, { timeout: 120000 });

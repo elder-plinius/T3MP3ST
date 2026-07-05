@@ -20,6 +20,7 @@
 
 import type { AdapterToolDeps } from './adapter-tools.js';
 import type { CustomTool, ToolContext, ToolResult } from '../types/index.js';
+import { isSensitiveFilePath } from './path-guard.js';
 
 const str = (v: unknown): string | undefined =>
   typeof v === 'string' && v.trim() ? v.trim() : undefined;
@@ -175,6 +176,11 @@ export function createHydraTool(deps: AdapterToolDeps): CustomTool {
     // Refuse option-looking credential values that hydra would reparse as its own flags.
     for (const [label, val] of [['user', user], ['password', password], ['userlist', userlist], ['passlist', passlist]] as const) {
       if (val && optionLooking(val)) return { success: false, error: `hydra: refusing option-looking ${label} '${val}'.` };
+    }
+    // A user/pass LIST path is LLM-controlled and hydra reads it and sends each line to the target —
+    // refuse one that points at local keys/credentials so it can't become a file-exfiltration primitive.
+    for (const [label, val] of [['userlist', userlist], ['passlist', passlist]] as const) {
+      if (val && isSensitiveFilePath(val)) return { success: false, error: `hydra: refusing ${label} '${val}' — resolves to sensitive local material (keys/credentials).` };
     }
     if (deps.scopeOk && !deps.scopeOk(target)) {
       return { success: false, error: `SCOPE DENIED: target '${target}' is not in the authorized scope — hydra refused before execution.` };
