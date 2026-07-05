@@ -274,6 +274,14 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   /** Shared pack board (Phase-2). Attached only when swarm coordination is on; absent = solo baseline. */
   private board?: PackBoard;
   private cooldownTimer: NodeJS.Timeout | null = null;
+  /** Resolver for the in-flight cooldown Promise (see applyCooldown). Hoisted so an interruption
+   *  (abort/burn/exfiltrate) that clears the timer can also settle the awaiting promise, instead of
+   *  leaking a permanently-pending assignTask. */
+  private cooldownResolve: (() => void) | null = null;
+  /** Monotonic dispatch generation, bumped when a dispatch is reaped (abortActiveTask). A late-settling
+   *  assignTask compares the epoch it started with and skips shared-state mutations if it no longer
+   *  matches — the operator has since been re-dispatched a new task. */
+  private dispatchEpoch = 0;
   private findings: Finding[] = [];
   private credentials: Credential[] = [];
   /** White-box source excerpt (security-prioritized), set by TempestCommand.setWhiteboxSource */
@@ -336,10 +344,16 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   /**
    * Assign a task to the operator
    */
-  async assignTask(task: Task, target?: Target): Promise<TaskResult> {
+  async assignTask(task: Task, target?: Target, inheritedEpoch?: number): Promise<TaskResult> {
     if (!this.isAvailable()) {
       throw new Error(`Operator ${this.callsign} is not available (status: ${this._state.status})`);
     }
+
+    // Capture the dispatch generation at the OUTERMOST call; decompose subtasks inherit it, so the whole
+    // chain is tied to one dispatch. If this settle finds the epoch no longer matches, the dispatch was
+    // reaped (abortActiveTask) and the operator may already own a newer task — we must not touch shared
+    // state. (T-10 late-settle race.)
+    const myEpoch = inheritedEpoch ?? this.dispatchEpoch;
 
     this.setStatus('tasked');
     this._state.currentTask = task.id;
@@ -351,6 +365,12 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       this.setStatus('executing');
       const result = await this.executeTask(task, target);
 
+      if (this.dispatchEpoch !== myEpoch) {
+        // Orphaned settle — return our result without touching shared operator state (no double count,
+        // no wiping the new task's currentTask, no forcing an unexpected cooldown).
+        return result;
+      }
+
       this._state.completedTasks++;
       this._state.currentTask = null;
 
@@ -361,10 +381,15 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
 
       return result;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      if (this.dispatchEpoch !== myEpoch) {
+        // Orphaned settle — surface the error to our caller but do not mutate shared operator state.
+        return { success: false, error: errorMessage };
+      }
+
       this._state.failedTasks++;
       this._state.currentTask = null;
-
-      const errorMessage = error instanceof Error ? error.message : String(error);
 
       // Decompose fallback: if we have an LLM and retries left, break the
       // failed task into smaller subtasks instead of giving up.
@@ -378,7 +403,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           const subResults: TaskResult[] = [];
           for (const sub of subtasks) {
             (sub as any)._decomposeAttempt = attempt + 1;
-            const r = await this.assignTask(sub, target);
+            const r = await this.assignTask(sub, target, myEpoch);
             subResults.push(r);
           }
 
@@ -639,12 +664,22 @@ Respond in a structured format.`;
     this.emit('cooldown:started', { durationMs: this.config.cooldownMs });
 
     await new Promise<void>(resolve => {
+      this.cooldownResolve = resolve;
       this.cooldownTimer = setTimeout(() => {
+        this.cooldownTimer = null;
+        this.cooldownResolve = null;
         this.setStatus('idle');
         this.emit('cooldown:ended');
         resolve();
       }, this.config.cooldownMs);
     });
+  }
+
+  /** Clear a pending cooldown timer AND settle its awaiting promise, so an interruption never leaks a
+   *  permanently-pending assignTask. Safe to call with no cooldown active (both guards no-op). */
+  private clearCooldown(): void {
+    if (this.cooldownTimer) { clearTimeout(this.cooldownTimer); this.cooldownTimer = null; }
+    if (this.cooldownResolve) { const resolve = this.cooldownResolve; this.cooldownResolve = null; resolve(); }
   }
 
   /**
@@ -665,10 +700,7 @@ Respond in a structured format.`;
    * Burn the operator (mark as compromised)
    */
   burn(): void {
-    if (this.cooldownTimer) {
-      clearTimeout(this.cooldownTimer);
-      this.cooldownTimer = null;
-    }
+    this.clearCooldown();
     this.setStatus('burned');
   }
 
@@ -676,10 +708,7 @@ Respond in a structured format.`;
    * Exfiltrate the operator (successful extraction)
    */
   exfiltrate(): void {
-    if (this.cooldownTimer) {
-      clearTimeout(this.cooldownTimer);
-      this.cooldownTimer = null;
-    }
+    this.clearCooldown();
     this.setStatus('exfiltrated');
   }
 
@@ -706,10 +735,10 @@ Respond in a structured format.`;
     if (this._state.status === 'idle' || this._state.status === 'burned' || this._state.status === 'exfiltrated') {
       return;
     }
-    if (this.cooldownTimer) {
-      clearTimeout(this.cooldownTimer);
-      this.cooldownTimer = null;
-    }
+    this.clearCooldown();
+    // Bump the dispatch generation so the reaped dispatch's late settle (if the hung promise ever
+    // resolves) skips its shared-state mutations instead of stomping the operator's next task.
+    this.dispatchEpoch++;
     this._state.failedTasks++;
     this._state.currentTask = null;
     this._state.lastActivityTime = Date.now();
