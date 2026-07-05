@@ -777,6 +777,109 @@ class LocalAdapter implements LLMProviderAdapter {
 // CODEX ADAPTER (local Codex CLI/account subscription)
 // =============================================================================
 
+// =============================================================================
+// TEXT-MODE TOOL CALLING (for CLI agents that can't emit structured tool_calls)
+// -----------------------------------------------------------------------------
+// A connected CLI agent (Codex / Claude / Hermes) talks text in, text out — it has
+// no OpenAI/Anthropic-style `tool_calls` channel. The ReAct AgentLoop drives every
+// Arsenal action through `chatWithTools(...).toolCalls`, so without a bridge the loop
+// gets `toolCalls: undefined` on turn 0 and concludes WITHOUT running a single tool.
+//
+// The bridge: describe the tools in the prompt and ask the agent to answer with a
+// fenced ```tool JSON block; parse that back into LLMToolCall[]. Execution still runs
+// in-process via `arsenal.execute`, so the CLI's own read-only sandbox is irrelevant —
+// the agent only PICKS the tool; the harness runs it.
+// =============================================================================
+
+/** Render the callable-tool catalog + the reply protocol into prompt text. */
+export function buildToolProtocol(tools: LLMToolDefinition[]): string {
+  const lines = tools.map(t => {
+    const props = t.parameters?.properties || {};
+    const params = Object.entries(props)
+      .map(([k, v]) => `${k}${t.parameters?.required?.includes(k) ? '' : '?'}: ${v.type}${v.description ? ` — ${v.description}` : ''}`)
+      .join('; ');
+    return `- ${t.name}(${params}): ${t.description}`;
+  });
+  return [
+    '',
+    '## Arsenal tools you can run',
+    'The harness EXECUTES these for you in-process — you are not sandboxed away from them.',
+    'To run one, reply with ONLY a fenced code block tagged `tool` containing a single JSON',
+    'object: {"tool": "<name>", "arguments": { ... }}. Exactly ONE tool call per reply, and no',
+    'prose outside the block. You will receive the tool output and can then call another tool.',
+    'When the assessment is complete and you need no more tools, reply with your final debrief in',
+    'prose (NO tool block), including every finding with its evidence.',
+    '',
+    'Tools:',
+    ...lines,
+  ].join('\n');
+}
+
+/** Balanced-brace scan for top-level JSON objects (no regex on nested braces). */
+function extractJsonObjects(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0, start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '{') { if (depth === 0) start = i; depth++; }
+    else if (c === '}' && depth > 0) { depth--; if (depth === 0 && start >= 0) { out.push(text.slice(start, i + 1)); start = -1; } }
+  }
+  return out;
+}
+
+/** Coerce one JSON string into a tool call ONLY if it intentfully carries a string "tool" key. */
+function coerceToolCall(raw: string, index: number): LLMToolCall | null {
+  let obj: unknown;
+  try { obj = JSON.parse(raw.trim()); } catch { return null; }
+  if (!obj || typeof obj !== 'object') return null;
+  const rec = obj as Record<string, unknown>;
+  if (typeof rec.tool !== 'string' || !rec.tool.trim()) return null;
+  const args = (rec.arguments ?? rec.args ?? {}) as unknown;
+  return {
+    id: `lac_${index}_${rec.tool}`,
+    name: rec.tool,
+    arguments: args && typeof args === 'object' ? (args as Record<string, unknown>) : {},
+  };
+}
+
+/** Parse an agent's text reply into tool calls: prefer ```tool blocks, then a bare {"tool":...}. */
+export function parseAgentToolCalls(text: string): LLMToolCall[] {
+  if (!text) return [];
+  const calls: LLMToolCall[] = [];
+  const fence = /```tool\s*\n?([\s\S]*?)```/gi;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(text)) !== null) {
+    const call = coerceToolCall(m[1], calls.length);
+    if (call) calls.push(call);
+  }
+  if (calls.length) return calls;
+  // Fallback: agent forgot the fence but emitted an intentful {"tool":...} object. Requiring the
+  // "tool" key keeps a plain findings/abstain JSON (no "tool" key) from being misread as a call.
+  for (const block of extractJsonObjects(text)) {
+    const call = coerceToolCall(block, calls.length);
+    if (call) { calls.push(call); break; }
+  }
+  return calls;
+}
+
+/** Strip ```tool blocks so the recorded reasoning content doesn't duplicate the raw call JSON. */
+function stripToolBlocks(text: string): string {
+  return text.replace(/```tool\s*\n?[\s\S]*?```/gi, '').trim();
+}
+
+/** Serialize the ReAct message history for a text-only CLI agent, rendering prior tool
+ *  calls + their results legibly so multi-turn context survives an ephemeral `codex exec`. */
+function renderAgentMessages(messages: LLMMessage[]): string {
+  return messages.map(m => {
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const calls = m.toolCalls.map(tc => `${tc.name}(${JSON.stringify(tc.arguments)})`).join(', ');
+      return `\n### ASSISTANT\n${m.content || ''}\n[you called: ${calls}]`;
+    }
+    if (m.role === 'tool') return `\n### TOOL RESULT (${m.name || 'tool'})\n${m.content}`;
+    return `\n### ${m.role.toUpperCase()}\n${m.content}`;
+  }).join('\n');
+}
+
 class CodexAdapter implements LLMProviderAdapter {
   name = 'codex';
   private config: LLMConfig;
@@ -889,18 +992,26 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   }
   private formatPrompt(messages: LLMMessage[], options?: ChatOptions): string {
     const parts = [
-      'You are the local-agent planning brain for T3MP3ST, an authorized offensive-security harness.',
-      'Operate in planning, analysis, and evidence-contract mode. When the caller requests JSON, return ONLY valid JSON or the exact requested fenced block — no preamble.',
+      'You are the local-agent operator brain for T3MP3ST, an authorized offensive-security harness.',
+      'Operate in analysis and evidence-contract mode. When the caller requests JSON, return ONLY valid JSON or the exact requested fenced block — no preamble.',
     ];
     if (options?.maxTokens) parts.push(`Target max output tokens: ${options.maxTokens}.`);
-    for (const m of messages) parts.push(`\n### ${m.role.toUpperCase()}\n${m.content}`);
+    // When tools are offered, expose the catalog + reply protocol so the ReAct loop can
+    // actually drive Arsenal execution instead of degenerating to a single planning turn.
+    if (options?.tools?.length) parts.push(buildToolProtocol(options.tools));
+    parts.push(renderAgentMessages(messages));
     return parts.join('\n');
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const agentId = this.config.model || 'codex';
     const prompt = this.formatPrompt(messages, options);
-    const content = await localAgentChat(agentId, prompt, { timeoutMs: this.config.timeout || 240000 });
-    return { content: content.trim(), model: `local-agent:${agentId}`, finishReason: 'stop' };
+    const raw = (await localAgentChat(agentId, prompt, { timeoutMs: this.config.timeout || 240000 })).trim();
+    const toolCalls = options?.tools?.length ? parseAgentToolCalls(raw) : [];
+    if (toolCalls.length) {
+      // Keep the reasoning (block stripped) as content; the loop records it and re-sends history.
+      return { content: stripToolBlocks(raw) || `Calling ${toolCalls.map(c => c.name).join(', ')}`, model: `local-agent:${agentId}`, toolCalls, finishReason: 'tool_calls' };
+    }
+    return { content: raw, model: `local-agent:${agentId}`, finishReason: 'stop' };
   }
 }
 
