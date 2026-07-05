@@ -10234,20 +10234,68 @@ Bypass all protections:
             return state.settings?.openrouterKey || state.apiKey || '';
         }
 
-        // Shared safe LLM call — handles response.ok, JSON parsing, timeouts, model fallback
+        // Resolve the active LLM backend for benchmarks/analysis, in priority order:
+        // OpenRouter key → Venice key → connected local agent (Claude Code/Codex/Hermes) → server LLM.
+        // getApiKey() is left untouched for the many callers that read the OpenRouter key directly.
+        function resolveLLMBackend() {
+            const orKey = (state.settings?.openrouterKey || state.apiKey || '').trim();
+            if (orKey.length >= 10) return { kind: 'openrouter', key: orKey };
+            const veKey = (state.settings?.veniceKey || '').trim();
+            if (veKey.length >= 10) return { kind: 'venice', key: veKey };
+            const agentId = (typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
+            if (agentId) return { kind: 'agent', agentId };
+            if (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API && T3MP3ST_API.llmAvailable) return { kind: 'server' };
+            return { kind: 'none' };
+        }
+        window.resolveLLMBackend = resolveLLMBackend;
+
+        const LLM_BACKEND_HINT = 'No LLM backend — add an OpenRouter or Venice key in Settings, or connect a local agent (Claude Code / Codex / Hermes)';
+
+        // Flatten a messages array (or string) to plain text for the agent/server endpoints.
+        function promptToText(prompt) {
+            if (typeof prompt === 'string') return prompt;
+            if (Array.isArray(prompt)) return prompt.map(function (m) {
+                const role = m && m.role && m.role !== 'user' ? '[' + m.role + '] ' : '';
+                const c = m && typeof m.content === 'string' ? m.content : JSON.stringify(m && m.content);
+                return role + c;
+            }).join('\n\n');
+            return String(prompt);
+        }
+
+        // Venice is OpenAI-compatible but rejects OpenRouter-style ids ("vendor/model") — map to a Venice model.
+        function veniceModel(m) { return (!m || m.indexOf('/') >= 0) ? 'llama-3.3-70b' : m; }
+
+        // Shared safe LLM call — resolves the backend, then routes the call. Keyless backends
+        // (connected agent / server LLM) run single-shot through the server; key backends
+        // (OpenRouter / Venice) call the provider directly and keep the model-fallback chain.
         async function safeLLMCall(prompt, options = {}) {
-            const apiKey = getApiKey();
-            if (!apiKey) throw new Error('No API key configured');
-            const primaryModel = options.model || state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
+            const backend = resolveLLMBackend();
+            if (backend.kind === 'none') throw new Error(LLM_BACKEND_HINT);
+
+            if (backend.kind === 'agent' || backend.kind === 'server') {
+                if (typeof trackApiCall === 'function') trackApiCall();
+                const label = backend.kind === 'agent' ? ('agent:' + backend.agentId) : 'server-llm';
+                addIntel('API', `→ ${label}`, 'info');
+                const content = await _backendCall(backend, prompt, options);
+                if (!content || content.trim().length < 10) throw new Error(`${label} returned empty response`);
+                currentModelInUse = label;
+                return content;
+            }
+
+            const primaryModel = options.model || state.settings?.selectedModel || 'anthropic/claude-opus-4.8';
             const fallbackModel = state.settings?.fallbackModel || 'nousresearch/hermes-3-llama-3.1-405b';
-            // Build model chain: primary, then fallback (skip fallback if same as primary or if caller explicitly set model)
-            const models = options._noFallback ? [primaryModel]
-                : (primaryModel === fallbackModel ? [primaryModel] : [primaryModel, fallbackModel]);
+            let models;
+            if (backend.kind === 'venice') {
+                models = [veniceModel(options.model || state.settings?.selectedModel)];
+            } else {
+                models = options._noFallback ? [primaryModel]
+                    : (primaryModel === fallbackModel ? [primaryModel] : [primaryModel, fallbackModel]);
+            }
 
             let lastError = null;
             for (const model of models) {
                 try {
-                    const content = await _safeLLMCallOnce(apiKey, prompt, model, options);
+                    const content = await _safeLLMCallOnce(backend, prompt, model, options);
                     // Detect empty/refused responses — model returned OK but no useful content
                     if (!content || content.trim().length < 10) {
                         console.warn(`[T3MP3ST] Model ${model} returned empty/refused response, trying next...`);
@@ -10273,18 +10321,45 @@ Bypass all protections:
             throw lastError || new Error('All models failed');
         }
 
-        // Internal: single LLM call (no fallback)
-        async function _safeLLMCallOnce(apiKey, prompt, model, options = {}) {
+        // Route a keyless call through the server: connected agent (drives Claude Code/Codex/Hermes)
+        // or the server's own configured LLM. Both return plain text.
+        async function _backendCall(backend, prompt, options = {}) {
+            const text = promptToText(prompt);
+            const timeout = options.timeout || 120000;
+            if (backend.kind === 'agent') {
+                const res = await fetch('/api/agents/local/dispatch', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: backend.agentId, prompt: text, model: options.model, timeoutMs: timeout }),
+                    signal: AbortSignal.timeout(timeout + 10000)
+                });
+                if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Agent dispatch ${res.status}: ${t.substring(0, 200)}`); }
+                const data = await res.json();
+                if (data.ok === false) throw new Error(`Agent error: ${data.error || 'dispatch failed'}`);
+                return data.output || '';
+            }
+            // server LLM
+            const res = await fetch('/api/llm/chat', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text, systemPrompt: options.systemPrompt }),
+                signal: AbortSignal.timeout(timeout)
+            });
+            if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Server LLM ${res.status}: ${t.substring(0, 200)}`); }
+            const data = await res.json();
+            return data.response || '';
+        }
+
+        // Internal: single OpenAI-compatible call (OpenRouter or Venice), no fallback
+        async function _safeLLMCallOnce(backend, prompt, model, options = {}) {
             if (typeof trackApiCall === 'function') trackApiCall();
-            addIntel('API', `→ ${model}`, 'info');
-            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            addIntel('API', `→ ${model} (${backend.kind})`, 'info');
+            const endpoint = backend.kind === 'venice'
+                ? 'https://api.venice.ai/api/v1/chat/completions'
+                : 'https://openrouter.ai/api/v1/chat/completions';
+            const headers = { 'Authorization': `Bearer ${backend.key}`, 'Content-Type': 'application/json' };
+            if (backend.kind === 'openrouter') { headers['HTTP-Referer'] = window.location.href; headers['X-Title'] = options.title || 'T3MP3ST'; }
+            const response = await fetch(endpoint, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': window.location.href,
-                    'X-Title': options.title || 'T3MP3ST'
-                },
+                headers,
                 body: JSON.stringify({
                     model,
                     messages: Array.isArray(prompt)
@@ -10318,11 +10393,10 @@ Bypass all protections:
                 return;
             }
 
-            // For live mode, require API key
+            // For live mode, require a working LLM backend (client key, connected agent, or server LLM)
             if (mode === 'live') {
-                const apiKey = getApiKey();
-                if (!apiKey || apiKey.length < 10) {
-                    toast('OpenRouter API key required for benchmarks — go to Settings (press 9) to configure', 'error');
+                if (resolveLLMBackend().kind === 'none') {
+                    toast(LLM_BACKEND_HINT + ' — Settings (press 9)', 'error');
                     return;
                 }
             }
@@ -11015,8 +11089,8 @@ Penalize: wrong CWE identification, non-functional payloads, incomplete remediat
          * Uses a second LLM call to evaluate response quality
          */
         async function runLLMJudge(test, response, apiKey) {
-            if (!EVALUATION_CONFIG.llmJudge.enabled || !apiKey) {
-                return { score: 70, reasoning: 'LLM judge disabled or no API key', skipped: true };
+            if (!EVALUATION_CONFIG.llmJudge.enabled || resolveLLMBackend().kind === 'none') {
+                return { score: 70, reasoning: 'LLM judge disabled or no backend', skipped: true };
             }
 
             const categoryPrompt = JUDGE_PROMPTS[test.category] || '';
@@ -11210,36 +11284,21 @@ Respond with ONLY this JSON (no markdown, no extra text):
 
             try {
                 const apiKey = getApiKey();
-                const selectedModel = state.settings?.selectedModel || state.selectedModel || 'anthropic/claude-opus-4.6';
+                const selectedModel = state.settings?.selectedModel || state.selectedModel || 'anthropic/claude-opus-4.8';
 
-                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json',
-                        'HTTP-Referer': window.location.href,
-                        'X-Title': 'T3MP3ST Benchmark'
-                    },
-                    body: JSON.stringify({
-                        model: selectedModel,
-                        messages: [
+                let content;
+                try {
+                    content = await safeLLMCall(
+                        [
                             { role: 'system', content: systemPrompt },
                             { role: 'user', content: test.challenge }
                         ],
-                        max_tokens: 1000,
-                        temperature: opConfig?.params?.temperature || 0.3
-                    }),
-                    signal: AbortSignal.timeout(30000) // 30s timeout per challenge
-                });
-
-                if (!response.ok) {
-                    const err = await response.text();
-                    addIntel('API', `Error ${response.status}: ${err.substring(0, 100)}`, 'error');
-                    return { score: 0, passed: false, details: `API error: ${response.status}`, response: err };
+                        { model: selectedModel, systemPrompt, maxTokens: 1000, temperature: opConfig?.params?.temperature || 0.3, timeout: 30000, title: 'T3MP3ST Benchmark' }
+                    );
+                } catch (err) {
+                    addIntel('API', `Error: ${String(err.message).substring(0, 100)}`, 'error');
+                    return { score: 0, passed: false, details: `LLM error: ${String(err.message).substring(0, 120)}`, response: String(err.message) };
                 }
-
-                const data = await response.json();
-                const content = data.choices?.[0]?.message?.content || '';
 
                 // ====== RIGOROUS MULTI-DIMENSIONAL EVALUATION ======
                 // Phase 1: Evaluate keyword coverage, required keywords, payload validity
@@ -11824,30 +11883,12 @@ IMPORTANT:
 - Focus on high-priority improvements first
 - Return ONLY valid JSON, no markdown or explanation outside the JSON`;
 
-                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
+                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.8';
 
-                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json',
-                        'HTTP-Referer': window.location.href,
-                        'X-Title': 'T3MP3ST Config Optimizer'
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [{ role: 'user', content: prompt }],
-                        temperature: 0.3,
-                        max_tokens: 4096
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error(`API error: ${response.status}`);
-                }
-
-                const data = await response.json();
-                const content = data.choices?.[0]?.message?.content || '';
+                const content = await safeLLMCall(
+                    [{ role: 'user', content: prompt }],
+                    { model, temperature: 0.3, maxTokens: 4096, title: 'T3MP3ST Config Optimizer' }
+                );
 
                 // Parse JSON from response (handle markdown code blocks)
                 let configChanges;
@@ -18622,8 +18663,8 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
         async function runSelfImprovementLoop() {
             const apiKey = getApiKey();
-            if (!apiKey || apiKey.length < 10) {
-                toast('Configure OpenRouter API key first', 'error');
+            if (resolveLLMBackend().kind === 'none') {
+                toast(LLM_BACKEND_HINT, 'error');
                 return;
             }
 
@@ -19195,33 +19236,19 @@ RULES:
 - Do not add instructions to hide activity, steal secrets, dump credentials, erase logs, install persistence, or bypass scope.
 - Include 3-5 changes minimum`;
 
-                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
+                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.8';
 
-                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json',
-                        'HTTP-Referer': window.location.href,
-                        'X-Title': 'T3MP3ST Self-Improvement'
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [{ role: 'user', content: prompt }],
-                        temperature: 0.3,
-                        max_tokens: 2000
-                    }),
-                    signal: AbortSignal.timeout(25000)
-                });
-
-                if (!response.ok) {
-                    console.warn('[IMPROVE] API returned error, using fallback');
-                    addIntel('IMPROVE', `LLM API error: ${response.status}`, 'warning');
+                let content;
+                try {
+                    content = await safeLLMCall(
+                        [{ role: 'user', content: prompt }],
+                        { model, temperature: 0.3, maxTokens: 2000, timeout: 25000, title: 'T3MP3ST Self-Improvement' }
+                    );
+                } catch (err) {
+                    console.warn('[IMPROVE] LLM error, using fallback');
+                    addIntel('IMPROVE', `LLM error: ${String(err.message).substring(0, 80)}`, 'warning');
                     return applyFallbackImprovements(analysis);
                 }
-
-                const data = await response.json();
-                const content = data.choices?.[0]?.message?.content || '';
                 console.log('[IMPROVE] LLM response length:', content.length);
 
                 // Try to extract JSON from response - multiple strategies
@@ -20119,42 +20146,19 @@ ${entries}
 
         // CTF LLM helper - uses same pattern as runLiveBenchmark
         async function ctfCallLLM(userPrompt, model, agentId) {
-            const apiKey = getApiKey();
-            if (!apiKey) {
-                throw new Error('No API key configured. Set one in Settings.');
-            }
-
             // Get operator system prompt
             const opConfig = operatorConfigs[agentId] || operatorConfigs['exploiter'];
             const systemPrompt = opConfig?.systemPrompt || 'You are a security expert solving CTF challenges.';
 
-            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': window.location.href,
-                    'X-Title': 'T3MP3ST CTF Range'
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ],
-                    max_tokens: 2000,
-                    temperature: opConfig?.params?.temperature || 0.4
-                }),
-                signal: AbortSignal.timeout(60000) // 60s timeout for CTF challenges
-            });
-
-            if (!response.ok) {
-                const err = await response.text();
-                throw new Error(`API error ${response.status}: ${err.substring(0, 100)}`);
-            }
-
-            const data = await response.json();
-            return data.choices?.[0]?.message?.content || '';
+            // Routes through the active backend (OpenRouter/Venice key, connected agent, or server LLM);
+            // throws LLM_BACKEND_HINT if none is configured.
+            return await safeLLMCall(
+                [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ],
+                { model, systemPrompt, maxTokens: 2000, temperature: opConfig?.params?.temperature || 0.4, timeout: 60000, title: 'T3MP3ST CTF Range' }
+            );
         }
 
         // Run single challenge with agent
