@@ -137,6 +137,10 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     if (bootstrapCall) {
       const toolStep = await this.executeTool(bootstrapCall, target, -1);
       steps.push(toolStep);
+      seenCalls.set(
+        `${bootstrapCall.name}:${JSON.stringify(bootstrapCall.arguments || {})}`,
+        String(toolStep.toolResult?.output || toolStep.toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160)
+      );
 
       if (toolStep.toolResult?.findings) {
         const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
@@ -158,27 +162,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       });
       messages.push({
         role: 'user',
-        content: 'Use the bootstrap observation above. If it is enough for a concise recon debrief, return the final JSON finding block now. Only call another listed tool if it will materially improve the evidence.',
+        content: 'Use the bootstrap observation above as your first tool observation. Continue through the normal ACTION CONTRACT: request another listed tool only if it will materially improve the evidence; otherwise provide the final recon debrief.',
       });
-
-      if (toolStep.toolResult?.success) {
-        const summary = [
-          'Local-agent recon bootstrap completed with tool-backed evidence.',
-          this.formatToolResult(toolStep.toolResult),
-        ].join('\n\n');
-        const result: AgentResult = {
-          success: true,
-          summary,
-          steps,
-          findings: allFindings,
-          iterations: 0,
-          tokensUsed,
-          durationMs: Date.now() - startTime,
-          hitLimit: false,
-        };
-        this.emit('agent:complete', result);
-        return result;
-      }
     }
 
     for (let i = 0; i < this.options.maxIterations; i++) {
