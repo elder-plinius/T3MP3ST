@@ -49,6 +49,10 @@ npm test
 npm run doctor
 ```
 
+For changes that affect claims, run modes, agent/tool execution, target scope,
+egress, redaction, reports, or benchmark artifacts, include a contribution
+receipt using [`docs/CONTRIBUTION_RECEIPTS.md`](docs/CONTRIBUTION_RECEIPTS.md).
+
 If the API is running:
 
 ```bash
