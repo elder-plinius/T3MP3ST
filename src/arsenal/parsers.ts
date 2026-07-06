@@ -18,12 +18,20 @@
  */
 
 import type { Severity, ToolFinding } from '../types/index.js';
+import { redactString } from '../redact.js';
 
 // ── small, defensive helpers ────────────────────────────────────────────────
 const SEVERITIES = new Set<Severity>(['critical', 'high', 'medium', 'low', 'info']);
+// Map the many scanner severity vocabularies (semgrep ERROR/WARNING/INFO, trivy/grype
+// CRITICAL…NEGLIGIBLE, npm-audit "moderate", …) onto the five canonical levels.
+const SEVERITY_ALIAS: Record<string, Severity> = {
+  error: 'high', warning: 'medium', warn: 'medium', inventory: 'info', experiment: 'info',
+  moderate: 'medium', negligible: 'info', unknown: 'info', none: 'info', informational: 'info',
+};
 const sev = (v: unknown, fallback: Severity = 'info'): Severity => {
   const s = String(v ?? '').trim().toLowerCase();
-  return SEVERITIES.has(s as Severity) ? (s as Severity) : fallback;
+  if (SEVERITIES.has(s as Severity)) return s as Severity;
+  return SEVERITY_ALIAS[s] ?? fallback;
 };
 const asObj = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -176,12 +184,123 @@ function parseKatana(raw: string): ToolFinding[] {
   }];
 }
 
+// ── semgrep scan --json : one finding per rule match (SAST) ──────────────────
+function parseSemgrep(raw: string): ToolFinding[] {
+  const results = ((): unknown[] => {
+    const r = asObj(jsonDoc(raw)).results;
+    return Array.isArray(r) ? r : [];
+  })();
+  const out: ToolFinding[] = [];
+  for (const item of results) {
+    const e = asObj(item);
+    const extra = asObj(e.extra);
+    const meta = asObj(extra.metadata);
+    const checkId = String(e.check_id ?? e.checkId ?? 'semgrep rule');
+    const path = String(e.path ?? '');
+    const line = num(asObj(e.start).line);
+    const where = path ? `${path}${line !== undefined ? `:${line}` : ''}` : '';
+    const f: ToolFinding = {
+      title: checkId,
+      severity: sev(extra.severity),
+      details: [where && `at ${where}`, extra.message && truncate(String(extra.message))].filter(Boolean).join(' | ') || checkId,
+    };
+    // semgrep CWE metadata is like ["CWE-89: SQL Injection"] — keep the CWE-NNN token.
+    const cwe = asStrArray(meta.cwe).map((c) => c.match(/CWE-\d+/i)?.[0] ?? '').filter(Boolean);
+    if (cwe.length) f.cwe = cwe.map((c) => c.toUpperCase());
+    const refs = asStrArray(meta.references);
+    if (refs.length) f.remediation = `refs: ${refs.slice(0, 3).join(', ')}`;
+    out.push(f);
+  }
+  return out;
+}
+
+// ── gitleaks detect --report-format json --redact : one finding per secret ────
+function parseGitleaks(raw: string): ToolFinding[] {
+  const arr: unknown[] = Array.isArray(jsonDoc(raw)) ? (jsonDoc(raw) as unknown[]) : [];
+  const out: ToolFinding[] = [];
+  for (const item of arr) {
+    const e = asObj(item);
+    const rule = String(e.RuleID ?? e.Description ?? 'secret');
+    const file = String(e.File ?? '');
+    const line = num(e.StartLine);
+    const where = file ? `${file}${line !== undefined ? `:${line}` : ''}` : '';
+    // Defense in depth: the adapter already runs gitleaks with --redact, but scrub the details
+    // through redactString anyway so a raw secret can NEVER reach a finding or the evidence vault.
+    const details = redactString([where && `at ${where}`, String(e.Description ?? '')].filter(Boolean).join(' | '));
+    out.push({ title: `secret: ${rule}`, severity: 'high', details: details || `secret: ${rule}` });
+  }
+  return out;
+}
+
+// ── trivy fs --format json : one finding per package vulnerability ────────────
+function parseTrivy(raw: string): ToolFinding[] {
+  const results = ((): unknown[] => {
+    const r = asObj(jsonDoc(raw)).Results;
+    return Array.isArray(r) ? r : [];
+  })();
+  const out: ToolFinding[] = [];
+  for (const res of results) {
+    const target = String(asObj(res).Target ?? '');
+    const vulns = asObj(res).Vulnerabilities;
+    if (!Array.isArray(vulns)) continue;
+    for (const item of vulns) {
+      const v = asObj(item);
+      const id = String(v.VulnerabilityID ?? '');
+      const pkg = String(v.PkgName ?? '');
+      const installed = String(v.InstalledVersion ?? '');
+      const fixed = String(v.FixedVersion ?? '');
+      const f: ToolFinding = {
+        title: String(v.Title || id || 'vulnerability'),
+        severity: sev(v.Severity),
+        details: [target && `target: ${target}`, pkg && `pkg: ${pkg}${installed ? ` ${installed}` : ''}`,
+          v.Description && truncate(String(v.Description), 200)].filter(Boolean).join(' | ') || id,
+      };
+      if (/^CVE-/i.test(id)) f.cve = [id];
+      const cwe = asStrArray(v.CweIDs);
+      if (cwe.length) f.cwe = cwe;
+      if (fixed) f.remediation = `upgrade ${pkg || 'package'} to ${fixed}`;
+      out.push(f);
+    }
+  }
+  return out;
+}
+
+// ── grype dir:. -o json : one finding per matched vulnerability ───────────────
+function parseGrype(raw: string): ToolFinding[] {
+  const matches = ((): unknown[] => {
+    const m = asObj(jsonDoc(raw)).matches;
+    return Array.isArray(m) ? m : [];
+  })();
+  const out: ToolFinding[] = [];
+  for (const item of matches) {
+    const m = asObj(item);
+    const vuln = asObj(m.vulnerability);
+    const art = asObj(m.artifact);
+    const id = String(vuln.id ?? '');
+    const name = String(art.name ?? '');
+    const version = String(art.version ?? '');
+    const f: ToolFinding = {
+      title: id || 'vulnerability',
+      severity: sev(vuln.severity),
+      details: [name && `pkg: ${name}${version ? ` ${version}` : ''}`,
+        vuln.description && truncate(String(vuln.description), 200)].filter(Boolean).join(' | ') || id,
+    };
+    if (/^CVE-/i.test(id)) f.cve = [id];
+    out.push(f);
+  }
+  return out;
+}
+
 const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   nuclei: parseNuclei,
   httpx: parseHttpx,
   dalfox: parseDalfox,
   ffuf: parseFfuf,
   katana: parseKatana,
+  semgrep: parseSemgrep,
+  gitleaks: parseGitleaks,
+  trivy: parseTrivy,
+  grype: parseGrype,
 };
 
 /** Adapter ids that have a structured output parser wired here. */

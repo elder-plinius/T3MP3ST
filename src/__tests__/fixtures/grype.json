@@ -1,0 +1,1 @@
+{"matches":[{"vulnerability":{"id":"CVE-2022-23529","severity":"High","description":"jsonwebtoken is vulnerable to signature verification bypass."},"artifact":{"name":"jsonwebtoken","version":"8.5.1","type":"npm"}}]}

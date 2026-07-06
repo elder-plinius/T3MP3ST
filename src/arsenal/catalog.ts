@@ -339,7 +339,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'sarif'],
     installHint: 'brew install semgrep or pipx install semgrep',
     commandHint: 'semgrep scan --config auto --json .',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Static analysis backbone for repository hardening.',
   },
   {
@@ -355,7 +355,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'sarif'],
     installHint: 'brew install gitleaks',
     commandHint: 'gitleaks detect --source . --report-format json --redact',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Secret detection must redact values before ledger insertion.',
   },
   {
@@ -387,7 +387,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'sarif'],
     installHint: 'brew install aquasecurity/trivy/trivy',
     commandHint: 'trivy fs --format json .',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Vulnerability and IaC scanner for repos and images.',
   },
   {
@@ -419,7 +419,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json'],
     installHint: 'brew install grype',
     commandHint: 'grype dir:. -o json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Pairs well with Syft SBOMs for dependency vulnerability triage.',
   },
   {
