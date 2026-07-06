@@ -1,0 +1,2 @@
+{"url":"https://target.example.com","status_code":200,"title":"Example Corp","tech":["Nginx","PHP","jQuery"],"webserver":"nginx"}
+{"url":"https://api.example.com","status_code":403,"title":"Forbidden"}

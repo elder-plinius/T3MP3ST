@@ -426,6 +426,7 @@ export interface ToolFinding {
   details: string;
   cvss?: number;
   cve?: string[];
+  cwe?: string[];
   remediation?: string;
   /**
    * How this finding was produced — the provenance flag the honesty gate keys on:

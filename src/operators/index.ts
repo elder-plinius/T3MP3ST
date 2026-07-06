@@ -445,6 +445,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           phase: task.phase as KillChainPhase,
           cvss: finding.cvss,
           cve: finding.cve,
+          cwe: finding.cwe,
           evidence: toolBacked
             ? [{
                 type: 'output',

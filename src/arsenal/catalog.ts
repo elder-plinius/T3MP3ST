@@ -179,7 +179,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['jsonl', 'text'],
     installHint: 'brew install projectdiscovery/tap/httpx',
     commandHint: 'httpx -u https://example.com -status-code -title -tech-detect -json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'HTTP probing and technology detection for discovered assets.',
   },
   {
@@ -211,7 +211,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['jsonl', 'text'],
     installHint: 'brew install projectdiscovery/tap/katana',
     commandHint: 'katana -u https://example.com -jsonl -silent',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Crawler for endpoint discovery and attack-surface mapping.',
   },
   {
@@ -307,7 +307,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'text'],
     installHint: 'brew install dalfox',
     commandHint: 'dalfox url https://example.com?q=test -o result.json --format json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'XSS validation adapter for scoped endpoints.',
   },
   {
