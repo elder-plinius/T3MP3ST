@@ -103,7 +103,47 @@ describe('parseToolOutput — honesty contract (never fabricate, never throw)', 
   });
 
   it('exposes exactly the wired parser ids', () => {
-    expect([...PARSED_TOOL_IDS].sort()).toEqual(['dalfox', 'ffuf', 'httpx', 'katana', 'nuclei']);
+    expect([...PARSED_TOOL_IDS].sort()).toEqual(
+      ['dalfox', 'ffuf', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'trivy'],
+    );
+  });
+});
+
+describe('parseToolOutput — source / supply-chain scanners', () => {
+  it('semgrep: one finding per rule match with mapped severity + CWE token', () => {
+    const f = parseToolOutput('semgrep', fixture('semgrep.json'));
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high'); // ERROR → high
+    expect(f[0].cwe).toEqual(['CWE-78']); // extracted from "CWE-78: OS Command Injection"
+    expect(f[0].details).toContain('app/run.py:42');
+  });
+
+  it('trivy: one finding per package vuln with CVE, CWE, and an upgrade remediation', () => {
+    const f = parseToolOutput('trivy', fixture('trivy.json'));
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].cve).toEqual(['CVE-2021-3749']);
+    expect(f[0].cwe).toEqual(['CWE-400']);
+    expect(f[0].remediation).toContain('0.21.2');
+    expect(f[0].details).toContain('axios');
+  });
+
+  it('grype: one finding per match with CVE + package coordinates', () => {
+    const f = parseToolOutput('grype', fixture('grype.json'));
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high'); // "High" → high
+    expect(f[0].cve).toEqual(['CVE-2022-23529']);
+    expect(f[0].details).toContain('jsonwebtoken');
+  });
+
+  it('gitleaks: one high finding per secret, and the raw secret is REDACTED from details', () => {
+    const f = parseToolOutput('gitleaks', fixture('gitleaks.json'));
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].details).toContain('config/prod.env:12');
+    // Defense in depth: the AWS key present in the raw report must never survive into the finding.
+    expect(f[0].details).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(f[0].details).toContain('[redacted]');
   });
 });
 
@@ -144,6 +184,8 @@ describe('end-to-end: a parsed finding passes the live provenance gate', () => {
     for (const [id, file] of [
       ['nuclei', 'nuclei.jsonl'], ['httpx', 'httpx.jsonl'], ['dalfox', 'dalfox.json'],
       ['ffuf', 'ffuf.json'], ['katana', 'katana.jsonl'],
+      ['semgrep', 'semgrep.json'], ['gitleaks', 'gitleaks.json'],
+      ['trivy', 'trivy.json'], ['grype', 'grype.json'],
     ] as const) {
       const raw = fixture(file);
       for (const tf of parseToolOutput(id, raw)) {
