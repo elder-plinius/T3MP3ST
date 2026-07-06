@@ -356,7 +356,25 @@ const CURL_TRANSPORT_OVERRIDE_FLAGS = new Set([
   '--unix-socket',
   '--abstract-unix-socket',
   '--interface',
+  '--url',
+  '--config',
+  '--next',
   '-x',
+  '-K',
+]);
+const CURL_VALUE_FLAGS = new Set([
+  '-A', '--user-agent',
+  '-b', '--cookie',
+  '-c', '--cookie-jar',
+  '-d', '--data', '--data-ascii', '--data-binary', '--data-raw', '--data-urlencode',
+  '-F', '--form',
+  '-H', '--header',
+  '-m', '--max-time',
+  '-o', '--output',
+  '-T', '--upload-file',
+  '-u', '--user',
+  '-X', '--request',
+  '--cacert', '--cert', '--connect-timeout', '--key', '--request-target', '--retry',
 ]);
 
 function findCurlTransportOverrideFlag(args: string[]): string | undefined {
@@ -365,8 +383,39 @@ function findCurlTransportOverrideFlag(args: string[]): string | undefined {
     const flag = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
     if (CURL_TRANSPORT_OVERRIDE_FLAGS.has(flag)) return flag;
     if (arg.startsWith('-x') && arg !== '-X' && arg.length > 2) return '-x';
+    if (arg.startsWith('-K') && arg.length > 2) return '-K';
   }
   return undefined;
+}
+
+function looksLikeCurlUrlOperand(arg: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\/\S+/i.test(arg)
+    || /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(arg)
+    || /^(?:localhost|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?:[/?#].*)?$/i.test(arg)
+    || /^\[[0-9a-f:]+\](?::\d+)?(?:[/?#].*)?$/i.test(arg);
+}
+
+function countCurlUrlOperands(args: string[]): number {
+  let count = 0;
+  let skipNext = false;
+  let endOfOptions = false;
+  for (const arg of args) {
+    if (!arg) continue;
+    if (skipNext) { skipNext = false; continue; }
+    if (!endOfOptions && arg === '--') { endOfOptions = true; continue; }
+    if (!endOfOptions && arg.startsWith('--')) {
+      const hasInlineValue = arg.includes('=');
+      const flag = hasInlineValue ? arg.slice(0, arg.indexOf('=')) : arg;
+      if (!hasInlineValue && CURL_VALUE_FLAGS.has(flag)) skipNext = true;
+      continue;
+    }
+    if (!endOfOptions && arg.startsWith('-')) {
+      if (arg.length === 2 && CURL_VALUE_FLAGS.has(arg)) skipNext = true;
+      continue;
+    }
+    if (looksLikeCurlUrlOperand(arg)) count += 1;
+  }
+  return count;
 }
 
 function parseCommand(command: string): ParsedCommand | { error: string } {
@@ -383,6 +432,9 @@ function parseCommand(command: string): ParsedCommand | { error: string } {
     const overrideFlag = findCurlTransportOverrideFlag(args);
     if (overrideFlag) {
       return { error: `curl flag ${overrideFlag} changes the effective network destination and is not allowed through /api/tools/execute.` };
+    }
+    if (countCurlUrlOperands(args) > 1) {
+      return { error: 'curl commands with multiple URL operands are not allowed through /api/tools/execute; submit one transfer per approved target.' };
     }
   }
   return { bin, args };

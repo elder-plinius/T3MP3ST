@@ -37,10 +37,25 @@ describe('local API authorization hardening invariants', () => {
   it('/api/tools/execute rejects curl flags that change the effective destination', () => {
     const parser = sourceBlock('const CURL_TRANSPORT_OVERRIDE_FLAGS', 'function inferCommandTarget');
 
-    for (const flag of ['--resolve', '--connect-to', '--proxy', '--preproxy', '--socks5', '--socks5-hostname', '--unix-socket', '--interface']) {
+    for (const flag of [
+      '--resolve',
+      '--connect-to',
+      '--proxy',
+      '--preproxy',
+      '--socks5',
+      '--socks5-hostname',
+      '--unix-socket',
+      '--interface',
+      '--url',
+      '--config',
+      '--next',
+      '-K',
+    ]) {
       expect(parser).toContain(`'${flag}'`);
     }
     expect(parser).toMatch(/findCurlTransportOverrideFlag\(args\)/);
+    expect(parser).toMatch(/countCurlUrlOperands\(args\)\s*>\s*1/);
+    expect(parser).toMatch(/multiple URL operands/);
     expect(parser).toMatch(/changes the effective network destination/);
   });
 
