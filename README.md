@@ -34,7 +34,7 @@ Three things set it apart:
 2. **Keyless.** The AI coding agent already on your machine is the backbone. No API keys, no second bill, no gatekeeper.
 3. **Honest about scope.** The [status table](#what-ships-today) marks exactly what's stable, experimental, or roadmap — because red-teaming shouldn't be a priesthood, and it damn sure shouldn't run on vibes.
 
-**Jump to** → [Quick start](#quick-start) · [What it hunts](#what-it-hunts) · [What ships today](#what-ships-today) · [Benchmarks](#benchmarks) · [Architecture](#architecture) · [Docs](#documentation)
+**Jump to** → [Quick start](#quick-start) · [Updating](#updating-from-upstream) · [What it hunts](#what-it-hunts) · [What ships today](#what-ships-today) · [Benchmarks](#benchmarks) · [Architecture](#architecture) · [Docs](#documentation)
 
 ## ⚠️ Authorized use only
 
@@ -99,6 +99,46 @@ npm run verify-claims             # re-derives every headline from committed JSO
 ```
 
 Library/SDK usage, the full HTTP API, and MCP setup live in [docs/](docs/).
+
+## Updating from upstream
+
+If you installed from a release tarball or copied the tree instead of tracking `git pull`, use the built-in updater to sync with [github.com/elder-plinius/T3MP3ST](https://github.com/elder-plinius/T3MP3ST) without losing local secrets or bench output. It shows a numbered plan, asks **y/N** before changing anything, then runs `npm install`.
+
+```bash
+npm run update          # interactive sync from upstream main
+npm run update:dry      # preview only — no git or npm changes
+npm run update:hard     # hard reset to upstream/main (still restores protected paths)
+```
+
+Works on Windows (PowerShell), macOS, Linux, and WSL. Requires **git** and **npm** on your PATH.
+
+### Protected paths (inside the repo)
+
+Before replacing files, the updater backs up anything on disk that matches [`scripts/update-protected.txt`](scripts/update-protected.txt), then restores it after sync. **Only paths that exist locally are affected** — if you never created them, nothing happens.
+
+| Path | Why it's protected |
+|---|---|
+| `.env`, `.env.*` | API keys and local env overrides. `!.env.example` is an exception — the template is **not** protected so upstream can update it. |
+| `.keys.local` | One-off key paste file loaded by bench scripts (e.g. `VENICE_API_KEY`) without touching `.env`. |
+| `.keys.bounty.json` | HackerOne / Bugcrowd / similar platform credentials. |
+| `bench/cybench/corpus-stage/` | Large cloned Cybench corpus (not redistributed; expensive to re-download). |
+| `bench/cybench/service-stage/`, `bench/cybench/challenges/` | Per-run Cybench Docker staging and challenge trees (regenerable, but slow to rebuild). |
+| `bench/xbow/stage/`, `bench/xbow/challenges/` | XBOW/XBEN challenge staging (large third-party trees). |
+| `bench/wild-hunt/` | Cold-hunt findings, PoCs, disclosure drafts, and campaign results — pre-coordination vuln material. |
+| `bench/decomposition-results/` | White-box decomposition run JSON (may contain unreported analysis). |
+| `bench/refusal-frontier/` | Refusal-boundary probe artifacts (raw model responses). |
+| `bench/nyu/` | Staged NYU CTF content from `nyu-prep.mjs`. |
+| `docs/disclosures/` | Generated vendor disclosure packages (`disclosure-gen` output). |
+
+Add your own patterns in `scripts/update-protected.local.txt` (optional local overlay; same glob syntax as the main manifest).
+
+### Never touched (outside the repo)
+
+These live outside the project tree — an update never reads or writes them:
+
+- `%APPDATA%\t3mp3st-nodejs\Config\config.json` (or the macOS/Linux `conf` store path) — saved by `npm run setup`
+- War Room browser **localStorage** on the War Room origin
+- Local agent auth (`~/.codex`, `%LOCALAPPDATA%\hermes`, etc.)
 
 ## What ships today
 
