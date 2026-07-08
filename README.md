@@ -129,6 +129,8 @@ Before replacing files, the updater backs up anything on disk that matches [`scr
 | `bench/refusal-frontier/` | Refusal-boundary probe artifacts (raw model responses). |
 | `bench/nyu/` | Staged NYU CTF content from `nyu-prep.mjs`. |
 | `docs/disclosures/` | Generated vendor disclosure packages (`disclosure-gen` output). |
+| `reports/` | Engagement and hunt reports (persistent output; same tree as Docker volume mounts in deployment setups). |
+| `evidence/` | PoCs, screenshots, and other finding evidence kept across updates. |
 
 Add your own patterns in `scripts/update-protected.local.txt` (optional local overlay; same glob syntax as the main manifest).
 

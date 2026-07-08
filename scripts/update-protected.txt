@@ -17,3 +17,5 @@ bench/decomposition-results/
 bench/refusal-frontier/
 bench/nyu/
 docs/disclosures/
+reports/
+evidence/

@@ -116,27 +116,87 @@ manifest="$backup/manifest.txt"
 protected_count=0
 protected_list="$(mktemp)"
 
+on_err() {
+  echo >&2
+  echo '[x] Update failed partway through.' >&2
+  if [[ -f "$manifest" && -s "$manifest" ]]; then
+    echo "    Local backup of protected files: $backup" >&2
+  fi
+}
+trap on_err ERR
+
 protect_patterns() {
   grep -v '^#' "$ROOT/scripts/update-protected.txt" | grep -v '^[[:space:]]*$' || true
   [[ -f "$ROOT/scripts/update-protected.local.txt" ]] && grep -v '^#' "$ROOT/scripts/update-protected.local.txt" | grep -v '^[[:space:]]*$' || true
 }
 
+path_matches_pattern() {
+  local rel="$1" pat="$2"
+  pat="${pat//\\//}"
+  rel="${rel//\\//}"
+
+  if [[ "$pat" == */ ]]; then
+    local prefix="${pat%/}"
+    [[ "$rel" == "$prefix" || "$rel" == "$prefix"/* ]]
+    return
+  fi
+
+  if [[ "$pat" == *[*?]* ]]; then
+    case "$rel" in
+      $pat) return 0 ;;
+    esac
+    return 1
+  fi
+
+  [[ "$rel" == "$pat" ]]
+}
+
+collect_positive_pattern() {
+  local pat="$1"
+  if [[ "$pat" == */ ]]; then
+    local rel="${pat%/}"
+    [[ -e "$ROOT/$rel" ]] || return 0
+    echo "$rel" >>"$protected_list"
+  elif [[ "$pat" == *'*'* ]]; then
+    find "$ROOT" -path "$ROOT/$pat" -print 2>/dev/null | while IFS= read -r hit; do
+      echo "${hit#"$ROOT/"}" >>"$protected_list"
+    done
+  else
+    [[ -e "$ROOT/$pat" ]] || return 0
+    echo "$pat" >>"$protected_list"
+  fi
+}
+
+apply_negation_patterns() {
+  local -a negations=()
+  while IFS= read -r pat; do
+    [[ "$pat" == !* ]] || continue
+    negations+=("${pat:1}")
+  done < <(protect_patterns)
+  [[ "${#negations[@]}" -eq 0 ]] && return 0
+
+  local filtered
+  filtered="$(mktemp)"
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    local skip=0 neg
+    for neg in "${negations[@]}"; do
+      if path_matches_pattern "$rel" "$neg"; then
+        skip=1
+        break
+      fi
+    done
+    [[ "$skip" -eq 0 ]] && echo "$rel" >>"$filtered"
+  done <"$protected_list"
+  mv "$filtered" "$protected_list"
+}
+
 collect_protected() {
   while IFS= read -r pat; do
     [[ "$pat" == !* ]] && continue
-    if [[ "$pat" == */ ]]; then
-      rel="${pat%/}"
-      [[ -e "$ROOT/$rel" ]] || continue
-      echo "$rel" >>"$protected_list"
-    elif [[ "$pat" == *'*'* ]]; then
-      find "$ROOT" -path "$ROOT/$pat" -print 2>/dev/null | while IFS= read -r hit; do
-        echo "${hit#"$ROOT/"}" >>"$protected_list"
-      done
-    else
-      [[ -e "$ROOT/$pat" ]] || continue
-      echo "$pat" >>"$protected_list"
-    fi
+    collect_positive_pattern "$pat"
   done < <(protect_patterns)
+  apply_negation_patterns
 }
 
 backup_protected() {
@@ -189,16 +249,14 @@ plan_line '-' '$HOME/.config or AppData t3mp3st config'
 plan_line '-' 'War Room browser localStorage'
 plan_line '-' 'Codex / Hermes local agent auth'
 
-[[ -d .git ]] || git init
-git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || git remote add "$UPSTREAM_REMOTE" "$UPSTREAM_URL"
-git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH" 2>&1 || true
-
 local_sha='(no commits yet)'
 upstream_sha='(unknown)'
 if git rev-parse HEAD >/dev/null 2>&1; then
   local_sha="$(git rev-parse --short HEAD 2>/dev/null || echo '(no commits yet)')"
 fi
-if git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" >/dev/null 2>&1; then
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  upstream_sha='(preview)'
+elif git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" >/dev/null 2>&1; then
   upstream_sha="$(git rev-parse --short "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH")"
 fi
 
@@ -241,7 +299,7 @@ if [[ "$FORCE" -eq 0 ]]; then
   echo
   printf 'Proceed with update? [y/N] '
   read -r ans
-  [[ "$ans" =~ ^[Yy]([Ee][Ss])?$ ]] || { echo '[!] Cancelled - no changes made.'; exit 0; }
+  [[ "$ans" =~ ^[Yy]([Ee][Ss])?$ ]] || { echo '[!] Cancelled - no changes made.'; rm -rf "$backup"; trap - ERR; exit 0; }
 fi
 
 STEP_TOTAL=2
@@ -260,8 +318,24 @@ fi
 
 start_step 'Syncing from upstream'
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo '  [*] [dry-run] would sync from upstream'
+  [[ -d .git ]] || echo '  [*] [dry-run] would run: git init'
+  if [[ -d .git ]] && ! git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
+    echo "  [*] [dry-run] would run: git remote add $UPSTREAM_REMOTE $UPSTREAM_URL"
+  fi
+  echo "  [*] [dry-run] would run: git fetch $UPSTREAM_REMOTE $UPSTREAM_BRANCH"
+  if [[ "$HARD" -eq 1 ]]; then
+    echo "  [*] [dry-run] would run: git reset --hard $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+  elif [[ "$commit_count" -eq 0 ]]; then
+    echo '  [*] [dry-run] would apply upstream snapshot (checkout upstream/main)'
+    echo "  [*] [dry-run] would run: git checkout -B $UPSTREAM_BRANCH $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+  else
+    echo "  [*] [dry-run] would run: git merge $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+  fi
 else
+  [[ -d .git ]] || git init
+  git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || git remote add "$UPSTREAM_REMOTE" "$UPSTREAM_URL"
+  git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH" 2>&1 || true
+
   if [[ "$HARD" -eq 1 ]]; then
     git reset --hard "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
   elif [[ "$commit_count" -eq 0 ]]; then
@@ -312,4 +386,5 @@ else
 fi
 echo
 
+trap - ERR
 [[ "$KEEP_BACKUP" -eq 1 ]] || rm -rf "$backup"
