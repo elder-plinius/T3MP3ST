@@ -3388,7 +3388,7 @@ export async function isToolAvailable(command: string): Promise<boolean> {
 export async function runSubprocess(
   command: string,
   args: string[],
-  options?: { timeout?: number; maxOutput?: number }
+  options?: { timeout?: number; maxOutput?: number; env?: NodeJS.ProcessEnv }
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const timeout = options?.timeout ?? 60000;
   const maxOutput = options?.maxOutput ?? 1024 * 1024; // 1MB
@@ -3397,6 +3397,7 @@ export async function runSubprocess(
     const { stdout, stderr } = await execFileAsync(command, args, {
       timeout,
       maxBuffer: maxOutput,
+      ...(options?.env ? { env: options.env } : {}),
     });
     return { stdout, stderr, exitCode: 0 };
   } catch (error: unknown) {
@@ -3911,11 +3912,14 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
 
   {
     name: 'git_clone_analyze',
-    description: 'Clone a git repository and enumerate its structure, languages, and CI/CD files',
+    description: 'Clone a git repository and enumerate its structure, languages, and CI/CD files. Supports authenticated repos via token, username/token, or SSH key.',
     category: 'code',
     parameters: [
-      { name: 'url', type: 'string', description: 'Repository URL (https://github.com/org/repo)', required: true },
+      { name: 'url', type: 'string', description: 'Repository URL (https://github.com/org/repo or git@github.com:org/repo.git)', required: true },
       { name: 'depth', type: 'number', description: 'Clone depth for history (default 50, use 0 for full)', required: false, default: 50 },
+      { name: 'token', type: 'string', description: 'Auth token/PAT for private repos — GitHub PAT, GitLab token, Azure DevOps PAT, Gitea token, Bitbucket app password', required: false },
+      { name: 'username', type: 'string', description: 'Username for token auth. Defaults: GitHub → token-only, GitLab → oauth2, Bitbucket → your Bitbucket username, Azure DevOps → any string. Only needed when the host requires user:token format.', required: false },
+      { name: 'ssh_key', type: 'string', description: 'SSH private key content (PEM/OpenSSH format) for git@ SSH URLs. Paste the full key including header/footer lines.', required: false },
     ],
     handler: async (context) => {
       if (!(await isToolAvailable('git'))) {
@@ -3929,24 +3933,82 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
         return { success: false, error: `git_clone_analyze does not handle local:// targets. Use local_code_scan with path="${url}" instead.` };
       }
 
+      const token = String(context.parameters.token || '').trim();
+      const username = String(context.parameters.username || '').trim();
+      const sshKey = String(context.parameters.ssh_key || '').trim();
+
+      // Build the authenticated clone URL (HTTPS) or SSH env.
+      // Slug always uses the clean URL so downstream tools (semgrep_scan, gitleaks_scan, etc.)
+      // can still resolve the clone path without knowing the credentials.
+      let cloneUrl = url;
+      let sshKeyPath: string | null = null;
+      const extraEnv: Record<string, string> = {};
+
+      if (token && !url.startsWith('git@') && !url.startsWith('ssh://')) {
+        // Inject credentials into the HTTPS URL.
+        // Detect host to pick the right username convention:
+        //   GitHub/Gitea  → https://<token>@host/path  (no username needed)
+        //   GitLab        → https://oauth2:<token>@host/path
+        //   Azure DevOps  → https://<anything>:<token>@host/path
+        //   Bitbucket     → https://<username>:<token>@host/path
+        const host = (() => { try { return new URL(url).hostname.toLowerCase(); } catch { return ''; } })();
+        let user = username;
+        if (!user) {
+          if (host.includes('gitlab')) user = 'oauth2';
+          else if (host.includes('dev.azure.com') || host.includes('visualstudio.com')) user = 'pat';
+          else if (host.includes('bitbucket')) user = 'x-token-auth';
+          // GitHub, Gitea, self-hosted forgejo: token-only (no username)
+        }
+        const encodedToken = encodeURIComponent(token);
+        const encodedUser = user ? encodeURIComponent(user) : '';
+        try {
+          const parsed = new URL(url);
+          parsed.username = encodedUser;
+          parsed.password = encodedToken;
+          cloneUrl = parsed.toString();
+        } catch {
+          // Fallback: manual injection
+          const proto = url.startsWith('https://') ? 'https://' : 'http://';
+          const rest = url.slice(proto.length);
+          cloneUrl = encodedUser
+            ? `${proto}${encodedUser}:${encodedToken}@${rest}`
+            : `${proto}${encodedToken}@${rest}`;
+        }
+      } else if (sshKey) {
+        // Write SSH key to a temp file and use GIT_SSH_COMMAND to point at it
+        const { writeFileSync, mkdirSync } = await import('fs');
+        const keyDir = `/tmp/t3mp3st-sshkey-${Date.now()}`;
+        mkdirSync(keyDir, { mode: 0o700 });
+        sshKeyPath = `${keyDir}/id`;
+        writeFileSync(sshKeyPath, sshKey.endsWith('\n') ? sshKey : `${sshKey}\n`, { mode: 0o600 });
+        extraEnv['GIT_SSH_COMMAND'] = `ssh -i ${sshKeyPath} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
+      }
+
+      // Strip credentials from messages shown back to the LLM
+      const sanitize = (s: string) => token ? s.replace(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '***') : s;
+
       const slug = Buffer.from(url).toString('base64url').slice(0, 40).replace(/[^a-z0-9]/gi, '_');
       const clonePath = `/tmp/t3mp3st-repo-${slug}`;
       const depth = Number(context.parameters.depth ?? 50);
 
       // Clone only if not already present
       try {
-        
         if (!existsSync(clonePath)) {
           const cloneArgs = depth > 0
-            ? ['clone', '--depth', String(depth), url, clonePath]
-            : ['clone', url, clonePath];
-          const cloneResult = await runSubprocess('git', cloneArgs, { timeout: 120000 });
+            ? ['clone', '--depth', String(depth), cloneUrl, clonePath]
+            : ['clone', cloneUrl, clonePath];
+          const cloneResult = await runSubprocess('git', cloneArgs, { timeout: 120000, env: { ...process.env, ...extraEnv } });
           if (cloneResult.exitCode !== 0) {
-            return { success: false, error: `git clone failed: ${cloneResult.stderr.slice(0, 500)}` };
+            return { success: false, error: sanitize(`git clone failed: ${cloneResult.stderr.slice(0, 500)}`) };
           }
         }
       } catch (err) {
-        return { success: false, error: `Clone failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { success: false, error: sanitize(`Clone failed: ${err instanceof Error ? err.message : String(err)}`) };
+      } finally {
+        // Always remove SSH key from disk after clone attempt
+        if (sshKeyPath) {
+          try { const { rmSync } = await import('fs'); rmSync(sshKeyPath, { force: true }); rmSync(sshKeyPath.replace('/id', ''), { recursive: true, force: true }); } catch { /* ignore */ }
+        }
       }
 
       // List source files
