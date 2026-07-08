@@ -1,0 +1,43 @@
+<script type="text/javascript">
+    RED.nodes.registerType('send-message',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            address: {value:"", required:true},
+            subject: {value:"", required:true},
+            message: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||"send message";
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="send-message">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-address"><i class="fa fa-envelope"></i> Address</label>
+        <input type="text" id="node-input-address" placeholder="Recipient address">
+    </div>
+    <div class="form-row">
+        <label for="node-input-subject"><i class="fa fa-tag"></i> Subject</label>
+        <input type="text" id="node-input-subject" placeholder="Subject">
+    </div>
+    <div class="form-row">
+        <label for="node-input-message"><i class="fa fa-comment"></i> Message</label>
+        <input type="text" id="node-input-message" placeholder="Message (optional, uses msg.payload)">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="send-message">
+    <p>Send a message via FUXA's notificator.</p>
+    <p>Sends to <code>address</code> with <code>subject</code> and <code>message</code>.</p>
+    <p>Use <code>msg.address</code>, <code>msg.subject</code>, <code>msg.message</code> or <code>msg.payload</code> to override.</p>
+</script>

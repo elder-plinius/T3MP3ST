@@ -1,0 +1,96 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-tag-daq-settings',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            tag: {value:""},           // Keep: tag name for display and backward compatibility
+            tagId: {value:""}          // New: unique identifier (optional, for backward compatibility)
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            if (this.name) {
+                return this.name;
+            }
+            // Display tag name or tagId
+            return this.tag || this.tagId || "get tag daq settings";
+        },
+        oneditprepare: function() {
+            var node = this;
+            var tagMap = {}; // Use tag.id as key to avoid tag.name duplication issues
+            
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-tags-daq-settings');
+                datalist.empty();
+                
+                data.forEach(function(device) {
+                    device.tags.forEach(function(tag) {
+                        var fullName = device.name + ' - ' + tag.name;
+                        // datalist option value format: tag.name(tag.id)
+                        var optionValue = tag.name + '(' + tag.id + ')';
+                        datalist.append('<option value="' + optionValue + '">' + fullName + '</option>');
+                        tagMap[tag.id] = {
+                            name: tag.name,
+                            deviceName: device.name,
+                            fullName: fullName
+                        };
+                    });
+                });
+                
+                // Listen for tagSelected input changes
+                $('#node-input-tagSelected').on('change', function() {
+                    var selectedValue = $(this).val();
+                    // Parse format: tag.name(tag.id)
+                    var match = selectedValue.match(/^(.+)\(([^)]+)\)$/);
+                    if (match) {
+                        var tagName = match[1];
+                        var tagId = match[2];
+                        
+                        // Set the actual stored fields
+                        $('#node-input-tag').val(tagName);
+                        $('#node-input-tagId').val(tagId);
+                    }
+                });
+                
+                // Initialize display (when editing existing node)
+                if (node.tagId && tagMap[node.tagId]) {
+                    // Has tagId, construct tagSelected value
+                    var tagName = node.tag || tagMap[node.tagId].name;
+                    $('#node-input-tagSelected').val(tagName + '(' + node.tagId + ')');
+                } else if (node.tag && !node.tagId) {
+                    // Old node: only has tag (tag.name), need to find corresponding tagId
+                    // Note: if there are duplicate names, only the first match will be found
+                    for (var tagId in tagMap) {
+                        if (tagMap[tagId].name === node.tag) {
+                            $('#node-input-tagSelected').val(node.tag + '(' + tagId + ')');
+                            $('#node-input-tagId').val(tagId);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-tag-daq-settings">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-tagSelected"><i class="fa fa-tag"></i> Tag</label>
+        <input type="text" id="node-input-tagSelected" list="fuxa-tags-daq-settings" placeholder="Select Tag">
+        <datalist id="fuxa-tags-daq-settings"></datalist>
+    </div>
+    <input type="hidden" id="node-input-tag">
+    <input type="hidden" id="node-input-tagId">
+</script>
+
+<script type="text/x-red" data-help-name="get-tag-daq-settings">
+    <p>Get DAQ settings for a FUXA tag.</p>
+    <p>The DAQ settings object is set to <code>msg.payload</code>.</p>
+    <p>Use <code>msg.tag</code> to override the configured tag name.</p>
+</script>

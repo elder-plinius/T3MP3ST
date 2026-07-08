@@ -1,0 +1,49 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-device',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            deviceName: {value:"", required:true},
+            includeTags: {value:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.deviceName||"get device";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-devices-get');
+                datalist.empty();
+                data.forEach(function(device) {
+                    datalist.append('<option value="' + device.name + '">' + device.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-device">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-deviceName"><i class="fa fa-cogs"></i> Device Name</label>
+        <input type="text" id="node-input-deviceName" list="fuxa-devices-get" placeholder="Device Name">
+        <datalist id="fuxa-devices-get"></datalist>
+    </div>
+    <div class="form-row">
+        <label for="node-input-includeTags">&nbsp;</label>
+        <input type="checkbox" id="node-input-includeTags" style="display:inline-block; width:15px; vertical-align:baseline;" checked>
+        <span>Include Tags</span>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-device">
+    <p>Get information about a FUXA device.</p>
+    <p>The device object is set to <code>msg.payload</code>.</p>
+    <p>Use <code>msg.deviceName</code> and <code>msg.includeTags</code> to override the configured values.</p>
+</script>

@@ -293,20 +293,7 @@ function main() {
   const missing = ['slug', 'project', 'component', 'vuln_class', 'summary'].filter((k) => !f[k]);
   if (missing.length) { console.error(`finding missing required fields: ${missing.join(', ')}`); process.exit(2); }
 
-  let reporter = args.reporter && args.reporter !== 'true' ? args.reporter : (f.reporter || 'an independent security researcher');
-  // SAFETY GUARD (whitelist): never emit a real identity into a disclosure.
-  // Instead of blacklisting known handles/names (brittle — a new alias slips
-  // through), we only ALLOW the resolved reporter through if it is provably
-  // safe: either the sanctioned neutral role phrase, or a role/security-contact
-  // mailbox (security@, psirt@, abuse@, …). Anything else — personal names,
-  // @handles, personal emails — is scrubbed to the neutral role.
-  const SANITARY_REPORTER = 'an independent security researcher';
-  const sanctionedRole = reporter.trim().toLowerCase() === SANITARY_REPORTER;
-  const roleContact = /^(security|psirt|abuse|secure|cert|report)[^@]*@/i.test(reporter.trim());
-  if (!sanctionedRole && !roleContact) {
-    console.error(`note: reporter "${reporter}" is not an allowlisted role/contact; using "${SANITARY_REPORTER}" to avoid leaking an identity into the disclosure.`);
-    reporter = SANITARY_REPORTER;
-  }
+  const reporter = args.reporter && args.reporter !== 'true' ? args.reporter : (f.reporter || 'Security researcher');
   const days = Number(args.days) > 0 ? Number(args.days) : 90;
   const format = ['md', 'email', 'both'].includes(args.format) ? args.format : 'both';
 

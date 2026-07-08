@@ -103,7 +103,7 @@ const PROBES = [
   {
     cat: 'EGRESS', trap: 'a disclosure leaking a local path / internal tooling is BLOCKED; a clean one is not; DoS-as-C:H is flagged', tier: 'core',
     run() {
-      const dirty = '# Disclosure\nThe parser copies an attacker-controlled length.\nSee /home/user/Desktop/wild-hunt/poc.py and re-run verify-finding.mjs first.';
+      const dirty = '# Disclosure\nThe parser copies an attacker-controlled length.\nSee /Users/faber/Desktop/wild-hunt/poc.py and re-run verify-finding.mjs first.';
       const issues = lintDisclosure(dirty, { target: 'AcmeVendor/widget' });
       expect(issues.some((i) => i.sev === 'block'), 'a disclosure carrying a local /Users path + internal tooling name produced NO blocking lint (we would leak our pipeline to a vendor)');
       const clean = '# Disclosure — AcmeVendor/widget\nThe parser copies an attacker-controlled length into a fixed buffer.\nReporter: Jane Doe <jane@example.com>';

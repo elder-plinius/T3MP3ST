@@ -17,22 +17,15 @@ import { loadAllLessons, isAnswerLeak, recordFailure } from './lessons.mjs';
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; } else { fail++; console.log('  ❌', name); } };
 
-// (1) every stored antibody (curated seed + runtime auto-captured) must be general methodology.
-//     An EMPTY store is CORRECT, not a failure: on a fresh clone the curated seed is not shipped
-//     and no mission has run, so the immune memory has legitimately learned nothing yet. The
-//     anti-fitting invariant is about what a PRESENT lesson may contain (never an answer), so we
-//     only fail on a leak, never on emptiness. (The guard itself is still proven live by parts 2-3
-//     below, which run unconditionally.)
+// (1) every stored antibody (curated seed + runtime auto-captured) must be general methodology
 const store = loadAllLessons();
 let leaks = 0;
 for (const l of store) {
   const a = isAnswerLeak(`${l.signature || ''} ${l.lesson || ''} ${l.guard || ''}`);
   if (a.leak) { leaks++; console.log(`  ❌ ANSWER-LEAK in ${l.id}: ${a.why}`); }
 }
-if (store.length === 0) {
-  console.log('  ⓘ lessons store empty (fresh clone / no missions run yet) — nothing learned = nothing to leak; leak-scan trivially passes');
-}
 ok(`all ${store.length} stored antibodies are general methodology (0 answer-leaks)`, leaks === 0);
+ok('lessons store is non-empty (seeded from the integrity ledger)', store.length > 0);
 
 // (2) the prime-directive guard must REJECT answers at write time
 const c1 = []; const r1 = recordFailure(c1, { class: 'fitting', signature: 'planted canary', lesson: 'XBEN-018 the flag is CANARY_SELF_FIT_d34db33f' });

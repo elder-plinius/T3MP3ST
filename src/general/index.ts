@@ -32,6 +32,7 @@ import {
 } from '../resources/index.js';
 import { adaptersForFamily } from '../arsenal/catalog.js';
 import { GENERAL_SYSTEM_PROMPT, GENERAL_REPLAN_PROMPT } from '../prompts/index.js';
+import { getArchetypesForFamily } from '../operators/index.js';
 
 // =============================================================================
 // TYPES
@@ -358,9 +359,6 @@ export class OpGeneral extends EventEmitter<GeneralEvents> {
       const response = await this.llm.prompt(
         userPrompt,
         systemPrompt,
-        // Codex fast path uses a tighter 4096 cap (latency-sensitive — a slow call trips
-        // the client-side planning timeout); the standard API path keeps 8192 so large
-        // plans don't silently truncate and degrade to a fallback plan.
         { maxTokens: useCodexFastPath ? 4096 : 8192, temperature: useCodexFastPath ? 0.3 : 0.4 }
       );
 
@@ -410,14 +408,14 @@ export class OpGeneral extends EventEmitter<GeneralEvents> {
       summary: 'string — 2-3 sentence strategic summary',
       targets: [{ address: 'string', expectedType: 'string (web_application|api|network|host|cloud)', priority: 'number 1-5', rationale: 'string' }],
       objectives: [{ description: 'string', priority: 'number 1-5', successCriteria: 'string', phase: 'string (reconnaissance|weaponization|delivery|exploitation|installation|command_and_control|actions_on_objectives)' }],
-      operators: [{ archetype: 'string (recon|scanner|exploiter|infiltrator|exfiltrator|ghost|coordinator|analyst)', count: 'number', deployPhase: 'string', briefing: 'string' }],
+      operators: [{ archetype: 'string (recon|scanner|exploiter|infiltrator|exfiltrator|ghost|coordinator|analyst|code_scanner)', count: 'number', deployPhase: 'string', briefing: 'string' }],
       opsecLevel: 'string (silent|covert|loud)',
       phaseStrategy: [{ phase: 'string', priority: 'number 1-7', expectedDuration: 'string', objectives: ['string'], advanceCriteria: 'string' }],
       roe: { scope: ['string — in-scope targets/ranges'], exclusions: ['string — out-of-scope'], maxDetections: 'number', destructiveAllowed: 'boolean', requireApproval: ['string — MITRE technique IDs'] },
       contingencies: [{ trigger: 'string', action: 'string', priority: 'string (low|medium|high|critical)' }],
       complexity: 'string (trivial|low|moderate|high|extreme)',
       rationale: 'string — 2-4 sentences explaining your strategic reasoning',
-      missionFamily: 'string (web_api|ai_red_team|cloud_infra|smart_contract|code_supply_chain|crypto_secrets|reverse_binary|agent_warfare|social_osint|reporting_remediation)',
+      missionFamily: 'string (web_api|ai_red_team|cloud_infra|smart_contract|code_supply_chain|local_code_scan|crypto_secrets|reverse_binary|agent_warfare|social_osint|reporting_remediation)',
       huntLanes: [{
         family: 'mission family',
         target: 'string',
@@ -768,7 +766,7 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
   }
 
   private normalizeOperatorArchetype(value: unknown, fallback: OperatorArchetype = 'analyst'): OperatorArchetype {
-    const archetypes: OperatorArchetype[] = ['recon', 'scanner', 'exploiter', 'infiltrator', 'exfiltrator', 'ghost', 'coordinator', 'analyst'];
+    const archetypes: OperatorArchetype[] = ['recon', 'scanner', 'exploiter', 'infiltrator', 'exfiltrator', 'ghost', 'coordinator', 'analyst', 'code_scanner'];
     const archetype = String(value || '');
     return archetypes.includes(archetype as OperatorArchetype) ? archetype as OperatorArchetype : fallback;
   }
@@ -834,11 +832,12 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
     const map: Record<MissionFamily, OperatorArchetype[]> = {
       web_api: ['coordinator', 'recon', 'scanner', 'analyst'],
       ai_red_team: ['coordinator', 'ghost', 'analyst'],
-      cloud_infra: ['coordinator', 'recon', 'scanner', 'analyst'],
+      cloud_infra: ['recon', 'web_scanner', 'exploiter', 'analyst'],
       smart_contract: ['coordinator', 'analyst', 'scanner'],
       code_supply_chain: ['coordinator', 'scanner', 'ghost', 'analyst'],
+      local_code_scan: ['code_scanner', 'analyst'],
       crypto_secrets: ['coordinator', 'ghost', 'analyst'],
-      reverse_binary: ['coordinator', 'scanner', 'analyst'],
+      reverse_binary: ['code_scanner', 'exploiter', 'analyst'],
       agent_warfare: ['coordinator', 'ghost', 'analyst'],
       social_osint: ['coordinator', 'recon', 'analyst'],
       reporting_remediation: ['coordinator', 'analyst'],
@@ -853,6 +852,7 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
       cloud_infra: 'IAM defaults, metadata, and deployment automation combine into a trust path no owner intended.',
       smart_contract: 'Intent, signing, and contract state diverge across simulation and execution boundaries.',
       code_supply_chain: 'Generated code, dependency trust, and CI permissions compress review into an unsafe release path.',
+      local_code_scan: 'Secrets, unsafe patterns, and vulnerable dependencies hide across file boundaries that no single linter covers.',
       crypto_secrets: 'Encoding, token handling, and secret redaction rules disagree about what counts as sensitive.',
       reverse_binary: 'Parser assumptions and file metadata create a weird machine before classic exploitation begins.',
       agent_warfare: 'Delegation, tool output, and memory promotion create role confusion across agent handoffs.',
@@ -1260,6 +1260,7 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
       workOrderIds: string[];
       briefing: string;
     }>;
+    family: MissionFamily;
     opsecLevel: OpsecLevel;
     objectives: string[];
     workOrders: OpPlanWorkOrder[];
@@ -1319,11 +1320,19 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
       }
     }
 
+    // Gate operators: only archetypes valid for this mission's family are spawned.
+    // This prevents web/net operators (recon, scanner, web_scanner) from being spawned
+    // on code-only families like local_code_scan and code_supply_chain.
+    const allowedArchetypes = getArchetypesForFamily(p.missionFamily);
+    const gatedOperators = operators.filter(a => allowedArchetypes.includes(a));
+    const finalOperators = gatedOperators.length > 0 ? gatedOperators : operators;
+
     return {
       missionName: `${p.codename} — ${p.summary.substring(0, 60)}`,
       targets: targetAddresses,
-      operators,
+      operators: finalOperators,
       operatorAssignments,
+      family: p.missionFamily,
       opsecLevel: p.opsecLevel,
       objectives: p.objectives.map(o => o.description),
       workOrders: p.workOrders,

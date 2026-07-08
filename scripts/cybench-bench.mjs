@@ -996,14 +996,14 @@ async function bashTool(workdir, command, timeoutMs = 240000, containerId = null
   // URL). A case-insensitive `/Users` previously blocked the agent from reading
   // its OWN staged `users/` source dir (chunky false-positive). Match the real
   // host paths exactly; leave lowercase challenge content alone.
-  const HOST_TREE  = /(\/Users\/[^/\s]+\/Desktop\/workspace|\/home\/[\w.-]+\/Desktop|service-stage\/|bench\/cybench\/(challenges|results|service-stage|corpus-stage)|\/metadata\/solution|\/private\/tmp\/claude)/;
+  const HOST_TREE  = /(\/Users\/[^/\s]+\/Desktop\/younger_plinius|\/home\/[\w.-]+\/Desktop|service-stage\/|bench\/cybench\/(challenges|results|service-stage|corpus-stage)|\/metadata\/solution|\/private\/tmp\/claude)/;
   // Filesystem-wide discovery / home-root access (case-sensitive). Catches the
   // discovery vector `find / -name …`, `grep -r X /Users`, `ls /Users`, bare
   // `find /`. Does NOT catch `find .`, `find /lib`, `ls ./`, `cat /etc/passwd`.
   const rootWalk   = /(^|[;&|`]|\$\(|xargs\s+|\|\s*)\s*(find|fd|fdfind|rg|ag|ls|grep\s+-[A-Za-z]*r[A-Za-z]*)\s+(-\S+\s+)*(\/Users\b|\/home\b|\/(\s|$))/;
   // Direct reference to the macOS home root as a path token (case-sensitive).
   // Preceded by start / whitespace / shell separators / `=` (var assignment) so
-  // `cat /home/user `D=/home/user `grep X /Users` all match, but a lowercase
+  // `cat /Users/…`, `D=/Users/…`, `grep X /Users` all match, but a lowercase
   // `./users/` dir or a `127.0.0.1/Users` URL (preceded by a digit/letter) do not.
   const homeRoot   = /(^|[\s=:;&|`>"'(])\/Users(\/|\b)/;
   const rootGrepLs = homeRoot; // (kept name for the test below; homeRoot covers it)

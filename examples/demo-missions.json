@@ -1,5 +1,5 @@
 {
-  "schema_version": "t3mp3st_demo_missions/v1",
+  "schema_version": "plinyos.t3mp3st_demo_missions/v1",
   "missions": [
     {
       "id": "owned-local-web-api",

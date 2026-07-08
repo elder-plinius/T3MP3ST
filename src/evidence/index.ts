@@ -16,19 +16,42 @@ import type {
 import { gateLiveFinding } from './gate.js';
 
 // =============================================================================
-// CREDENTIAL REDACTION — secrets NEVER leave the process in an API/LLM output
+// CREDENTIAL REDACTION — raw secrets never leave the process in API/LLM output
 // =============================================================================
 
-/** A credential shaped for output: the raw `secret` is stripped, replaced by a boolean
- *  flag that it was captured. Mirrors the repo's redaction posture (secrets are summarized,
- *  never copied into responses/prompts). */
+/** Credential shaped for output: raw `secret` stripped, replaced by a boolean flag. */
 export type RedactedCredential = Omit<Credential, 'secret'> & { secretCaptured: boolean };
 
-/** Strip the raw secret from a credential for any outward-facing surface (API responses,
- *  reports). Keeps all non-sensitive metadata + a `secretCaptured` flag; never the value. */
+/** Strip the raw secret from a credential for outward-facing surfaces. */
 export function redactCredential(c: Credential): RedactedCredential {
   const { secret, ...rest } = c;
   return { ...rest, secretCaptured: Boolean(secret) };
+}
+
+// =============================================================================
+// FINDING IMMUTABILITY HELPERS
+// Callers receive clones; the internal map is the single source of truth.
+// =============================================================================
+
+function cloneEvidence(evidence: Evidence): Evidence {
+  return { ...evidence, metadata: evidence.metadata ? { ...evidence.metadata } : undefined };
+}
+
+function cloneFinding(finding: Finding): Finding {
+  return {
+    ...finding,
+    cve: finding.cve ? [...finding.cve] : undefined,
+    cwe: finding.cwe ? [...finding.cwe] : undefined,
+    references: finding.references ? [...finding.references] : undefined,
+    evidence: Array.isArray(finding.evidence) ? finding.evidence.map(cloneEvidence) : [],
+    verifyGate: finding.verifyGate
+      ? { ...finding.verifyGate, reasons: [...finding.verifyGate.reasons] }
+      : undefined,
+  };
+}
+
+function hasPassedVerificationGate(finding: Finding): boolean {
+  return finding.verifiedAt !== undefined && finding.verifyGate?.passed === true;
 }
 
 // =============================================================================
@@ -65,30 +88,6 @@ export function cvssToSeverity(cvss: number): Severity {
   return 'info';
 }
 
-function cloneEvidence(evidence: Evidence): Evidence {
-  return {
-    ...evidence,
-    metadata: evidence.metadata ? { ...evidence.metadata } : undefined,
-  };
-}
-
-function cloneFinding(finding: Finding): Finding {
-  return {
-    ...finding,
-    cve: finding.cve ? [...finding.cve] : undefined,
-    cwe: finding.cwe ? [...finding.cwe] : undefined,
-    references: finding.references ? [...finding.references] : undefined,
-    evidence: Array.isArray(finding.evidence) ? finding.evidence.map(cloneEvidence) : [],
-    verifyGate: finding.verifyGate
-      ? { ...finding.verifyGate, reasons: [...finding.verifyGate.reasons] }
-      : undefined,
-  };
-}
-
-function hasPassedVerificationGate(finding: Finding): boolean {
-  return finding.verifiedAt !== undefined && finding.verifyGate?.passed === true;
-}
-
 // =============================================================================
 // EVIDENCE VAULT
 // =============================================================================
@@ -104,6 +103,53 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
     if (!finding.id) {
       finding.id = randomUUID();
     }
+    // Dedup: same title + same target → merge into one, preferring tool-backed evidence.
+    // Parallel operators frequently discover the same issue independently; a single semgrep
+    // rule can also fire in dozens of files — each becomes a separate incoming finding with
+    // the same title but a different file:line in its output evidence. We merge rather than
+    // discard so every occurrence location is preserved in the evidence panel.
+    const existing = [...this.findings.values()].find(
+      f => f.title === finding.title && f.targetId === finding.targetId,
+    );
+    if (existing) {
+      const incomingHasEvidence = (finding.evidence ?? []).length > 0;
+      const existingHasEvidence = (existing.evidence ?? []).length > 0;
+      if (incomingHasEvidence && !existingHasEvidence) {
+        // Upgrade: replace the evidenceless duplicate with the tool-backed version
+        this.findings.delete(existing.id);
+        this.emit('finding:updated', existing); // signal clients to discard the old one
+        // fall through to store the new one
+      } else if (incomingHasEvidence && existingHasEvidence) {
+        // Both are tool-backed — merge the new occurrence's output evidence into the
+        // existing finding so all file:line locations are visible in the evidence panel.
+        // Skip command evidence (same command for every occurrence — already present).
+        // Deduplicate by content so re-running the same scan tool doesn't double-add
+        // evidence blocks for locations already recorded.
+        const existingContents = new Set(existing.evidence.filter(e => e.type === 'output').map(e => e.content));
+        const newOutputs = (finding.evidence ?? [])
+          .filter(e => e.type === 'output' && !existingContents.has(e.content));
+        if (newOutputs.length > 0) {
+          existing.evidence.push(...newOutputs);
+          // Count unique file locations across all output evidence to derive the occurrence
+          // count — each occurrence has a scanOutput block containing "File: path:line".
+          const locationSet = new Set(
+            existing.evidence
+              .filter(e => e.type === 'output')
+              .flatMap(e => { const m = e.content.match(/^File: (.+)/m); return m ? [m[1]] : []; })
+          );
+          const locationCount = locationSet.size || existing.evidence.filter(e => e.type === 'output').length;
+          if (locationCount > 1) {
+            existing.description = existing.description.replace(/^\[\d+ locations\] /, '');
+            existing.description = `[${locationCount} locations] ${existing.description}`;
+          }
+          this.emit('finding:updated', existing);
+        }
+        return finding;
+      } else {
+        // Existing is already tool-backed, incoming has no evidence — keep existing
+        return finding;
+      }
+    }
     const stored = cloneFinding(finding);
     this.findings.set(stored.id, stored);
     this.emit('finding:added', cloneFinding(stored));
@@ -116,19 +162,10 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   updateFinding(findingId: string, updates: Partial<Finding>): Finding | undefined {
     const finding = this.findings.get(findingId);
     if (finding) {
-      const sanitized: Partial<Finding> = { ...updates };
-      // Verification state is gate-owned. Callers may update finding metadata,
-      // evidence, remediation, etc., but cannot self-stamp a finding as verified.
-      delete sanitized.verifiedAt;
-      delete sanitized.verifyGate;
-      if (sanitized.evidence) sanitized.evidence = sanitized.evidence.map(cloneEvidence);
-      if (sanitized.cve) sanitized.cve = [...sanitized.cve];
-      if (sanitized.cwe) sanitized.cwe = [...sanitized.cwe];
-      if (sanitized.references) sanitized.references = [...sanitized.references];
-      Object.assign(finding, sanitized);
-      this.emit('finding:updated', cloneFinding(finding));
+      Object.assign(finding, updates);
+      this.emit('finding:updated', finding);
     }
-    return finding ? cloneFinding(finding) : undefined;
+    return finding;
   }
 
   /**
@@ -143,13 +180,13 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
     finding.verifyGate = { passed: gate.passed, provenance: gate.provenance, reasons: gate.reasons, checkedAt: gate.checkedAt };
     if (gate.passed) {
       finding.verifiedAt = Date.now();
-      this.emit('finding:verified', cloneFinding(finding));
+      this.emit('finding:verified', finding);
     } else {
       // refuse to stamp verified on a finding the gate could not back
       delete finding.verifiedAt;
-      this.emit('finding:gate-blocked', cloneFinding(finding));
+      this.emit('finding:gate-blocked', finding);
     }
-    return cloneFinding(finding);
+    return finding;
   }
 
   /**
@@ -158,26 +195,24 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   addEvidence(findingId: string, evidence: Evidence): Finding | undefined {
     const finding = this.findings.get(findingId);
     if (finding) {
-      const storedEvidence = cloneEvidence(evidence);
-      finding.evidence.push(storedEvidence);
-      this.emit('evidence:added', { findingId, evidence: cloneEvidence(storedEvidence) });
+      finding.evidence.push(evidence);
+      this.emit('evidence:added', { findingId, evidence });
     }
-    return finding ? cloneFinding(finding) : undefined;
+    return finding;
   }
 
   /**
    * Get a finding by ID
    */
   getFinding(findingId: string): Finding | undefined {
-    const finding = this.findings.get(findingId);
-    return finding ? cloneFinding(finding) : undefined;
+    return this.findings.get(findingId);
   }
 
   /**
    * Get all findings
    */
   getAllFindings(): Finding[] {
-    return Array.from(this.findings.values()).map(cloneFinding);
+    return Array.from(this.findings.values());
   }
 
   /**
@@ -205,7 +240,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
    * Get verified findings
    */
   getVerifiedFindings(): Finding[] {
-    return Array.from(this.findings.values()).filter(hasPassedVerificationGate).map(cloneFinding);
+    return this.getAllFindings().filter(hasPassedVerificationGate);
   }
 
   /**
@@ -271,7 +306,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
     validatedCredentials: number;
     riskScore: number;
   } {
-    const findings = Array.from(this.findings.values());
+    const findings = this.getAllFindings();
     const credentials = this.getAllCredentials();
 
     const bySeverity: Record<Severity, number> = {
@@ -290,7 +325,7 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
 
     return {
       totalFindings: findings.length,
-      verifiedFindings: findings.filter(hasPassedVerificationGate).length,
+      verifiedFindings: findings.filter(f => f.verifiedAt !== undefined).length,
       bySeverity,
       totalCredentials: credentials.length,
       validatedCredentials: credentials.filter(c => c.validatedAt !== undefined).length,

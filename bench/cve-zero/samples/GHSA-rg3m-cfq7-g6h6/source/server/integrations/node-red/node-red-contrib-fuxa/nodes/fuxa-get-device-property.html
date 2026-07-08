@@ -1,0 +1,48 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-device-property',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            deviceName: {value:"", required:true},
+            property: {value:"", required:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.deviceName||"get device property";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-devices-property');
+                datalist.empty();
+                data.forEach(function(device) {
+                    datalist.append('<option value="' + device.name + '">' + device.name + '</option>');
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-device-property">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-deviceName"><i class="fa fa-cogs"></i> Device Name</label>
+        <input type="text" id="node-input-deviceName" list="fuxa-devices-property" placeholder="Device Name">
+        <datalist id="fuxa-devices-property"></datalist>
+    </div>
+    <div class="form-row">
+        <label for="node-input-property"><i class="fa fa-info-circle"></i> Property</label>
+        <input type="text" id="node-input-property" placeholder="Property name">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-device-property">
+    <p>Get a property value from a FUXA device.</p>
+    <p>The property value is set to <code>msg.payload</code>.</p>
+    <p>Use <code>msg.deviceName</code> and <code>msg.property</code> to override the configured values.</p>
+</script>

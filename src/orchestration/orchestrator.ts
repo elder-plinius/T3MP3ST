@@ -31,16 +31,6 @@ import {
   ORCHESTRATOR_FINAL_PROMPT,
   WORKER_SYSTEM_PROMPT,
 } from './prompts.js';
-import { parseLooseSource, packContext, type SourceBundle } from './context-pack.js';
-
-/** Default planning token budget for the orchestrator's view of the source. */
-const DEFAULT_PLANNING_TOKEN_BUDGET = 30000;
-/**
- * Default token budget for the source handed to a worker when a query does NOT
- * carry its own focused snippet. Leaves headroom under a worker context window
- * so a huge repo is no longer dumped wholesale into every worker call.
- */
-const DEFAULT_WORKER_SOURCE_TOKEN_BUDGET = 24000;
 
 // =============================================================================
 // ROBUST JSON EXTRACTION
@@ -100,14 +90,6 @@ export class DecompositionOrchestrator extends EventEmitter<DecompositionEvents>
   // per-run state (reset in run())
   private orchestratorTokensUsed = 0;
   private fullSourceContext = '';
-  /** Parsed-once view of the source (for map + relevance packing). */
-  private sourceBundle: SourceBundle = [];
-
-  // Context-packing budgets. Read from config if the caller supplied them
-  // (DecompositionConfig may not declare these fields yet — they are optional
-  // and default-backed, so back-compat string callers are unaffected).
-  private planningTokenBudget: number;
-  private workerSourceTokenBudget: number;
 
   constructor(config: DecompositionConfig) {
     super();
@@ -123,11 +105,6 @@ export class DecompositionOrchestrator extends EventEmitter<DecompositionEvents>
       verbose: false,
       ...config,
     };
-    const extra = config as Partial<{ planningTokenBudget: number; workerSourceTokenBudget: number }>;
-    this.planningTokenBudget = typeof extra.planningTokenBudget === 'number' && extra.planningTokenBudget > 0
-      ? extra.planningTokenBudget : DEFAULT_PLANNING_TOKEN_BUDGET;
-    this.workerSourceTokenBudget = typeof extra.workerSourceTokenBudget === 'number' && extra.workerSourceTokenBudget > 0
-      ? extra.workerSourceTokenBudget : DEFAULT_WORKER_SOURCE_TOKEN_BUDGET;
     this.orchestrator = new LLMBackbone(config.orchestratorModel);
     this.worker = new LLMBackbone(config.workerModel);
   }
@@ -147,8 +124,6 @@ export class DecompositionOrchestrator extends EventEmitter<DecompositionEvents>
     const t0 = this.now();
     this.orchestratorTokensUsed = 0;
     this.fullSourceContext = sourceContext || '';
-    // Parse the loose blob into files once (map + relevance packing reuse it).
-    this.sourceBundle = parseLooseSource(this.fullSourceContext);
     this.emit('decomposition:start', { objective, config: this.config });
 
     const rounds: DecompositionRound[] = [];
@@ -240,23 +215,6 @@ export class DecompositionOrchestrator extends EventEmitter<DecompositionEvents>
     accumulatedKnowledge: string,
     round: number,
   ): Promise<DecomposedQuery[]> {
-    // Telemetry: pack the same view the planning prompt will build so any
-    // dropped files are VISIBLE (honesty — no silent trimming). We recompute the
-    // pack here purely to report it; the prompt itself packs internally.
-    const packed = packContext(this.sourceBundle, {
-      tokenBudget: this.planningTokenBudget,
-      objective,
-      priorIntel: accumulatedKnowledge,
-    });
-    this.emitContextPacked({
-      round,
-      scope: 'planning',
-      includedFiles: packed.includedFiles,
-      droppedFiles: packed.droppedFiles,
-      tokensUsed: packed.tokensUsed,
-      tokenBudget: packed.tokenBudget,
-    });
-
     const prompt = ORCHESTRATOR_DECOMPOSE_PROMPT(
       objective, sourceContext, accumulatedKnowledge, round, this.config.maxQueriesPerRound,
     );
@@ -290,11 +248,9 @@ export class DecompositionOrchestrator extends EventEmitter<DecompositionEvents>
 
     try {
       // The worker is stateless and blind to the objective. It needs the source
-      // to analyze: prefer a focused snippet the orchestrator attached, else a
-      // BUDGETED, query-relevant pack of the source (so a huge repo is no longer
-      // dumped wholesale into every worker call). The query text drives relevance
-      // ranking so the worker sees the files most likely to answer THIS question.
-      const source = query.context || (this.config.attachSourceToWorker ? this.packForWorker(query, round) : '');
+      // to analyze: prefer a focused snippet the orchestrator attached, else the
+      // full source context (so the orchestrator never has to copy-paste code).
+      const source = query.context || (this.config.attachSourceToWorker ? this.fullSourceContext : '');
       const userMessage = source
         ? `${query.query}\n\n--- SOURCE UNDER ANALYSIS ---\n${source}`
         : query.query;
@@ -468,59 +424,6 @@ export class DecompositionOrchestrator extends EventEmitter<DecompositionEvents>
     // analysis that happens to contain "i cannot determine X from the code" is a
     // legitimate answer, not a decline.
     return content.trim().length < 400 && refusalPatterns.some(p => lower.includes(p));
-  }
-
-  // ===========================================================================
-  // CONTEXT PACKING — budget + telemetry
-  // ===========================================================================
-
-  /**
-   * Pack the source for a worker query when the query carries no focused
-   * snippet. Uses the query text as the relevance objective and emits a
-   * `context:packed` (scope: 'worker') event whenever files are dropped so the
-   * trimming is visible.
-   */
-  private packForWorker(query: DecomposedQuery, round: number): string {
-    // Small source that already fits the budget: hand it over untouched (cheap,
-    // and keeps behaviour identical to the old full-source path for tiny repos).
-    if (this.fullSourceContext.length <= this.workerSourceTokenBudget * 4) {
-      return this.fullSourceContext;
-    }
-    const packed = packContext(this.sourceBundle, {
-      tokenBudget: this.workerSourceTokenBudget,
-      objective: query.query,
-    });
-    if (packed.droppedFiles.length > 0) {
-      this.emitContextPacked({
-        round,
-        scope: 'worker',
-        queryId: query.id,
-        includedFiles: packed.includedFiles,
-        droppedFiles: packed.droppedFiles,
-        tokensUsed: packed.tokensUsed,
-        tokenBudget: packed.tokenBudget,
-      });
-    }
-    return packed.text;
-  }
-
-  /**
-   * Emit the (untyped) `context:packed` telemetry event. The typed event map
-   * lives in types.ts (not owned here); we widen `this` to a plain emitter so
-   * this new signal can ride alongside the declared events without silently
-   * dropping any file.
-   */
-  private emitContextPacked(payload: {
-    round: number;
-    scope: 'planning' | 'worker';
-    queryId?: string;
-    includedFiles: string[];
-    droppedFiles: string[];
-    tokensUsed: number;
-    tokenBudget: number;
-  }): void {
-    (this as unknown as { emit(event: string, payload: unknown): boolean })
-      .emit('context:packed', payload);
   }
 
   /** Indirection so tests/mocks can stamp time; real impl uses wall clock. */

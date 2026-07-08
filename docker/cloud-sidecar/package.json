@@ -1,0 +1,10 @@
+{
+  "name": "tempest-cloud-sidecar",
+  "version": "1.0.0",
+  "description": "T3MP3ST cloud security tool execution sidecar",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

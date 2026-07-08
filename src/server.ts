@@ -11,28 +11,50 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { execFile, spawn } from 'child_process';
-import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
+import { appendFile, mkdir, readFile, writeFile, readdir, stat } from 'fs/promises';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
 import { config } from './config/index.js';
-import { redactString, redactLedgerText, redactSecrets } from './redact.js';
 import { LLMBackbone } from './llm/index.js';
 import { TempestCommand } from './index.js';
 import { OpGeneral } from './general/index.js';
 import type { Directive } from './general/index.js';
-import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelection } from './agent/local-agents.js';
+import { detectLocalAgents, pingLocalAgent, runLocalAgent } from './agent/local-agents.js';
 import { FRONTIER_ARSENAL_MILESTONE, NETWORK_COMMANDS, SAFE_COMMANDS, TOOL_ADAPTERS, adapterForBinary, adaptersForFamily, summarizeToolCatalog } from './arsenal/catalog.js';
+import { setMissionCredentials, clearMissionCredentials } from './arsenal/index.js';
+import type { CloudCredentials } from './types/index.js';
 import { AGENT_PROMPT_PACKS, FOREFRONT_PRESSURE_LANES, OPERATOR_RUNBOOKS, RESOURCE_PACKS, WORKFLOW_PRESETS, forefrontPressureForFamily, promptPacksForFamily, resourcesForFamily, runbookForFamily, searchResources, workflowPresetsForFamily } from './resources/index.js';
 import { AI_REDTEAM_PLAYBOOK, AI_REDTEAM_TECHNIQUE_IDS, aiRedTeamBriefing } from './resources/ai-redteam-playbook.js';
 import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT } from './prompts/index.js';
 import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
 import type { OperatorArchetype } from './types/index.js';
-import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
-import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveContainedRepoPath, RepoPathError } from './recon/whitebox.js';
-import { redactCredential } from './evidence/index.js';
+import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, getArchetypesForFamily, type OperatorOverride } from './operators/index.js';
+import { fireWebhooks, registerWebhook, removeWebhook, listWebhooks, setWebhookEnabled } from './webhooks.js';
+import {
+  connectMcpServer,
+  disconnectMcpServer,
+  listConnectedServers,
+  listRemoteTools,
+  callRemoteTool,
+} from './mcp-client.js';
+import type { McpServerConfig } from './mcp-client.js';
+import {
+  getOrCreateSession,
+  appendToSession,
+  getSession,
+  listSessions,
+  deleteSession,
+  newSessionId,
+  buildContextPrefix,
+} from './agent/session-store.js';
+import { addRule, updateRule, removeRule, listRules, evaluateEvent } from './automation.js';
+import type { AutomationContext } from './automation.js';
 import dotenv from 'dotenv';
+import { initAuth } from './auth.js';
 
 dotenv.config();
 
@@ -132,127 +154,116 @@ const PAYLOAD_DB = {
   }
 };
 
+const SECRET_PATTERNS: Record<string, { pattern: RegExp; severity: string; provider: string }> = {
+  aws_access_key: { pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical', provider: 'AWS' },
+  aws_secret_key: { pattern: /[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/g, severity: 'critical', provider: 'AWS' },
+  gcp_api_key: { pattern: /AIza[0-9A-Za-z\-_]{35}/g, severity: 'high', provider: 'GCP' },
+  github_token: { pattern: /ghp_[A-Za-z0-9]{36}/g, severity: 'critical', provider: 'GitHub' },
+  github_oauth: { pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical', provider: 'GitHub' },
+  anthropic_api_key: { pattern: /sk-ant-api\d{2}-[A-Za-z0-9_\-]{16,}/g, severity: 'critical', provider: 'Anthropic' },
+  openai_api_key: { pattern: /sk-[A-Za-z0-9_\-]{20,}/g, severity: 'critical', provider: 'OpenAI' },
+  gitlab_token: { pattern: /glpat-[A-Za-z0-9\-_]{20}/g, severity: 'critical', provider: 'GitLab' },
+  jwt: { pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/g, severity: 'high', provider: 'JWT' },
+  stripe_live: { pattern: /sk_live_[0-9a-zA-Z]{24}/g, severity: 'critical', provider: 'Stripe' },
+  slack_token: { pattern: /xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*/g, severity: 'high', provider: 'Slack' },
+  postgres_uri: { pattern: /postgres(ql)?:\/\/[^:]+:[^@]+@[^/]+\/\w+/gi, severity: 'critical', provider: 'PostgreSQL' },
+  mongodb_uri: { pattern: /mongodb(\+srv)?:\/\/[^:]+:[^@]+@[^/]+/gi, severity: 'critical', provider: 'MongoDB' },
+  rsa_private: { pattern: new RegExp('-----BEGIN RSA ' + 'PRIVATE KEY-----', 'g'), severity: 'critical', provider: 'RSA' },
+  openssh_private: { pattern: new RegExp('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', 'g'), severity: 'critical', provider: 'OpenSSH' },
+  password_field: { pattern: /password["\s]*[:=]["\s]*[^"'\s]{4,}/gi, severity: 'high', provider: 'Generic' },
+  api_key_field: { pattern: /api[_-]?key["\s]*[:=]["\s]*["']?[A-Za-z0-9\-_]{16,}["']?/gi, severity: 'high', provider: 'Generic' }
+};
+
+
+
 // =============================================================================
 // SERVER CONFIGURATION
 // =============================================================================
 
+// Read version from package.json so /health always reports the real package version (A-10)
+const _pkgVersion: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    return pkg.version as string;
+  } catch { return '0.0.0'; }
+})();
+
 const PORT = process.env.T3MP3ST_PORT || 3333;
-// SECURITY: Default bind is loopback-only. This is a single-operator localhost
-// tool, so the process listens on 127.0.0.1 and is unreachable from the network
-// unless the operator explicitly opts in with T3MP3ST_HOST=0.0.0.0. The threat
-// model is therefore a malicious webpage in the operator's own browser driving
-// this local command-executing API (CSRF / DNS-rebinding), NOT remote attackers.
-// The CORS lock + origin guard below defend that vector; if this is ever exposed
-// beyond localhost, add real Bearer-token auth as the upgrade path.
+// Default to localhost for security - use T3MP3ST_HOST=0.0.0.0 to expose on all interfaces
 const HOST = process.env.T3MP3ST_HOST || '127.0.0.1';
-// B-02: only enforce the Host-header allow-list when bound to loopback (the
-// default). If the operator EXPLICITLY exposes the server (T3MP3ST_HOST set to a
-// non-loopback address) they've opted into network access behind their own front,
-// so we don't second-guess the Host there.
-const HOST_IS_LOOPBACK = /^(127\.|localhost$|::1$|\[::1\]$)/i.test(HOST.trim());
 
 const app = express();
 
-// --- Localhost origin allow-list ------------------------------------------
-// A request from the same-origin UI, curl, or the CLI is trusted; a request
-// carrying an Origin/Referer that points at some OTHER site is a cross-origin
-// drive-by and must be rejected. We accept 127.0.0.1 / localhost / ::1 on ANY
-// port (the operator may run the UI on a non-default port) plus the file://
-// origin ("null") the UI would send if opened from disk.
-//
-// A hostname is loopback iff it is EXACTLY `localhost`, `::1`, or a literal address in
-// 127.0.0.0/8. CRITICAL: match the full dotted-quad, NEVER a `/^127\./` prefix — a
-// prefix also matches attacker-registered names like `127.0.0.1.evil.com` and
-// `127.evil.com`, which would defeat BOTH the CSRF/CORS origin gate and the
-// anti-rebinding Host gate below. (code-sweep: high-severity bypass, fixed.)
-function isLoopbackHostname(host: string): boolean {
-  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
-}
-function isLoopbackOrigin(originHeader: string | undefined): boolean {
-  if (!originHeader) return false;
-  // B-01: the opaque origin "null" (sandboxed iframe, file://, some cross-origin
-  // redirects, data: documents) is deliberately NOT trusted — the UI is always
-  // http-served from 127.0.0.1, so a "null" Origin is a foreign/sandboxed caller,
-  // never our own UI. Trusting it would reopen the CSRF hole this guard closes.
-  try {
-    const host = new URL(originHeader).hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    // B-05: 0.0.0.0 is a bind wildcard, not a real browser page-origin — excluded
-    // so it can't serve as a foreign / rebinding origin gap.
-    return isLoopbackHostname(host);
-  } catch {
-    return false;
-  }
-}
+// Security headers
+app.use(helmet({ contentSecurityPolicy: false }));
 
-// CORS locked to the localhost UI origins ONLY. A same-origin fetch from the UI
-// (or a tool with no Origin like curl/CLI) is allowed; any other website's
-// Origin is rejected so the browser blocks it from reading our responses.
-app.use(cors({
-  origin(origin, callback) {
-    // No Origin header (curl, CLI, server-to-server) → allow.
-    if (!origin) return callback(null, true);
-    if (isLoopbackOrigin(origin)) return callback(null, true);
-    return callback(null, false);
+// Scoped CORS — browser cross-origin requests only allowed from the app's own origin.
+// Curl/server-to-server (no Origin header) passes through unaffected.
+const _corsOrigins = [
+  `http://127.0.0.1:${PORT}`,
+  `http://localhost:${PORT}`,
+  ...(process.env.T3MP3ST_CORS_ORIGIN ? [process.env.T3MP3ST_CORS_ORIGIN] : []),
+];
+const _corsMiddleware = cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // no Origin header = curl/server-to-server
+    // B-01: reject the literal string "null" sent by file:// pages and sandboxed iframes
+    if (origin === 'null') return cb(new Error('CORS: null origin (file:// or sandboxed context) not allowed'));
+    if (_corsOrigins.includes(origin)) return cb(null, true);
+    // Allow HTTPS localhost origins from the Nginx proxy (any port)
+    if (/^https:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
-}));
-
-// --- Cross-origin CSRF guard (root-cause drive-by defense) ----------------
-// Registered BEFORE all routes. For STATE-CHANGING methods, if the request
-// carries an Origin (or, absent Origin, a Referer) that is PRESENT and is NOT a
-// localhost origin, we reject it 403 — this is the fingerprint of a malicious
-// webpage in the operator's browser POSTing to our local command API.
-// CRITICAL: requests with NO Origin AND NO Referer (curl, the CLI, MCP,
-// server-to-server) are ALLOWED — they cannot be forged by a foreign webpage
-// and are not CSRF-able. This single guard neutralizes the drive-by vectors
-// behind SEC approval-self-grant, llm/chat systemPrompt, and operators/prompt
-// at once. Full Bearer-token auth is the upgrade path if ever exposing this
-// server beyond localhost.
-const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+});
+// /auth/ routes are HTML form submissions and nginx-internal requests — exempt from CORS.
+// Browsers send Origin: null for HTTPS form POSTs with self-signed certs, which would
+// otherwise trip the null-origin guard and return 500 before the login handler runs.
 app.use((req: Request, res: Response, next: NextFunction) => {
-  if (!STATE_CHANGING_METHODS.has(req.method)) return next();
-  const origin = req.get('origin');
-  const referer = req.get('referer');
-  // Prefer Origin; fall back to Referer only when Origin is absent.
-  const source = origin ?? referer;
-  // No Origin AND no Referer → trusted local caller (curl/CLI/MCP). Allow.
-  if (!source) return next();
-  if (isLoopbackOrigin(source)) return next();
-  res.status(403).json({
-    error: 'Cross-origin request rejected',
-    detail: 'This local API only accepts requests from the localhost UI, curl, or the CLI. A cross-origin (foreign-website) Origin/Referer was detected and blocked to prevent CSRF/drive-by command execution.',
-  });
+  if (req.path.startsWith('/auth/')) return next();
+  _corsMiddleware(req, res, next);
 });
 
-// --- Host-header allow-list (anti-DNS-rebinding) --------------------------
-// B-02: a DNS-rebinding attack points a name the browser already trusts
-// (attacker.com) at 127.0.0.1 and then drives THIS server; the browser sends the
-// attacker's name in the Host header, while the Origin/CSRF guard above only
-// covers state-CHANGING methods. Rejecting any non-loopback Host closes that gap
-// for EVERY method (GET reads included). An absent Host (HTTP/1.1 requires it) is
-// rejected too. Only active on a loopback bind (see HOST_IS_LOOPBACK).
-function isLoopbackHost(hostHeader: string | undefined): boolean {
-  if (!hostHeader) return false;
-  let h = hostHeader.trim().toLowerCase();
-  if (h.startsWith('[')) {
-    const end = h.indexOf(']');            // bracketed IPv6: [::1] or [::1]:3333
-    h = end === -1 ? h.slice(1) : h.slice(1, end);
-  } else {
-    h = h.replace(/:\d+$/, '');            // strip :port for IPv4 / hostname
+// B-02: DNS-rebinding protection — reject requests whose Host header doesn't match the
+// expected loopback address. Attackers can rebind a domain to 127.0.0.1 and then issue
+// requests with Host: attacker.com; this guard stops them from reaching the API.
+const _allowedHosts = new Set<string>([
+  `localhost:${PORT}`,
+  `127.0.0.1:${PORT}`,
+  `[::1]:${PORT}`,
+  ...(process.env.T3MP3ST_CORS_ORIGIN
+    ? (() => { try { return [new URL(process.env.T3MP3ST_CORS_ORIGIN!).host]; } catch { return [] as string[]; } })()
+    : []),
+]);
+app.use('/api/', (req: Request, res: Response, next: NextFunction) => {
+  const host = req.headers.host;
+  if (!host || !_allowedHosts.has(host)) {
+    res.status(421).json({ error: 'DNS rebinding protection: unexpected Host header' });
+    return;
   }
-  return isLoopbackHostname(h);
-}
-if (HOST_IS_LOOPBACK) {
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    if (isLoopbackHost(req.headers.host)) return next();
-    res.status(403).json({
-      error: 'Host header rejected',
-      detail: 'This local API only serves loopback Host headers (127.0.0.1 / localhost / ::1). A non-loopback Host was seen and blocked to prevent DNS-rebinding.',
-    });
-  });
-}
+  next();
+});
 
-app.use(express.json({ limit: '10mb' }));
+app.use((req, _res, next) => {
+  const limit = req.path === '/api/uploads/zip' ? '100mb' : '10mb';
+  express.json({ limit })(req, _res, next);
+});
+
+// Optional Bearer token auth on /api/* routes.
+// Set T3MP3ST_API_TOKEN env var to enable; unset = open (backward-compatible).
+const _apiToken = process.env.T3MP3ST_API_TOKEN;
+const _publicPaths = new Set(['/api/health', '/api/preflight', '/api/status']);
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (!_apiToken) return next();
+  if (!req.path.startsWith('/api/') && req.path !== '/api/health') return next();
+  if (_publicPaths.has(req.path)) return next();
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith('Bearer ') || auth.slice(7) !== _apiToken) {
+    res.status(401).json({ error: 'Unauthorized — set Authorization: Bearer <T3MP3ST_API_TOKEN>' });
+    return;
+  }
+  next();
+});
 
 // Request logging
 app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -313,16 +324,6 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
   // Wire all events to SSE broadcast
   tempestCommand.connectBroadcast(broadcastEvent);
 
-  // Mirror each discovered mission finding into the persistent findingsLedger so the
-  // Evidence Vault (/api/findings) reflects the run instead of showing 0 afterward.
-  tempestCommand.on('finding:discovered', ({ finding }) => {
-    try {
-      upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id);
-    } catch (err) {
-      console.error('[T3MP3ST] failed to persist mission finding to ledger:', err instanceof Error ? err.message : err);
-    }
-  });
-
   return tempestCommand;
 }
 
@@ -364,37 +365,6 @@ function inferCommandTarget(parsed: ParsedCommand): string {
   return positional[positional.length - 1] || 'unknown-network-target';
 }
 
-function resolveCommandExecutionTarget(
-  body: Record<string, unknown>,
-  parsed: ParsedCommand,
-): { target: string } | { error: string } {
-  const inferredTarget = normalizeTargetValue(inferCommandTarget(parsed));
-
-  // Local-only commands can still carry a UI target for bookkeeping, but networked
-  // commands must be authorized against the host they will actually contact. A
-  // caller-supplied body.target is NOT authoritative; at most it may mirror the
-  // parsed command target. This prevents approving one host and executing a
-  // whitelisted network command against another.
-  if (!NETWORK_COMMANDS.has(parsed.bin)) {
-    return { target: normalizeTargetValue(body.target || inferredTarget) };
-  }
-
-  if (!inferredTarget || inferredTarget === 'unknown-network-target') {
-    return { error: `Could not infer network target for ${parsed.bin}; include the target as a direct command argument.` };
-  }
-
-  if (body.target !== undefined) {
-    const suppliedTarget = normalizeTargetValue(body.target);
-    if (hostFromTarget(suppliedTarget) !== hostFromTarget(inferredTarget)) {
-      return {
-        error: `Command target mismatch: requested approval target "${suppliedTarget}" does not match parsed command target "${inferredTarget}".`,
-      };
-    }
-  }
-
-  return { target: inferredTarget };
-}
-
 async function executeCommand(command: string, timeout = 30000): Promise<ToolResult> {
   const startTime = Date.now();
   const parsed = parseCommand(command);
@@ -411,8 +381,41 @@ async function executeCommand(command: string, timeout = 30000): Promise<ToolRes
 
 
 
-// redactString / redactLedgerText / redactSecrets live in ./redact.ts (pure + unit-tested in isolation;
-// importing this file would start the HTTP listener). They are imported at the top of this module.
+function redactString(value: string): string {
+  let redacted = value;
+  for (const { pattern } of Object.values(SECRET_PATTERNS)) {
+    pattern.lastIndex = 0;
+    redacted = redacted.replace(pattern, '[redacted]');
+  }
+  return redacted
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [redacted]')
+    .replace(/(api[_-]?key|token|secret|password)=([^&\s]+)/gi, '$1=[redacted]');
+}
+
+function redactLedgerText(value: string, limit = 4000): string {
+  const redacted = redactString(value);
+  if (redacted.length <= limit) return redacted;
+  return `${redacted.slice(0, limit)}...[truncated ${redacted.length - limit} chars]`;
+}
+
+function redactSecrets(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') return redactString(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+
+  if (Array.isArray(value)) return value.map(item => redactSecrets(item, seen));
+
+  const result: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (/(api[_-]?key|authorization|cookie|credential|password|secret|token)/i.test(key)) {
+      result[key] = '[redacted]';
+    } else {
+      result[key] = redactSecrets(nested, seen);
+    }
+  }
+  return result;
+}
 
 function rejectDuplicateLedgerId<T>(res: Response, ledger: Map<string, T>, id: unknown, label: string, collectionPath: string): boolean {
   if (typeof id !== 'string' || !id.trim() || !ledger.has(id.trim())) return false;
@@ -429,13 +432,13 @@ function clientLedgerId(value: unknown, prefix: string): string {
 }
 
 // =============================================================================
-// DUAL-MODE CONTRACTS - STANDALONE + T3MP3ST ORGAN
+// CONTRACTS
 // =============================================================================
 
-type TempestMode = 'standalone' | 't3mp3st';
+type TempestMode = 'standalone';
 type DraftStatus = 'draft' | 'queued' | 'launched' | 'archived';
-type DraftSource = 'human' | 'agent' | 't3mp3st';
-type MissionFamily = 'web_api' | 'ai_red_team' | 'cloud_infra' | 'smart_contract' | 'code_supply_chain' | 'crypto_secrets' | 'reverse_binary' | 'agent_warfare' | 'social_osint' | 'reporting_remediation';
+type DraftSource = 'human' | 'agent';
+type MissionFamily = 'web_api' | 'ai_red_team' | 'cloud_infra' | 'smart_contract' | 'code_supply_chain' | 'local_code_scan' | 'crypto_secrets' | 'reverse_binary' | 'agent_warfare' | 'social_osint' | 'reporting_remediation';
 type OperationMode = 'wizard' | 'agent_harness' | 'expert_console' | 'range' | 'review_only';
 type GuardAction = 'command_execution' | 'network_request' | 'mission_execution' | 'autonomous_execution' | 'model_call';
 type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
@@ -703,62 +706,18 @@ const watchCycleLedger = new Map<string, WatchCycleRecord>();
 const memoryCapsule = new Map<string, MemoryEntry>();
 const memoryProposals = new Map<string, MemoryProposal>();
 
-/**
- * Mirror a live mission finding into the persistent findingsLedger (the one the
- * Evidence Vault reads via /api/findings). Mission findings otherwise live only in
- * the ephemeral vault (/api/mission/findings) and vanish from the Vault after a run.
- * Deduped by title+target so a finding re-emitted across ticks upserts in place.
- */
-function upsertMissionFindingToLedger(finding: {
-  id?: string;
-  title?: string;
-  description?: string;
-  severity?: unknown;
-  targetId?: string;
-}, missionId?: string): void {
-  const title = typeof finding.title === 'string' && finding.title.trim() ? finding.title.trim() : 'Untitled finding';
-  const target = normalizeTargetValue(finding.targetId);
-  const dedupeKey = `${title.toLowerCase()}::${target.toLowerCase()}`;
-  const existing = [...findingsLedger.values()].find(
-    record => `${record.title.toLowerCase()}::${record.target.toLowerCase()}` === dedupeKey,
-  );
-  const now = nowIso();
-  const severity = normalizeSeverity(finding.severity);
-  const claim = typeof finding.description === 'string' && finding.description.trim()
-    ? redactLedgerText(finding.description.trim())
-    : 'Claim pending evidence review.';
-
-  if (existing) {
-    existing.severity = severity;
-    existing.claim = claim;
-    if (missionId) existing.missionId = missionId;
-    existing.updatedAt = now;
-    findingsLedger.set(existing.id, existing);
-    return;
-  }
-
-  const record: FindingRecord = {
-    id: newId('finding'),
-    missionId,
-    operationId: undefined,
-    family: 'web_api',
-    title: redactLedgerText(title, 240),
-    target,
-    claim,
-    impact: '',
-    severity,
-    confidence: 0.5,
-    status: 'open',
-    evidenceIds: [],
-    resourceIds: [],
-    recommendedFix: '',
-    acceptanceCriteria: [],
-    createdAt: now,
-    updatedAt: now,
-    retestIds: [],
-  };
-  findingsLedger.set(record.id, record);
+interface MissionHistoryEntry {
+  missionId: string;
+  missionName: string;
+  target: string;
+  family?: string;
+  startedAt: number;
+  completedAt: number;
+  findingCount: number;
+  verifiedCount: number;
+  findings: import('./types/index.js').Finding[];
 }
+const missionHistory: MissionHistoryEntry[] = [];
 
 const ROUTE_SCORECARDS: Record<string, Record<string, number | string>> = {
   web_api: {
@@ -788,12 +747,11 @@ const ROUTE_SCORECARDS: Record<string, Record<string, number | string>> = {
 };
 
 function currentMode(): TempestMode {
-  return process.env.T3MP3ST_STATE_DIR || process.env.T3MP3ST_MODE === 't3mp3st' ? 't3mp3st' : 'standalone';
+  return 'standalone';
 }
 
 function stateRoot(): string {
-  return process.env.T3MP3ST_STATE_DIR ||
-    (process.env.T3MP3ST_STATE_DIR ? `${process.env.T3MP3ST_STATE_DIR}/organs/t3mp3st` : 'memory');
+  return process.env.T3MP3ST_STATE_DIR || 'memory';
 }
 
 function stateFilePath(): string | null {
@@ -946,7 +904,7 @@ function clampConfidence(value: unknown): number {
 
 function normalizeMissionFamily(value: unknown, fallback: MissionFamily = 'web_api'): MissionFamily {
   const family = String(value || '');
-  const families: MissionFamily[] = ['web_api', 'ai_red_team', 'cloud_infra', 'smart_contract', 'code_supply_chain', 'crypto_secrets', 'reverse_binary', 'agent_warfare', 'social_osint', 'reporting_remediation'];
+  const families: MissionFamily[] = ['web_api', 'ai_red_team', 'cloud_infra', 'smart_contract', 'code_supply_chain', 'local_code_scan', 'crypto_secrets', 'reverse_binary', 'agent_warfare', 'social_osint', 'reporting_remediation'];
   return families.includes(family as MissionFamily) ? family as MissionFamily : fallback;
 }
 
@@ -962,7 +920,7 @@ function replaceMapContents<T extends { id: string }>(map: Map<string, T>, value
 
 function buildStateSnapshot(): Record<string, unknown> {
   return {
-    schema_version: 't3mp3st_state/v1',
+    schema_version: 'plinyos.t3mp3st_state/v1',
     savedAt: nowIso(),
     mode: currentMode(),
     missionDrafts: [...missionDrafts.values()],
@@ -984,41 +942,6 @@ async function persistState(reason = 'state.updated'): Promise<void> {
   if (!file) return;
   await mkdir(stateRoot(), { recursive: true });
   await writeFile(file, JSON.stringify(redactSecrets({ ...buildStateSnapshot(), reason }), null, 2));
-}
-
-// Debounced full-snapshot writer. persistState re-serializes the ENTIRE (growing) snapshot,
-// so calling it on every contract event is O(n) write-amplification per event. This coalesces
-// a burst into ONE trailing write per PERSIST_DEBOUNCE_MS. No data loss: the trailing write
-// always captures the LATEST snapshot, and on a GRACEFUL shutdown flushPersist() (registered
-// on SIGTERM/SIGINT at startup) synchronously writes any pending snapshot — so state.json is
-// stale only on an ABRUPT (SIGKILL / power-loss) crash, same as the fs write was before.
-const PERSIST_DEBOUNCE_MS = 1000;
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-let persistPending = false;
-let persistReason = 'state.updated';
-function schedulePersist(reason: string): void {
-  persistPending = true;
-  persistReason = reason;
-  if (persistTimer) return; // a flush is already queued — it will capture the latest state
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    if (!persistPending) return;
-    persistPending = false;
-    void persistState(persistReason).catch(error => {
-      console.warn(`[T3MP3ST] State persistence failed: ${error.message || error}`);
-    });
-  }, PERSIST_DEBOUNCE_MS);
-}
-
-// Flush any pending debounced snapshot NOW (used on graceful shutdown so the debounce window
-// can't drop the last <1s of state on SIGTERM/SIGINT — Ctrl-C, docker stop, systemctl restart).
-// state.json is the only restore source, so this closes the data-loss gap the debounce opened.
-async function flushPersist(): Promise<void> {
-  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
-  if (persistPending) {
-    persistPending = false;
-    await persistState(persistReason);
-  }
 }
 
 async function appendStateEvent(type: string, payload: Record<string, unknown>): Promise<void> {
@@ -1082,7 +1005,8 @@ function isLocalOrPrivateTarget(target: string): boolean {
 
 function isLoopbackOrLabTarget(target: string): boolean {
   const host = hostFromTarget(target);
-  return !host || ['local-lab', 'localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(host) || /^127\./.test(host);
+  // B-05: 0.0.0.0 means "all interfaces", not loopback — excluded to close approval-gate bypass
+  return !host || ['local-lab', 'localhost', '127.0.0.1', '::1', '[::1]'].includes(host) || /^127\./.test(host);
 }
 
 function approvalIsFresh(approval: ApprovalRequest): boolean {
@@ -1095,13 +1019,6 @@ function approvalMatches(approval: ApprovalRequest, action: GuardAction, target:
   if (approval.action !== action) return false;
   if (approval.target === '*') return action === 'model_call' || action === 'autonomous_execution';
   return hostFromTarget(approval.target) === hostFromTarget(target);
-}
-
-function ensureExecTargetsWithinApprovedTarget(targets: string[], approvedTarget: string): string[] {
-  const approvedHost = hostFromTarget(normalizeTargetValue(approvedTarget));
-  return targets
-    .map(target => normalizeTargetValue(target))
-    .filter(target => hostFromTarget(target) !== approvedHost);
 }
 
 function approvalMatchesGateScope(approval: ApprovalRequest, action: GuardAction, operationId: string, target: string): boolean {
@@ -1126,7 +1043,7 @@ function createApprovalRequest(action: GuardAction, target: string, reason: stri
     reason,
     status: 'pending',
     operationId: typeof operationDraft?.operation_id === 'string' ? operationDraft.operation_id : undefined,
-    requestedBy: ['human', 'agent', 't3mp3st'].includes(String(body.source)) ? body.source as DraftSource : 'system',
+    requestedBy: ['human', 'agent'].includes(String(body.source)) ? body.source as DraftSource : 'system',
     createdAt: nowIso(),
     updatedAt: nowIso(),
   };
@@ -1182,11 +1099,12 @@ function familyOperators(family: MissionFamily): string[] {
   const map: Record<MissionFamily, string[]> = {
     web_api: ['coordinator', 'recon', 'scanner', 'analyst'],
     ai_red_team: ['coordinator', 'analyst', 'ghost'],
-    cloud_infra: ['coordinator', 'recon', 'scanner', 'analyst'],
+    cloud_infra: ['recon', 'web_scanner', 'exploiter', 'analyst'],
     smart_contract: ['coordinator', 'analyst'],
     code_supply_chain: ['coordinator', 'analyst', 'scanner'],
+    local_code_scan: ['code_scanner', 'analyst'],
     crypto_secrets: ['analyst', 'ghost'],
-    reverse_binary: ['analyst', 'scanner'],
+    reverse_binary: ['code_scanner', 'exploiter', 'analyst'],
     agent_warfare: ['coordinator', 'ghost', 'analyst'],
     social_osint: ['recon', 'analyst'],
     reporting_remediation: ['coordinator', 'analyst'],
@@ -1246,7 +1164,7 @@ function buildRoutePreview(draft: MissionDraft): RoutePreview {
       warnings,
     },
     operationDraft: {
-      schema_version: 't3mp3st_operation/v1',
+      schema_version: 'plinyos.t3mp3st_operation/v1',
       operation_id: `op-${draft.id.replace(/^draft_/, '')}`,
       mission_id: draft.id,
       family,
@@ -1357,7 +1275,7 @@ function buildMissionBundle(params: { draft?: MissionDraft; operationDraft?: Rec
   const pressurePaths = buildPressurePaths({ missionId, operationId, family, operationDraft, reproPacks });
 
   return redactSecrets({
-    schema_version: 't3mp3st_mission_bundle/v1',
+    schema_version: 'plinyos.t3mp3st_mission_bundle/v1',
     generatedAt: nowIso(),
     family,
     missionId: missionId || null,
@@ -1523,7 +1441,7 @@ function buildMissionGate(operationDraft: Record<string, unknown>): Record<strin
   const readinessHold = Boolean(!hypotheses.length || !findings.length || openWorkOrders.length || findingsWithoutRetest.length || findingsWithoutStrongEvidence.length || unresolvedRetests.length);
   const status = blockCount ? 'blocked' : score >= 80 && freshMissionApprovals.length && !readinessHold ? 'ready' : 'hold';
   return {
-    schema_version: 't3mp3st_mission_gate/v1',
+    schema_version: 'plinyos.t3mp3st_mission_gate/v1',
     generatedAt: nowIso(),
     family,
     missionId: missionId || null,
@@ -1638,7 +1556,7 @@ function latestMissionContext(): Record<string, unknown> {
   const latest = records[0];
   if (!latest) {
     return {
-      schema_version: 't3mp3st_mission_context/v1',
+      schema_version: 'plinyos.t3mp3st_mission_context/v1',
       missionId: null,
       operationId: null,
       family: null,
@@ -1668,7 +1586,7 @@ function latestMissionContext(): Record<string, unknown> {
   const laneSummary = missionLaneSummary({ hypotheses, workOrders, findings, retests });
 
   return redactSecrets({
-    schema_version: 't3mp3st_mission_context/v1',
+    schema_version: 'plinyos.t3mp3st_mission_context/v1',
     missionId: missionId || null,
     operationId: operationId || null,
     family: latest.family || laneSummary[0]?.family || null,
@@ -1695,6 +1613,7 @@ function workOrderSquadForFamily(family: MissionFamily): string {
     cloud_infra: 'infra-cloud',
     smart_contract: 'crypto-contract',
     code_supply_chain: 'packages',
+    local_code_scan: 'packages',
     crypto_secrets: 'crypto-secrets',
     reverse_binary: 'reverse',
     agent_warfare: 'ai-agent',
@@ -1757,15 +1676,6 @@ function createWorkOrder(input: Partial<WorkOrderRecord> & Record<string, unknow
   };
 }
 
-/**
- * decomposeHypothesis — SYNCHRONOUS hypothesis -> work-order splitter.
- *
- * NAMING NOTE: this is NOT the multi-model DecompositionOrchestrator
- * (src/orchestration). It does no LLM work — it deterministically fans a single
- * hypothesis out into a fixed set of bounded work orders (prove / disprove /
- * map_impact / owner_control / retest_design / tool_probe). The word "decompose"
- * is shared but the machinery is unrelated.
- */
 function decomposeHypothesis(hypothesis: HypothesisRecord): WorkOrderRecord[] {
   const target = hypothesis.target || 'local-lab';
   const squad = workOrderSquadForFamily(hypothesis.family);
@@ -2324,7 +2234,7 @@ async function buildSelfHealReport(params: Record<string, unknown>): Promise<Rec
   const health = blocks ? 'blocked' : actionCount ? 'repair' : watchCount ? 'watch' : 'ok';
 
   return redactSecrets({
-    schema_version: 't3mp3st_self_heal/v1',
+    schema_version: 'plinyos.t3mp3st_self_heal/v1',
     generatedAt: nowIso(),
     scope: {
       missionId: scope.missionId || null,
@@ -2450,7 +2360,7 @@ function buildEvidenceGraph(params: Record<string, unknown>): Record<string, unk
   const laneSummary = missionLaneSummary({ hypotheses, workOrders, findings, retests });
   const evidenceProvenance = summarizeEvidenceProvenance(evidence);
   return redactSecrets({
-    schema_version: 't3mp3st_evidence_graph/v1',
+    schema_version: 'plinyos.t3mp3st_evidence_graph/v1',
     generatedAt: nowIso(),
     scope: { missionId: missionId || null, operationId: operationId || null, family: family || null },
     summary: {
@@ -2631,7 +2541,7 @@ function buildReproPacks(params: Record<string, unknown>): Record<string, any> {
     }, {}),
   };
   return redactSecrets({
-    schema_version: 't3mp3st_repro_packs/v1',
+    schema_version: 'plinyos.t3mp3st_repro_packs/v1',
     generatedAt: nowIso(),
     scope: {
       missionId: missionId || null,
@@ -2748,6 +2658,18 @@ function pressureProfileForFamily(family: MissionFamily): {
       defense: 'Add lockfile policy, script allowlists, provenance attestations, and release canaries.',
       strangeRoute: 'The exploit path is a trusted chore: install, test, package, or publish.',
       toolHints: ['npm audit', 'osv-scanner', 'semgrep', 'trivy', 'slsa-verifier'],
+    },
+    local_code_scan: {
+      specialist: 'local codebase security reviewer',
+      pressureQuestion: 'Can uploaded or locally-sourced code expose injection sinks, leaked secrets, or vulnerable dependencies?',
+      capability: 'static analysis, secret detection, dependency audit',
+      entry: 'Run semgrep, gitleaks, and trivy against the extracted local target.',
+      control: 'Identify file-level injection sinks, hardcoded credentials, and CVE-flagged packages.',
+      pivot: 'Combine secret exposure with dependency vulnerabilities to trace blast radius.',
+      impact: 'Map exploitable code paths and outdated packages to real-world attack scenarios.',
+      defense: 'Add SAST gates, secret scanning pre-commit hooks, and dependency update policies.',
+      strangeRoute: 'The risk is not in live traffic — it is in code already written, shipped, or scheduled.',
+      toolHints: ['semgrep', 'gitleaks', 'trivy', 'bandit', 'osv-scanner'],
     },
     crypto_secrets: {
       specialist: 'secret and entropy hunter',
@@ -3015,7 +2937,7 @@ function buildPressurePaths(params: Record<string, unknown>): Record<string, any
     }, {}),
   };
   return redactSecrets({
-    schema_version: 't3mp3st_pressure_paths/v1',
+    schema_version: 'plinyos.t3mp3st_pressure_paths/v1',
     generatedAt: nowIso(),
     scope: {
       missionId: missionId || null,
@@ -3055,7 +2977,7 @@ function buildPressureCanary(params: Record<string, unknown>): Record<string, an
 
   if (!path) {
     return redactSecrets({
-      schema_version: 't3mp3st_pressure_canary/v1',
+      schema_version: 'plinyos.t3mp3st_pressure_canary/v1',
       generatedAt: now,
       status: 'no_path',
       canary: null,
@@ -3179,7 +3101,7 @@ function buildPressureCanary(params: Record<string, unknown>): Record<string, an
   });
 
   return redactSecrets({
-    schema_version: 't3mp3st_pressure_canary/v1',
+    schema_version: 'plinyos.t3mp3st_pressure_canary/v1',
     generatedAt: now,
     status,
     path: {
@@ -3220,7 +3142,7 @@ function buildPressureDuel(params: Record<string, unknown>): Record<string, any>
 
   if (!path) {
     return redactSecrets({
-      schema_version: 't3mp3st_pressure_duel/v1',
+      schema_version: 'plinyos.t3mp3st_pressure_duel/v1',
       generatedAt: now,
       status: 'no_path',
       survivabilityScore: 0,
@@ -3461,7 +3383,7 @@ function buildPressureDuel(params: Record<string, unknown>): Record<string, any>
   });
 
   return redactSecrets({
-    schema_version: 't3mp3st_pressure_duel/v1',
+    schema_version: 'plinyos.t3mp3st_pressure_duel/v1',
     generatedAt: now,
     status,
     survivabilityScore,
@@ -3503,7 +3425,7 @@ function buildPressureMutations(params: Record<string, unknown>): Record<string,
 
   if (!path) {
     return redactSecrets({
-      schema_version: 't3mp3st_pressure_mutations/v1',
+      schema_version: 'plinyos.t3mp3st_pressure_mutations/v1',
       generatedAt: now,
       status: 'no_path',
       summary: { total: 0, queued: 0, maxFangScore: 0 },
@@ -3723,7 +3645,7 @@ function buildPressureMutations(params: Record<string, unknown>): Record<string,
   });
 
   return redactSecrets({
-    schema_version: 't3mp3st_pressure_mutations/v1',
+    schema_version: 'plinyos.t3mp3st_pressure_mutations/v1',
     generatedAt: now,
     status: survivedDuel ? 'queued' : 'needs_duel',
     path: {
@@ -3767,7 +3689,7 @@ function buildPressureChains(params: Record<string, unknown>): Record<string, an
 
   if (!path) {
     return redactSecrets({
-      schema_version: 't3mp3st_pressure_chains/v1',
+      schema_version: 'plinyos.t3mp3st_pressure_chains/v1',
       generatedAt: now,
       status: 'no_path',
       summary: { total: 0, queued: 0, maxChainScore: 0, workOrders: 0 },
@@ -3788,7 +3710,7 @@ function buildPressureChains(params: Record<string, unknown>): Record<string, an
 
   if (!mutations.length) {
     return redactSecrets({
-      schema_version: 't3mp3st_pressure_chains/v1',
+      schema_version: 'plinyos.t3mp3st_pressure_chains/v1',
       generatedAt: now,
       status: 'no_mutations',
       path: {
@@ -4037,7 +3959,7 @@ function buildPressureChains(params: Record<string, unknown>): Record<string, an
   });
 
   return redactSecrets({
-    schema_version: 't3mp3st_pressure_chains/v1',
+    schema_version: 'plinyos.t3mp3st_pressure_chains/v1',
     generatedAt: now,
     status: summary.queued ? 'queued' : 'hold',
     path: {
@@ -4237,7 +4159,7 @@ function healthPayload(): Record<string, unknown> {
     status: 'operational',
     mode: currentMode(),
     organ: 't3mp3st',
-    version: '0.2.1',
+    version: _pkgVersion,
     apiVersion: 'v1',
     llm: {
       configured: Boolean(llmConfig.apiKey) || llmConfig.provider === 'codex',
@@ -4299,7 +4221,13 @@ function healthPayload(): Record<string, unknown> {
   };
 }
 
-async function inspectToolAvailability(): Promise<Array<{ id: string; name: string; displayName: string; binary: string; available: boolean; path?: string; category: string; risk: string; execution: string; networked: boolean; requiredFor: string[]; installHint: string; commandHint: string; parserStatus: string; note?: string }>> {
+// B-04: Cache tool-availability results so GET /api/arsenal/status doesn't spawn
+// `which` subprocesses on every request. Cache TTL is 60 s — short enough to reflect
+// newly installed tools without hammering the filesystem.
+type _ToolAvailEntry = { id: string; name: string; displayName: string; binary: string; available: boolean; path?: string; category: string; risk: string; execution: string; networked: boolean; requiredFor: string[]; installHint: string; commandHint: string; parserStatus: string; note?: string };
+let _toolAvailCache: { result: _ToolAvailEntry[]; expiresAt: number } | null = null;
+async function inspectToolAvailability(): Promise<Array<_ToolAvailEntry>> {
+  if (_toolAvailCache && _toolAvailCache.expiresAt > Date.now()) return _toolAvailCache.result;
   const requiredFor: Record<string, string[]> = {
     file: ['field_drill', 'local_artifact_inspection'],
     curl: ['api_smoke', 'http_probe'],
@@ -4323,7 +4251,7 @@ async function inspectToolAvailability(): Promise<Array<{ id: string; name: stri
     parserStatus: 'text' as const,
     notes: 'Repository context for local evidence and provenance.',
   }];
-  return Promise.all(adapters.map(async adapter => {
+  const result = await Promise.all(adapters.map(async adapter => {
     try {
       const { stdout } = await execFileAsync('which', [adapter.binary], { timeout: 1500 });
       return {
@@ -4361,6 +4289,8 @@ async function inspectToolAvailability(): Promise<Array<{ id: string; name: stri
       };
     }
   }));
+  _toolAvailCache = { result, expiresAt: Date.now() + 60_000 };
+  return result;
 }
 
 async function buildPreflightReport(): Promise<Record<string, unknown>> {
@@ -4373,7 +4303,7 @@ async function buildPreflightReport(): Promise<Record<string, unknown>> {
     ['nmap', 'nuclei', 'ffuf', 'subfinder', 'httpx', 'katana', 'semgrep', 'gitleaks', 'trivy', 'garak', 'promptfoo', 'slither', 'forge', 'radamsa'].includes(tool.name) &&
     !tool.available
   ).map(tool => tool.name);
-  const commandReadyTools = tools.filter(tool => tool.id !== 'git' && ['safe_command', 'receipt_required'].includes(tool.execution));
+  const commandReadyTools = tools.filter(tool => tool.id !== 'git' && ['safe_command', 'receipt_required', 'sidecar'].includes(tool.execution));
   const installedAdapters = tools.filter(tool => tool.available && tool.id !== 'git').length;
   const installedCommandReady = commandReadyTools.filter(tool => tool.available).length;
   const installedReadiness = commandReadyTools.length ? Math.round((installedCommandReady / commandReadyTools.length) * 100) : 0;
@@ -4457,12 +4387,12 @@ async function buildArsenalStatus(family?: string): Promise<Record<string, unkno
           : 'missing',
   }));
   const installed = tools.filter(tool => tool.available).length;
-  const commandReadyTools = tools.filter(tool => tool.execution === 'safe_command' || tool.execution === 'receipt_required');
+  const commandReadyTools = tools.filter(tool => tool.execution === 'safe_command' || tool.execution === 'receipt_required' || tool.execution === 'sidecar');
   const commandReady = commandReadyTools.length;
   const installedCommandReady = commandReadyTools.filter(tool => tool.available).length;
   const missingCommandReady = commandReadyTools.filter(tool => !tool.available).map(tool => tool.id);
   return {
-    schema_version: 't3mp3st_arsenal_status/v1',
+    schema_version: 'plinyos.t3mp3st_arsenal_status/v1',
     family: normalizedFamily || 'all',
     summary: {
       ...summarizeToolCatalog(catalog),
@@ -4538,7 +4468,7 @@ function buildArsenalPlan(params: Record<string, unknown>): Record<string, unkno
       };
     });
   return {
-    schema_version: 't3mp3st_arsenal_plan/v1',
+    schema_version: 'plinyos.t3mp3st_arsenal_plan/v1',
     family,
     target,
     objective: typeof params.objective === 'string' ? params.objective : 'Build a scoped, evidence-first tool plan.',
@@ -4587,7 +4517,7 @@ function buildArsenalActivationPlan(): Record<string, unknown> {
     }
   }
   return {
-    schema_version: 't3mp3st_arsenal_activation/v1',
+    schema_version: 'plinyos.t3mp3st_arsenal_activation/v1',
     summary: {
       ...summarizeToolCatalog(),
       frontierMilestone: FRONTIER_ARSENAL_MILESTONE,
@@ -4612,7 +4542,9 @@ function emitContractEvent(type: string, payload: Record<string, unknown>): void
   void appendStateEvent(type, payload).catch(error => {
     console.warn(`[T3MP3ST] Event persistence failed: ${error.message || error}`);
   });
-  schedulePersist(type);
+  void persistState(type).catch(error => {
+    console.warn(`[T3MP3ST] State persistence failed: ${error.message || error}`);
+  });
 }
 
 // =============================================================================
@@ -4621,6 +4553,9 @@ function emitContractEvent(type: string, payload: Record<string, unknown>): void
 
 /** Connected SSE clients */
 const sseClients: Set<Response> = new Set();
+
+/** Automation context wired up in startServer() after all maps are initialised */
+let _automationCtx: AutomationContext | null = null;
 
 /** Broadcast an event to all connected SSE clients */
 export function broadcastEvent(event: string, data: Record<string, unknown>): void {
@@ -4632,34 +4567,26 @@ export function broadcastEvent(event: string, data: Record<string, unknown>): vo
       sseClients.delete(client);
     }
   }
+  // Outbound webhooks — fire-and-forget, errors logged inside fireWebhooks
+  void fireWebhooks(event, data).catch((err: Error) =>
+    console.warn('[webhooks] fire error:', err.message),
+  );
+  // Automation rules engine
+  if (_automationCtx) {
+    void evaluateEvent(event, data, _automationCtx).catch((err: Error) =>
+      console.warn('[automation] eval error:', err.message),
+    );
+  }
 }
 
-// Bound concurrent SSE clients — each holds a Response + its own 30s heartbeat interval. A
-// single operator uses a handful of dashboard tabs; this only rejects a pathological flood.
-const MAX_SSE_CLIENTS = 64;
 app.get('/api/events', (_req: Request, res: Response) => {
-  const origin = _req.get('origin');
-  if (origin && !isLoopbackOrigin(origin)) {
-    res.status(403).json({
-      error: 'Cross-origin event stream rejected',
-      detail: 'The SSE feed may contain live mission/task/finding metadata and is only available to the localhost UI.',
-    });
-    return;
-  }
-  if (sseClients.size >= MAX_SSE_CLIENTS) {
-    res.status(503).json({ error: 'Too many event-stream clients', detail: `SSE client cap (${MAX_SSE_CLIENTS}) reached — close an existing dashboard tab and retry.` });
-    return;
-  }
-  // SSE headers. Do not use a wildcard ACAO here: browsers can open EventSource
-  // cross-origin, and the event feed carries live operational metadata. Reflect
-  // only a trusted loopback Origin; same-origin/no-Origin clients need no CORS header.
-  const headers: Record<string, string> = {
+  // SSE headers
+  res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-  };
-  if (origin) headers['Access-Control-Allow-Origin'] = origin;
-  res.writeHead(200, headers);
+    'Access-Control-Allow-Origin': '*',
+  });
 
   // Send initial heartbeat
   res.write('event: connected\ndata: {"status":"connected"}\n\n');
@@ -4712,7 +4639,7 @@ app.get('/api/arsenal/catalog', (req: Request, res: Response) => {
     .filter(adapter => !category || adapter.category === category)
     .filter(adapter => !execution || adapter.execution === execution);
   res.json({
-    schema_version: 't3mp3st_arsenal_catalog/v1',
+    schema_version: 'plinyos.t3mp3st_arsenal_catalog/v1',
     family: family || 'all',
     summary: summarizeToolCatalog(adapters),
     adapters,
@@ -4724,7 +4651,7 @@ app.get('/api/arsenal/catalog', (req: Request, res: Response) => {
 // defanged, transferable taxonomy the ai_red_team specialist (garak/promptfoo) reasons from.
 app.get('/api/ai-redteam/playbook', (_req: Request, res: Response) => {
   res.json({
-    schema_version: 't3mp3st_ai_redteam_playbook/v1',
+    schema_version: 'plinyos.t3mp3st_ai_redteam_playbook/v1',
     source: 'L1B3RT4S + P4RS3LT0NGV3 (public corpus) — defanged methodology, not payloads',
     doc: 'docs/AI_REDTEAM_TECHNIQUES.md',
     count: AI_REDTEAM_PLAYBOOK.length,
@@ -4745,32 +4672,6 @@ app.post('/api/arsenal/plan', (req: Request, res: Response) => {
 
 app.get('/api/arsenal/activation', (_req: Request, res: Response) => {
   res.json(buildArsenalActivationPlan());
-});
-
-// Capability-approval gate state (TOOL-level, distinct from the action-level /api/approvals
-// receipts): the tools approved this session + the full audit trail of gated decisions. Reads the
-// live mission's ApprovalController when one is running, else the headless pre-authorization
-// allowlist (T3MP3ST_APPROVED_TOOLS). Live decisions also stream over SSE as `arsenal.approval`.
-app.get('/api/arsenal/approvals', (_req: Request, res: Response) => {
-  const ctrl = tempestCommand?.approval ?? null;
-  const preAuthorized = (process.env.T3MP3ST_APPROVED_TOOLS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  // redactSecrets: the audit's action strings can carry a credential a tool was invoked with — scrub
-  // it before serving (this REST path bypasses the SSE emitContractEvent redaction otherwise).
-  res.json(redactSecrets({
-    schema_version: 't3mp3st.arsenal_approvals/v1',
-    active: Boolean(ctrl),
-    gatedTiers: ['intrusive', 'credential', 'dangerous'],
-    spicyTiers: ['credential', 'dangerous'],
-    approvedTools: ctrl ? ctrl.approvedTools() : preAuthorized,
-    preAuthorized,
-    audit: ctrl ? ctrl.getAudit() : [],
-    note: ctrl
-      ? 'live approval state for the active mission'
-      : 'no active mission — showing the pre-authorization allowlist (T3MP3ST_APPROVED_TOOLS)',
-  }));
 });
 
 app.get('/api/approvals', (req: Request, res: Response) => {
@@ -4888,7 +4789,7 @@ app.get('/api/operator-runbooks/:family', (req: Request, res: Response) => {
 app.get('/api/forefront-radar', (req: Request, res: Response) => {
   const family = typeof req.query.family === 'string' ? req.query.family : '';
   res.json({
-    schema_version: 't3mp3st_forefront_radar/v1',
+    schema_version: 'plinyos.t3mp3st_forefront_radar/v1',
     lanes: forefrontPressureForFamily(family),
     mandate: {
       purpose: 'show what is possible early in controlled arenas, then convert offensive insight into defensive artifacts',
@@ -5191,17 +5092,7 @@ app.post('/api/work-orders', (req: Request, res: Response) => {
   res.status(201).json(order);
 });
 
-/**
- * POST /api/hypotheses/:id/decompose (alias: /work-orders) — split a hypothesis
- * into bounded WORK ORDERS.
- *
- * NAMING NOTE: this "decompose" is the SYNCHRONOUS hypothesis -> work-order
- * splitter (see decomposeHypothesis) — it is NOT the multi-model
- * DecompositionOrchestrator (src/orchestration, exposed at POST
- * /api/whitebox/analyze). No LLM calls happen here. The /work-orders alias below
- * points at the SAME handler and is the clearer name for what this actually does.
- */
-function handleHypothesisDecompose(req: Request, res: Response): void {
+app.post('/api/hypotheses/:id/decompose', (req: Request, res: Response) => {
   const hypothesis = hypothesisLedger.get(req.params.id);
   if (!hypothesis) {
     res.status(404).json({ error: 'Hypothesis not found' });
@@ -5212,7 +5103,7 @@ function handleHypothesisDecompose(req: Request, res: Response): void {
   const existing = [...workOrderLedger.values()].filter(order => order.hypothesisId === hypothesis.id);
   emitContractEvent('hypothesis.decomposed', { hypothesisId: hypothesis.id, created: orders.length, total: existing.length });
   res.status(201).json({
-    schema_version: 't3mp3st_work_order_decomposition/v1',
+    schema_version: 'plinyos.t3mp3st_work_order_decomposition/v1',
     hypothesis,
     created: orders,
     workOrders: existing.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
@@ -5222,10 +5113,7 @@ function handleHypothesisDecompose(req: Request, res: Response): void {
       'Auto-attach completion evidence to the hypothesis graph.',
     ].filter(Boolean),
   });
-}
-app.post('/api/hypotheses/:id/decompose', (req: Request, res: Response) => handleHypothesisDecompose(req, res));
-// Alias — clearer name for the same hypothesis -> work-order splitter above.
-app.post('/api/hypotheses/:id/work-orders', (req: Request, res: Response) => handleHypothesisDecompose(req, res));
+});
 
 app.patch('/api/work-orders/:id', (req: Request, res: Response) => {
   const existing = workOrderLedger.get(req.params.id);
@@ -5325,7 +5213,7 @@ app.get('/api/watch-loop/status', (req: Request, res: Response) => {
   const cycles = latestWatchCycles(scope.missionId, scope.operationId, scope.family).slice(0, 10);
   const signals = cycles[0]?.signals || buildWatchSignals(scope);
   res.json({
-    schema_version: 't3mp3st_watch_loop_status/v1',
+    schema_version: 'plinyos.t3mp3st_watch_loop_status/v1',
     scope: {
       missionId: scope.missionId || null,
       operationId: scope.operationId || null,
@@ -5348,7 +5236,7 @@ app.get('/api/watch-loop/status', (req: Request, res: Response) => {
 app.post('/api/watch-loop/run', (req: Request, res: Response) => {
   const cycle = runWatchLoop(req.body as Record<string, unknown>);
   res.status(201).json({
-    schema_version: 't3mp3st_watch_loop_cycle/v1',
+    schema_version: 'plinyos.t3mp3st_watch_loop_cycle/v1',
     ...cycle,
   });
 });
@@ -5555,7 +5443,7 @@ app.post('/api/mission-drafts', (req: Request, res: Response) => {
     urgency: ['low', 'normal', 'high', 'critical'].includes(String(body.urgency)) ? body.urgency as MissionDraft['urgency'] : 'normal',
     opsecPreference: ['overt', 'normal', 'covert', 'ghost'].includes(String(body.opsecPreference)) ? body.opsecPreference as MissionDraft['opsecPreference'] : 'normal',
     mode: currentMode(),
-    source: ['human', 'agent', 't3mp3st'].includes(String(body.source)) ? body.source as DraftSource : 'human',
+    source: ['human', 'agent'].includes(String(body.source)) ? body.source as DraftSource : 'human',
     status: 'draft',
     createdAt: now,
     updatedAt: now,
@@ -5618,7 +5506,7 @@ app.post('/api/route-preview', (req: Request, res: Response) => {
     urgency: ['low', 'normal', 'high', 'critical'].includes(String(body.urgency)) ? body.urgency as MissionDraft['urgency'] : 'normal',
     opsecPreference: ['overt', 'normal', 'covert', 'ghost'].includes(String(body.opsecPreference)) ? body.opsecPreference as MissionDraft['opsecPreference'] : 'normal',
     mode: currentMode(),
-    source: ['human', 'agent', 't3mp3st'].includes(String(body.source)) ? body.source as DraftSource : 'human',
+    source: ['human', 'agent'].includes(String(body.source)) ? body.source as DraftSource : 'human',
     status: 'draft',
     createdAt: nowIso(),
     updatedAt: nowIso(),
@@ -5690,7 +5578,7 @@ app.post('/api/promotion/evaluate', (req: Request, res: Response) => {
 
 app.get('/api/learning/status', (_req: Request, res: Response) => {
   res.json({
-    schema_version: 't3mp3st_learning_status/v1',
+    schema_version: 'plinyos.t3mp3st_learning_status/v1',
     policy: {
       silentLearning: false,
       proposalRequired: true,
@@ -5733,14 +5621,14 @@ app.get('/api/learning/status', (_req: Request, res: Response) => {
 app.post('/api/learning/run-review', (req: Request, res: Response) => {
   const review = buildLearningReview(req.body as Record<string, unknown>);
   res.status(201).json({
-    schema_version: 't3mp3st_learning_review/v1',
+    schema_version: 'plinyos.t3mp3st_learning_review/v1',
     ...review,
   });
 });
 
 app.get('/api/memory/capsule', (_req: Request, res: Response) => {
   res.json({
-    schema_version: 't3mp3st_memory_capsule/v1',
+    schema_version: 'plinyos.t3mp3st_memory_capsule/v1',
     entries: [...memoryCapsule.values()],
     policy: 'accepted memory only; proposals are separate and inspectable',
   });
@@ -5749,7 +5637,7 @@ app.get('/api/memory/capsule', (_req: Request, res: Response) => {
 app.get('/api/memory/proposals', (req: Request, res: Response) => {
   const status = typeof req.query.status === 'string' ? req.query.status : '';
   res.json({
-    schema_version: 't3mp3st_memory_proposals/v1',
+    schema_version: 'plinyos.t3mp3st_memory_proposals/v1',
     proposals: [...memoryProposals.values()]
       .filter(proposal => !status || proposal.status === status)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
@@ -5886,9 +5774,8 @@ app.post('/api/tools/execute', async (req: Request, res: Response): Promise<void
   if (!command) { res.status(400).json({ error: 'Command required' }); return; }
   const parsed = parseCommand(command);
   if ('error' in parsed) { res.status(400).json({ error: parsed.error }); return; }
-  const targetResolution = resolveCommandExecutionTarget(body, parsed);
-  if ('error' in targetResolution) { res.status(400).json({ error: targetResolution.error }); return; }
-  const guard = guardAction(body, 'command_execution', targetResolution.target, `Run ${parsed.bin} against ${targetResolution.target}`);
+  const target = normalizeTargetValue(body.target || inferCommandTarget(parsed));
+  const guard = guardAction(body, 'command_execution', target, `Run ${parsed.bin} against ${target}`);
   if (!guard.allowed) { blockForApproval(res, guard); return; }
   const result = await executeCommand(command, timeout);
   res.json(result);
@@ -5936,8 +5823,6 @@ app.get('/api/tools', (_req: Request, res: Response) => {
 });
 
 app.post('/api/llm/chat', async (req: Request, res: Response): Promise<void> => {
-  // Caller-supplied systemPrompt is a local-operator convenience (the UI uses it);
-  // safe here because the cross-origin CSRF guard above blocks foreign-webpage drive-by.
   const { message, systemPrompt } = req.body;
   if (!message) { res.status(400).json({ error: 'Message required' }); return; }
   if (!llm) { res.status(503).json({ error: 'LLM not configured' }); return; }
@@ -5965,29 +5850,28 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     apiKey,
     provider = 'openrouter',
     model = 'anthropic/claude-sonnet-4',
-    // OPTIONAL white-box source: an absolute path to a LOCAL repo you own. When
-    // present, we ingest + security-rank it and hand the packed source to the
-    // command via setWhiteboxSource BEFORE start(), so operators reason over the
-    // real source instead of black-box probing. Absent = unchanged behavior.
-    repoPath,
-  } = req.body;
+    family,
+    spiderScope,
+    spiderDepth,
+    spiderMaxPages,
+    cloudCredentials,
+    sandboxNetworkMode,
+    sandboxDurationSec,
+    sandboxAlias,
+  } = req.body as {
+    name?: string; targets?: any[]; operators?: string[];
+    apiKey?: string; provider?: string; model?: string;
+    family?: string; spiderScope?: string; spiderDepth?: number; spiderMaxPages?: number;
+    cloudCredentials?: CloudCredentials;
+    sandboxNetworkMode?: string; sandboxDurationSec?: number; sandboxAlias?: string;
+  };
 
   // Use provided apiKey or fall back to server-configured one. Local-agent backends
   // (Claude Code / Codex / Hermes) need NO key — the agent uses its own login.
-  // SECURITY NOTE: apiKey is read from the request body (Authorization header is
-  // preferred). Kept body-accepted for the same-origin UI; only reachable from
-  // the local operator (loopback bind + origin guard). Header move is out of scope.
   const effectiveKey = apiKey || config.getLLMConfig().apiKey;
   if (providerNeedsApiKey(provider) && !effectiveKey) {
     res.status(400).json({ error: 'API key required — pass apiKey, configure one on the server, or connect a local agent (Claude Code / Codex / Hermes)' });
     return;
-  }
-  if (provider === 'local-agent') {
-    const localAgent = await requireLiveLocalAgent(model);
-    if (!localAgent.ok) {
-      res.status(503).json({ error: localAgent.error });
-      return;
-    }
   }
 
   if (targets.length === 0) {
@@ -5997,34 +5881,90 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
 
   for (const target of targets) {
     const targetValue = normalizeTargetValue(target);
+    // local:// targets are local filesystem operations — no network approval needed
+    if (targetValue.startsWith('local://')) continue;
     const guard = guardAction(req.body as Record<string, unknown>, 'mission_execution', targetValue, `Start mission ${name} against ${targetValue}`);
     if (!guard.allowed) { blockForApproval(res, guard); return; }
   }
 
-  // B-03: if an OPTIONAL white-box repoPath was supplied, containment-check it HERE
-  // (canonicalize + confine to the allowed root) before we build/start the command,
-  // so a bad/escaping path 400s cleanly instead of half-starting a run.
-  let containedRepoPath: string | undefined;
-  if (typeof repoPath === 'string' && repoPath.trim()) {
-    try {
-      containedRepoPath = resolveContainedRepoPath(repoPath);
-    } catch (e) {
-      if (e instanceof RepoPathError) { res.status(400).json({ error: `repoPath rejected: ${e.message}` }); return; }
-      // Guarantee a response even for an unexpected error — a bare `throw` in this async
-      // handler becomes an unhandledRejection (Express 4 won't route it), hanging the client.
-      console.error('[T3MP3ST] repoPath validation error:', e);
-      res.status(500).json({ error: 'repoPath validation failed' });
-      return;
-    }
-  }
-
   try {
+    // Snapshot previous mission before replacing
+    if (tempestCommand) {
+      const oldMission = tempestCommand.mission.getActiveMission();
+      const oldFindings = tempestCommand.vault.getAllFindings();
+      if (oldFindings.length > 0) {
+        const targets = tempestCommand.targetEnv.getAllTargets();
+        missionHistory.push({
+          missionId: oldMission?.id || `mission-${Date.now()}`,
+          missionName: oldMission?.name || 'Unknown',
+          target: targets[0]?.address || 'unknown',
+          family: oldMission?.family as string | undefined,
+          startedAt: oldMission?.startedAt || Date.now(),
+          completedAt: Date.now(),
+          findingCount: oldFindings.length,
+          verifiedCount: oldFindings.filter(f => f.verifiedAt).length,
+          findings: oldFindings,
+        });
+      }
+    }
+
     const cmd = createTempestCommandInstance(name, effectiveKey, provider, model);
+
+    // Apply mission family if provided — controls phases and task factories
+    // Auto-upgrade local_code_scan → reverse_binary when target looks like a binary file
+    let resolvedFamily = family;
+    const firstTarget = (targets[0]?.host || targets[0] || '') as string;
+    if (resolvedFamily === 'local_code_scan' && firstTarget.startsWith('local://')) {
+      const fname = firstTarget.slice(8).split('/').pop() ?? '';
+      const hasBinaryExt = /\.(elf|exe|dll|so|dylib|bin|axf|o|ko|sys|apk|ipa|out|fw|img|rom|hex|srec|mot)(\.|$)/i.test(fname);
+      const hasNoExt = !fname.includes('.');
+      if (hasBinaryExt) {
+        resolvedFamily = 'reverse_binary';
+      } else if (hasNoExt) {
+        // No extension — check if it's a directory (code repo) or a file (likely a binary).
+        // macOS/Linux binaries commonly have no extension; project folders also have no extension.
+        const localPath = `/data/uploads/${fname}`;
+        try {
+          const isDir = existsSync(localPath) && statSync(localPath).isDirectory();
+          if (!isDir) resolvedFamily = 'reverse_binary';
+        } catch {
+          resolvedFamily = 'reverse_binary'; // can't stat → assume binary
+        }
+      }
+    }
+    if (resolvedFamily) {
+      const validFamilies = ['web_api', 'ai_red_team', 'cloud_infra', 'smart_contract', 'code_supply_chain', 'local_code_scan', 'crypto_secrets', 'reverse_binary', 'agent_warfare', 'social_osint', 'reporting_remediation'];
+      if (validFamilies.includes(resolvedFamily)) cmd.setMissionFamily(resolvedFamily as any);
+    }
+
+    // Apply spider/crawl options if provided
+    const spiderOpts: { spiderScope?: string; spiderDepth?: number; spiderMaxPages?: number } = {};
+    if (spiderScope && ['strict', 'subdomains'].includes(String(spiderScope))) spiderOpts.spiderScope = String(spiderScope);
+    else if (spiderScope) spiderOpts.spiderScope = String(spiderScope); // custom allowlist passthrough
+    if (spiderDepth !== undefined) spiderOpts.spiderDepth = Math.max(1, Math.min(10, Number(spiderDepth)));
+    if (spiderMaxPages !== undefined) spiderOpts.spiderMaxPages = Math.max(5, Math.min(200, Number(spiderMaxPages)));
+    if (Object.keys(spiderOpts).length > 0) cmd.setScanOptions(spiderOpts);
+
+    // Apply sandbox execution options if provided (reverse_binary family)
+    const sbxOpts: { networkMode?: string; durationSec?: number; alias?: string } = {};
+    if (sandboxNetworkMode && ['none', 'monitored', 'open'].includes(String(sandboxNetworkMode))) sbxOpts.networkMode = String(sandboxNetworkMode);
+    if (sandboxDurationSec !== undefined) sbxOpts.durationSec = Math.max(5, Math.min(300, Number(sandboxDurationSec)));
+    if (sandboxAlias?.trim()) sbxOpts.alias = sandboxAlias.trim();
+    if (Object.keys(sbxOpts).length > 0) cmd.setSandboxOptions(sbxOpts);
 
     // Add targets
     for (const t of targets) {
       const host: string = t.host || t;
-      if (host.startsWith('http://') || host.startsWith('https://')) {
+      if (host.startsWith('local://')) {
+        // Local file scan target — no URL or port needed
+        const localName = host.slice(8);
+        cmd.targetEnv.addTarget({
+          name: localName,
+          type: 'host',
+          zone: 'internal',
+          address: host,
+        });
+      } else if (host.startsWith('http://') || host.startsWith('https://')) {
         cmd.targetEnv.addTarget(createTargetFromUrl(host));
       } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
         cmd.targetEnv.addTarget(createTargetFromIP(host));
@@ -6033,13 +5973,21 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       }
     }
 
-    // Spawn operators
+    // Spawn operators — filter to family-appropriate archetypes when family is known.
+    // For code_supply_chain, only code_scanner + analyst have tasks; spawning generic web
+    // operators (recon, exploiter, etc.) just adds idle noise with zero upside.
     const spawnedOps: Array<{ id: string; callsign: string; archetype: string }> = [];
-    const validArchetypes: OperatorArchetype[] = ['recon', 'scanner', 'exploiter', 'infiltrator', 'exfiltrator', 'ghost', 'coordinator', 'analyst'];
+    const allKnownArchetypes: OperatorArchetype[] = [
+      'recon', 'scanner', 'web_scanner', 'code_scanner', 'exploiter',
+      'infiltrator', 'exfiltrator', 'ghost', 'coordinator', 'analyst',
+    ];
+    const allowedArchetypes: OperatorArchetype[] = family
+      ? getArchetypesForFamily(family as MissionFamily)
+      : allKnownArchetypes;
 
     for (const opId of operators) {
       const archetype = opId as OperatorArchetype;
-      if (validArchetypes.includes(archetype)) {
+      if (allKnownArchetypes.includes(archetype) && allowedArchetypes.includes(archetype)) {
         const callsign = archetype.charAt(0).toUpperCase() + archetype.slice(1) + '-1';
         try {
           const op = cmd.spawnOperator(callsign, archetype);
@@ -6051,21 +5999,14 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       }
     }
 
-    // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
-    // exists on disk, ingest + security-rank it and feed the packed source into
-    // the command before it starts, so operators analyze real source you own
-    // rather than probing a black box. Reads LOCAL disk only — no network target.
-    let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown } | undefined;
-    if (containedRepoPath) {
-      const wb = ingestRepoToSourceContext(containedRepoPath);
-      // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
-      // black-box view with an empty blob; the includedUnits:0 in the response signals it).
-      if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
-      whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats };
-    }
-
     // Start the command loop (auto-creates mission, auto-dispatches tasks)
     cmd.start();
+
+    // Store cloud credentials for this mission (session-only, never persisted)
+    if (cloudCredentials && family === 'cloud_infra') {
+      const activeMission = cmd.mission.getActiveMission();
+      if (activeMission?.id) setMissionCredentials(activeMission.id, cloudCredentials);
+    }
 
     broadcastEvent('mission:started', {
       name,
@@ -6080,83 +6021,12 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       operators: spawnedOps,
       targets: cmd.targetEnv.getAllTargets().map(t => ({ id: t.id, address: t.address, type: t.type })),
       status: cmd.getStatus(),
-      ...(whitebox ? { whitebox } : {}),
     });
   } catch (error: any) {
     console.error('[T3MP3ST] Mission start failed:', error);
     res.status(500).json({ error: error.message || 'Failed to start mission' });
   }
 });
-
-/**
- * POST /api/whitebox/analyze — run the full white-box pipeline against a LOCAL repo.
- *
- * Body: { repoPath, objective, maxRounds? }
- *
- * This analyzes LOCAL source you OWN (no network target, no probing) — the
- * code-ingest → context-pack → DecompositionOrchestrator chain. It is LLM-HEAVY
- * (multiple orchestrator + worker round-trips), so it may take a while to return.
- */
-app.post('/api/whitebox/analyze', async (req: Request, res: Response): Promise<void> => {
-  const { repoPath, objective, maxRounds } = req.body as {
-    repoPath?: unknown;
-    objective?: unknown;
-    maxRounds?: unknown;
-  };
-
-  if (typeof objective !== 'string' || !objective.trim()) {
-    res.status(400).json({ error: 'objective required' });
-    return;
-  }
-  // B-03: containment-check the operator-supplied repoPath (canonicalize + confine
-  // to the allowed root) BEFORE any disk read; a bad/escaping path 400s, not 500s.
-  let safeRepoPath: string;
-  try {
-    safeRepoPath = resolveContainedRepoPath(repoPath);
-  } catch (e) {
-    if (e instanceof RepoPathError) { res.status(400).json({ error: e.message }); return; }
-    // Guarantee a response even for an unexpected error — a bare `throw` in this async
-    // handler becomes an unhandledRejection (Express 4 won't route it), hanging the client.
-    console.error('[T3MP3ST] repoPath validation error:', e);
-    res.status(500).json({ error: 'repoPath validation failed' });
-    return;
-  }
-
-  try {
-    const result = await runWhiteboxAnalysis({
-      repoPath: safeRepoPath,
-      objective,
-      maxRounds: typeof maxRounds === 'number' ? maxRounds : undefined,
-    });
-    res.json(result);
-  } catch (error: any) {
-    console.error('[T3MP3ST] White-box analysis failed:', error);
-    res.status(500).json({ error: error?.message || 'White-box analysis failed' });
-  }
-});
-
-/**
- * GET /api/mission/report and GET /api/mission/:id/report — export the engagement
- * report (markdown) for the given mission id, or the active mission if none is
- * given. 404 when there is no mission / nothing to report.
- */
-function handleMissionReport(req: Request, res: Response): void {
-  const cmd = getTempestCommand();
-  if (!cmd) {
-    res.status(404).json({ error: 'No active mission' });
-    return;
-  }
-  const missionId = typeof req.params.id === 'string' && req.params.id ? req.params.id : undefined;
-  try {
-    const report = cmd.generateReport(missionId);
-    res.json({ success: true, missionId: missionId || null, report });
-  } catch (error: any) {
-    // generateReport throws when no mission is found for reporting.
-    res.status(404).json({ error: error?.message || 'No mission found for reporting' });
-  }
-}
-app.get('/api/mission/report', (req: Request, res: Response) => handleMissionReport(req, res));
-app.get('/api/mission/:id/report', (req: Request, res: Response) => handleMissionReport(req, res));
 
 /**
  * POST /api/mission/stop — Stop the active mission
@@ -6168,10 +6038,9 @@ app.post('/api/mission/stop', (_req: Request, res: Response) => {
     return;
   }
 
+  const missionId = cmd.mission.getActiveMission()?.id;
   cmd.stop();
-  // Stop the General's sitrep interval too — otherwise startMonitoring's setInterval
-  // leaks and keeps firing against a dead mission.
-  if (activeGeneral) activeGeneral.stopMonitoring();
+  if (missionId) clearMissionCredentials(missionId);
   broadcastEvent('mission:stopped', { timestamp: Date.now() });
   res.json({ success: true, message: 'Mission stopped' });
 });
@@ -6224,7 +6093,6 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
   res.json({
     active: status.running,
     paused: status.paused,
-    stallReason: status.stallReason,
     name: status.name,
     tickCount: status.tickCount,
     mission: mission ? {
@@ -6249,6 +6117,7 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
       phase: f.phase,
       operatorId: f.operatorId,
       discoveredAt: f.discoveredAt,
+      targetId: f.targetId,
     })),
   });
 });
@@ -6296,7 +6165,7 @@ app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
   res.json({ ok: true, archetype, operator: updated });
 });
 
-app.post('/api/operators/spawn', (req: Request, res: Response): void => {
+app.post('/api/operators/spawn', async (req: Request, res: Response): Promise<void> => {
   const cmd = getTempestCommand();
   if (!cmd) {
     res.status(400).json({ error: 'No active mission — start a mission first' });
@@ -6313,6 +6182,7 @@ app.post('/api/operators/spawn', (req: Request, res: Response): void => {
 
   try {
     const op = cmd.spawnOperator(effectiveCallsign, archetype as OperatorArchetype);
+
     broadcastEvent('operator:spawned', { id: op.id, callsign: op.callsign, archetype });
     res.json({ success: true, operator: op.getSummary() });
   } catch (error: any) {
@@ -6460,10 +6330,26 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
 
   res.json({
     findings: cmd.vault.getAllFindings(),
-    // Redact: never return raw harvested secrets over the API (only metadata + a
-    // secretCaptured flag). Loopback-only mitigates, but a security tool must not dump
-    // secrets in its own responses (external-audit P0).
-    credentials: cmd.cell.getAllCredentials().map(redactCredential),
+    credentials: cmd.cell.getAllCredentials(),
+  });
+});
+
+/**
+ * GET /api/mission/history — Past mission runs (all completed engagements)
+ */
+app.get('/api/mission/history', (_req: Request, res: Response) => {
+  res.json({
+    runs: missionHistory.map(run => ({
+      missionId: run.missionId,
+      missionName: run.missionName,
+      target: run.target,
+      family: run.family,
+      startedAt: run.startedAt,
+      completedAt: run.completedAt,
+      findingCount: run.findingCount,
+      verifiedCount: run.verifiedCount,
+      findings: run.findings,
+    })),
   });
 });
 
@@ -6478,24 +6364,6 @@ function providerNeedsApiKey(provider: string): boolean {
   return !['codex', 'mock', 'local', 'local-agent'].includes(provider);
 }
 
-function readPositiveTimeoutEnv(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return undefined;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function readGeneralTimeoutEnv(): number | undefined {
-  return readPositiveTimeoutEnv('TEMPEST_GENERAL_TIMEOUT_MS')
-    ?? readPositiveTimeoutEnv('T3MP3ST_GENERAL_TIMEOUT_MS');
-}
-
-// SECURITY NOTE: `apiKey` is accepted from the request BODY here (and in the
-// mission/general routes that call this). Sending secrets in the body is not
-// ideal — an Authorization header is preferred — but the same-origin UI posts
-// the key in the body, so we accept it to avoid breaking it. Moving to a header
-// needs a coordinated UI change and is out of scope. The body key is only ever
-// reachable from the local operator (loopback bind + origin guard).
 function resolveGeneralLLMConfig(provider: string, model: string | undefined, apiKey: string | undefined): {
   provider: any;
   model: string;
@@ -6513,9 +6381,7 @@ function resolveGeneralLLMConfig(provider: string, model: string | undefined, ap
       model: model || 'codex',
       maxTokens: 8192,
       temperature: 0.4,
-      timeout: readGeneralTimeoutEnv()
-        ?? readPositiveTimeoutEnv('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS')
-        ?? 600000,
+      timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000,
     };
   }
   const baseConfig = config.getLLMConfig(selectedProvider as any, model);
@@ -6529,7 +6395,7 @@ function resolveGeneralLLMConfig(provider: string, model: string | undefined, ap
     apiKey: effectiveKey,
     maxTokens: 8192,
     temperature: 0.4,
-    timeout: readGeneralTimeoutEnv() ?? 300000, // General planning needs room (was a hardcoded 60s); override via env
+    timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000, // General planning needs room (was a hardcoded 60s); override via env
   };
 }
 
@@ -6540,12 +6406,14 @@ function resolveGeneralLLMConfig(provider: string, model: string | undefined, ap
  * front door performs the SAME real bring-up — not a "mission launching" stub.
  */
 function bringUpMissionFromPlan(
-  execConfig: { missionName: string; targets: string[]; operators: string[] },
+  execConfig: { missionName: string; targets: string[]; operators: string[]; family?: string },
   generalConfig: { apiKey?: string; provider: any; model: string },
 ): { spawnedOps: Array<{ id: string; callsign: string; archetype: string }>; status: any } {
   const cmd = createTempestCommandInstance(execConfig.missionName, generalConfig.apiKey, generalConfig.provider, generalConfig.model);
+  if (execConfig.family) cmd.setMissionFamily(execConfig.family as any);
   for (const target of execConfig.targets) {
-    if (target.startsWith('http://') || target.startsWith('https://')) cmd.targetEnv.addTarget(createTargetFromUrl(target));
+    if (target.startsWith('local://')) cmd.targetEnv.addTarget(createTargetFromIP(target));
+    else if (target.startsWith('http://') || target.startsWith('https://')) cmd.targetEnv.addTarget(createTargetFromUrl(target));
     else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(target)) cmd.targetEnv.addTarget(createTargetFromIP(target));
     else cmd.targetEnv.addTarget(createTargetFromUrl(`http://${target}`));
   }
@@ -6594,11 +6462,8 @@ async function runCodexExecReadinessProbe(command: string): Promise<{ stdout: st
       reject(new Error('Codex exec readiness probe timed out'));
     }, 30000);
 
-    // Bounded accumulation so a runaway/verbose child can't grow these strings without limit
-    // before the 30s timer fires (matches the local-agent caps). A normal probe emits a tiny
-    // marker, so this only trims a pathological flood.
-    child.stdout.on('data', chunk => { if (stdout.length < 8_000_000) stdout += chunk.toString(); });
-    child.stderr.on('data', chunk => { if (stderr.length < 200_000) stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.on('error', error => {
       clearTimeout(timer);
       reject(error);
@@ -6621,23 +6486,11 @@ async function runCodexExecReadinessProbe(command: string): Promise<{ stdout: st
 /**
  * GET /api/codex/status — Check whether local Codex CLI/account auth can be used.
  */
-function codexUnavailable(res: Response, error: any): void {
-  res.status(503).json({
-    available: false,
-    provider: 'codex',
-    error: error?.message || 'Codex CLI unavailable',
-    hint: 'Install/login to Codex CLI, then retry. T3MP3ST does not need your account token.',
-  });
-}
-
-// GET is read-only: version + availability, NO exec. B-04: the exec self-test
-// runs `codex exec`, so it must NOT be reachable by a GET (drive-by / CSRF-able);
-// it lives on POST /api/codex/probe below, behind the cross-origin guard.
-app.get('/api/codex/status', async (_req: Request, res: Response): Promise<void> => {
+app.get('/api/codex/status', async (req: Request, res: Response): Promise<void> => {
   try {
     const command = config.get('codex').command || 'codex';
     const { stdout } = await execFileAsync(command, ['--version'], { timeout: 5000 });
-    res.json({
+    const payload: Record<string, unknown> = {
       available: true,
       provider: 'codex',
       authMode: 'local-codex-account',
@@ -6645,40 +6498,29 @@ app.get('/api/codex/status', async (_req: Request, res: Response): Promise<void>
       command,
       version: stdout.trim(),
       executionMode: 'codex exec --ephemeral --sandbox read-only --ask-for-approval never',
-      execProbe: 'POST /api/codex/probe',   // exec self-test moved off GET (B-04)
-    });
-  } catch (error: any) {
-    codexUnavailable(res, error);
-  }
-});
-
-// B-04: Codex exec readiness self-test — POST (not GET) so the cross-origin CSRF
-// guard covers it; a drive-by page can't trigger `codex exec` via a bare GET.
-// Returns availability + version plus the exec self-test result.
-app.post('/api/codex/probe', async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const command = config.get('codex').command || 'codex';
-    const { stdout } = await execFileAsync(command, ['--version'], { timeout: 5000 });
-    const payload: Record<string, unknown> = {
-      available: true,
-      provider: 'codex',
-      command,
-      version: stdout.trim(),
-      executionMode: 'codex exec --ephemeral --sandbox read-only --ask-for-approval never',
     };
-    try {
-      const probe = await runCodexExecReadinessProbe(command);
-      const combined = `${probe.stdout || ''}\n${probe.stderr || ''}`;
-      payload.execReady = combined.includes('T3MP3ST_CODEX_READY');
-      payload.selfTest = payload.execReady ? 'passed' : 'completed_without_ready_marker';
-    } catch (probeError: any) {
-      payload.execReady = false;
-      payload.selfTest = 'failed';
-      payload.executionError = String(probeError?.stderr || probeError?.message || probeError).trim().slice(0, 1000);
+
+    if (req.query.probe === 'exec') {
+      try {
+        const probe = await runCodexExecReadinessProbe(command);
+        const combined = `${probe.stdout || ''}\n${probe.stderr || ''}`;
+        payload.execReady = combined.includes('T3MP3ST_CODEX_READY');
+        payload.selfTest = payload.execReady ? 'passed' : 'completed_without_ready_marker';
+      } catch (probeError: any) {
+        payload.execReady = false;
+        payload.selfTest = 'failed';
+        payload.executionError = String(probeError?.stderr || probeError?.message || probeError).trim().slice(0, 1000);
+      }
     }
+
     res.json(payload);
   } catch (error: any) {
-    codexUnavailable(res, error);
+    res.status(503).json({
+      available: false,
+      provider: 'codex',
+      error: error.message || 'Codex CLI unavailable',
+      hint: 'Install/login to Codex CLI, then retry. T3MP3ST does not need your account token.',
+    });
   }
 });
 
@@ -6711,9 +6553,6 @@ app.post('/api/general/plan', async (req: Request, res: Response): Promise<void>
     // Create a dedicated LLM backbone for the General
     const generalLLM = new LLMBackbone(generalConfig);
 
-    // Stop the outgoing General's monitor before we drop the reference — otherwise its
-    // sitrep setInterval leaks and keeps firing after we replace the instance.
-    if (activeGeneral) activeGeneral.stopMonitoring();
     activeGeneral = new OpGeneral(generalLLM);
 
     // Wire General events to SSE
@@ -6721,6 +6560,7 @@ app.post('/api/general/plan', async (req: Request, res: Response): Promise<void>
     activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', data as any));
     activeGeneral.on('general:review', (data) => broadcastEvent('general:review', data as any));
     activeGeneral.on('general:plan_failed', (data) => broadcastEvent('general:plan_failed', data as any));
+    activeGeneral.on('general:executing', (data) => broadcastEvent('general:executing', data as any));
     activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', data as any));
     activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', data as any));
     activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', data as any));
@@ -6807,10 +6647,13 @@ app.post('/api/general/execute', async (req: Request, res: Response): Promise<vo
       generalConfig.provider,
       generalConfig.model
     );
+    if (execConfig.family) cmd.setMissionFamily(execConfig.family as any);
 
     // Add targets from the plan
     for (const target of execConfig.targets) {
-      if (target.startsWith('http://') || target.startsWith('https://')) {
+      if (target.startsWith('local://')) {
+        cmd.targetEnv.addTarget(createTargetFromIP(target));
+      } else if (target.startsWith('http://') || target.startsWith('https://')) {
         cmd.targetEnv.addTarget(createTargetFromUrl(target));
       } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(target)) {
         cmd.targetEnv.addTarget(createTargetFromIP(target));
@@ -6908,14 +6751,13 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
     // Create General
     const generalLLM = new LLMBackbone(generalConfig);
 
-    // Stop the outgoing General's monitor before dropping the reference (setInterval leak).
-    if (activeGeneral) activeGeneral.stopMonitoring();
     activeGeneral = new OpGeneral(generalLLM);
 
     // Wire events
     activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', data as any));
     activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', data as any));
     activeGeneral.on('general:review', (data) => broadcastEvent('general:review', data as any));
+    activeGeneral.on('general:executing', (data) => broadcastEvent('general:executing', data as any));
     activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', data as any));
     activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', data as any));
     activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', data as any));
@@ -6952,9 +6794,12 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
       generalConfig.provider,
       generalConfig.model
     );
+    if (execConfig.family) cmd.setMissionFamily(execConfig.family as any);
 
     for (const target of execConfig.targets) {
-      if (target.startsWith('http://') || target.startsWith('https://')) {
+      if (target.startsWith('local://')) {
+        cmd.targetEnv.addTarget(createTargetFromIP(target));
+      } else if (target.startsWith('http://') || target.startsWith('https://')) {
         cmd.targetEnv.addTarget(createTargetFromUrl(target));
       } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(target)) {
         cmd.targetEnv.addTarget(createTargetFromIP(target));
@@ -7143,9 +6988,10 @@ import { Admiral, briefToDirective, type ChatMsg, type MissionBrief } from './ad
  */
 app.post('/api/admiral/converse', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { messages, provider = 'openrouter', model, apiKey } = req.body as {
+    const { messages, provider = 'openrouter', model, apiKey: bodyApiKey } = req.body as {
       messages: ChatMsg[]; provider?: string; model?: string; apiKey?: string;
     };
+    const apiKey = bodyApiKey || (req.headers['x-llm-api-key'] as string | undefined);
     if (!Array.isArray(messages) || messages.length === 0) {
       res.status(400).json({ error: 'messages[] required' });
       return;
@@ -7173,9 +7019,10 @@ app.post('/api/admiral/converse', async (req: Request, res: Response): Promise<v
  */
 app.post('/api/admiral/suggest', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { operatorPrompt, archetype, failureSignal, provider = 'openrouter', model, apiKey } = req.body as {
+    const { operatorPrompt, archetype, failureSignal, provider = 'openrouter', model, apiKey: bodyApiKey } = req.body as {
       operatorPrompt?: string; archetype?: string; failureSignal?: string; provider?: string; model?: string; apiKey?: string;
     };
+    const apiKey = bodyApiKey || (req.headers['x-llm-api-key'] as string | undefined);
     let prompt = typeof operatorPrompt === 'string' ? operatorPrompt : '';
     if (!prompt && archetype) {
       const found = listOperatorPrompts().find((o) => o.archetype === archetype);
@@ -7208,9 +7055,10 @@ app.post('/api/admiral/suggest', async (req: Request, res: Response): Promise<vo
  */
 app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { brief, confirmed, provider = 'openrouter', model, apiKey } = req.body as {
+    const { brief, confirmed, provider = 'openrouter', model, apiKey: bodyApiKey } = req.body as {
       brief: MissionBrief; confirmed?: boolean; provider?: string; model?: string; apiKey?: string;
     };
+    const apiKey = bodyApiKey || (req.headers['x-llm-api-key'] as string | undefined);
     if (!brief || !brief.objective || !brief.target) {
       res.status(400).json({ error: 'brief with objective + target required' });
       return;
@@ -7239,13 +7087,14 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
     }
 
     const generalLLM = new LLMBackbone(generalConfig);
-    // Stop the outgoing General's monitor before dropping the reference (setInterval leak).
-    if (activeGeneral) activeGeneral.stopMonitoring();
     activeGeneral = new OpGeneral(generalLLM);
     activeGeneral.on('general:planning', (data) => broadcastEvent('general:planning', data as any));
     activeGeneral.on('general:plan_ready', (data) => broadcastEvent('general:plan_ready', data as any));
     activeGeneral.on('general:review', (data) => broadcastEvent('general:review', data as any));
+    activeGeneral.on('general:executing', (data) => broadcastEvent('general:executing', data as any));
     activeGeneral.on('general:sitrep', (data) => broadcastEvent('general:sitrep', data as any));
+    activeGeneral.on('general:adapting', (data) => broadcastEvent('general:adapting', data as any));
+    activeGeneral.on('general:assessment', (data) => broadcastEvent('general:assessment', data as any));
 
     broadcastEvent('admiral:launch', { brief, fidelity: brief.fidelity });
     const plan = await activeGeneral.planOperation(directive);
@@ -7263,15 +7112,6 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
       res.status(409).json({ error: 'General plan gate is HOLD', mode: 'live', plan, review: execConfig.review });
       return;
     }
-    const outOfScopeTargets = ensureExecTargetsWithinApprovedTarget(execConfig.targets, brief.target);
-    if (outOfScopeTargets.length) {
-      res.status(403).json({
-        error: 'Admiral LIVE plan contains targets outside the approved brief target',
-        approvedTarget: brief.target,
-        outOfScopeTargets,
-      });
-      return;
-    }
     const broughtUp = bringUpMissionFromPlan(execConfig, generalConfig);
     res.json({
       mode: 'live', plan, review: execConfig.review,
@@ -7282,6 +7122,138 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Admiral launch failed' });
+  }
+});
+
+// =============================================================================
+// LOCAL UPLOAD / FILE-BASED CODE SCAN
+// Users drop ZIPs into ./scan-targets/ (mounted at /data/uploads) or upload via
+// the UI.  GET /api/uploads/targets lists them; POST /api/uploads/zip saves +
+// extracts a base64-encoded ZIP so the agent can run local_code_scan on it.
+// =============================================================================
+
+const UPLOADS_DIR = '/data/uploads';
+
+/**
+ * GET /api/uploads/targets — list ZIP files and extracted folders in /data/uploads/
+ */
+app.get('/api/uploads/targets', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    if (!existsSync(UPLOADS_DIR)) {
+      res.json({ targets: [] });
+      return;
+    }
+    const entries = await readdir(UPLOADS_DIR, { withFileTypes: true });
+    // Build a set of extracted directory names so we can hide the raw ZIP when its folder exists
+    const dirNames = new Set(entries.filter(e => e.isDirectory()).map(e => e.name));
+    const targets = await Promise.all(
+      entries
+        .filter(e => {
+          if (e.isDirectory()) return true;
+          if (e.isFile() && e.name.toLowerCase().endsWith('.zip')) {
+            // Suppress the ZIP if the extracted directory already exists alongside it
+            return !dirNames.has(e.name.slice(0, -4));
+          }
+          // Include non-ZIP files (binary uploads)
+          if (e.isFile() && !e.name.startsWith('.')) return true;
+          return false;
+        })
+        .map(async e => {
+          const isZip = e.isFile() && e.name.toLowerCase().endsWith('.zip');
+          const isDir = e.isDirectory();
+          const name = isZip ? e.name.slice(0, -4) : e.name;
+          const fullPath = `${UPLOADS_DIR}/${e.name}`;
+          let size = 0;
+          let mtime = 0;
+          try {
+            const st = await stat(fullPath);
+            size = st.size;
+            mtime = st.mtimeMs;
+          } catch { /* ignore */ }
+          const type = isZip ? 'zip' : isDir ? 'directory' : 'binary';
+          return { name, originalName: e.name, type, localRef: `local://${e.name}`, size, mtime };
+        })
+    );
+    targets.sort((a, b) => b.mtime - a.mtime);
+    res.json({ targets });
+  } catch {
+    res.json({ targets: [] });
+  }
+});
+
+/**
+ * POST /api/uploads/zip — accept a base64-encoded ZIP, save it, and extract it.
+ * Body: { name: string, data: string }  (data = base64 content, with or without data: URI prefix)
+ */
+app.post('/api/uploads/zip', express.json({ limit: '100mb' }), async (req: Request, res: Response): Promise<void> => {
+  const { name, data } = req.body;
+
+  if (!name || typeof name !== 'string') {
+    res.status(400).json({ error: 'name parameter required' });
+    return;
+  }
+  if (!data || typeof data !== 'string') {
+    res.status(400).json({ error: 'data parameter required (base64 ZIP content)' });
+    return;
+  }
+
+  // Sanitise name — strip extension, allow alphanumeric + dash + underscore + dot
+  const safeName = name.replace(/\.zip$/i, '').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+  if (!safeName) {
+    res.status(400).json({ error: 'Invalid file name after sanitisation' });
+    return;
+  }
+  if (safeName.includes('..') || safeName.startsWith('.')) {
+    res.status(400).json({ error: 'Invalid file name: no traversal or hidden names' });
+    return;
+  }
+
+  const zipPath = `${UPLOADS_DIR}/${safeName}.zip`;
+  const extractPath = `${UPLOADS_DIR}/${safeName}`;
+
+  try {
+    await mkdir(UPLOADS_DIR, { recursive: true });
+    const raw = data.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(raw, 'base64');
+    await writeFile(zipPath, buffer);
+
+    await mkdir(extractPath, { recursive: true });
+
+    await new Promise<void>((resolve, reject) => {
+      execFile('unzip', ['-q', '-o', zipPath, '-d', extractPath], { timeout: 120000 }, (err, _stdout, stderr) => {
+        if (err) reject(new Error(stderr?.slice(0, 500) || err.message));
+        else resolve();
+      });
+    });
+
+    res.json({ success: true, localRef: `local://${safeName}`, name: safeName });
+  } catch (err: any) {
+    res.status(500).json({ error: `Upload failed: ${err.message}` });
+  }
+});
+
+/**
+ * POST /api/uploads/binary — save any binary file (ELF, PE, APK, firmware, etc.)
+ * Body: { name: string, data: string }  (data = base64 content)
+ * Returns: { success, localRef, name }
+ */
+app.post('/api/uploads/binary', express.json({ limit: '100mb' }), async (req: Request, res: Response): Promise<void> => {
+  const { name, data } = req.body;
+  if (!name || typeof name !== 'string') { res.status(400).json({ error: 'name required' }); return; }
+  if (!data || typeof data !== 'string') { res.status(400).json({ error: 'data required (base64)' }); return; }
+
+  const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_').slice(0, 120);
+  if (!safeName || safeName.startsWith('.')) { res.status(400).json({ error: 'Invalid file name' }); return; }
+
+  try {
+    await mkdir(UPLOADS_DIR, { recursive: true });
+    const raw = data.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(raw, 'base64');
+    const filePath = `${UPLOADS_DIR}/${safeName}`;
+    await writeFile(filePath, buffer);
+    res.json({ success: true, localRef: `local://${safeName}`, name: safeName });
+  } catch (err: any) {
+    res.status(500).json({ error: `Upload failed: ${err.message}` });
   }
 });
 
@@ -7402,22 +7374,6 @@ async function refreshConnectedLocalAgentHealth(force = false): Promise<void> {
   }));
 }
 
-async function requireLiveLocalAgent(model: string | undefined): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
-  const id = String(model || 'codex').trim();
-  const entry = connectedLocalAgents.get(id);
-  if (!entry) return { ok: false, error: `local agent "${id}" is not connected — connect it in Settings first` };
-
-  await refreshConnectedLocalAgentHealth(true);
-  const refreshed = connectedLocalAgents.get(id);
-  if (refreshed?.lastPing?.ok) return { ok: true, id };
-
-  return {
-    ok: false,
-    error: `local agent "${id}" is connected but not live` +
-      (refreshed?.lastPing?.error ? ` — ${refreshed.lastPing.error}` : ''),
-  };
-}
-
 // GET /api/agents/local/detect — which agents are installed / authed / ready (no tokens spent)
 app.get('/api/agents/local/detect', async (_req: Request, res: Response): Promise<void> => {
   try {
@@ -7428,13 +7384,12 @@ app.get('/api/agents/local/detect', async (_req: Request, res: Response): Promis
   }
 });
 
-// POST /api/agents/local/connect { ids:[...] | id, ping?:bool, replace?:bool } — enlist one or many; optional round-trip
+// POST /api/agents/local/connect { ids:[...] | id, ping?:bool } — enlist one or many; optional round-trip
 app.post('/api/agents/local/connect', async (req: Request, res: Response): Promise<void> => {
   const body = req.body || {};
   const ids: string[] = Array.isArray(body.ids) ? body.ids : (body.id ? [body.id] : []);
   const doPing: boolean = body.ping === true;
-  const replace: boolean = body.replace === true;
-  if (!ids.length && !replace) { res.status(400).json({ error: 'provide ids:[] or id' }); return; }
+  if (!ids.length) { res.status(400).json({ error: 'provide ids:[] or id' }); return; }
   const detected = await detectLocalAgents();
   const results: Array<Record<string, unknown>> = [];
   for (const id of ids) {
@@ -7453,7 +7408,6 @@ app.post('/api/agents/local/connect', async (req: Request, res: Response): Promi
     });
     results.push({ id, status: 'active', label: d.label, version: d.version, authMethod: d.authMethod, ping });
   }
-  syncLocalAgentSelection(connectedLocalAgents, ids, replace);
   res.json({ results, connected: Array.from(connectedLocalAgents.values()) });
 });
 
@@ -7470,13 +7424,31 @@ app.post('/api/agents/local/ping', async (req: Request, res: Response): Promise<
   res.json({ id: body.id, ...r });
 });
 
-// POST /api/agents/local/dispatch { id, prompt, model?, timeoutMs? } — drive a connected agent as an operator
+// POST /api/agents/local/dispatch { id, prompt, model?, timeoutMs?, sessionId? }
+// Pass sessionId to enable multi-turn: history is injected before the prompt.
+// Omit sessionId for stateless one-shot dispatch (original behaviour).
 app.post('/api/agents/local/dispatch', async (req: Request, res: Response): Promise<void> => {
   const body = req.body || {};
   if (!connectedLocalAgents.has(body.id)) { res.status(400).json({ error: 'agent not connected — connect it first' }); return; }
   if (!body.prompt) { res.status(400).json({ error: 'prompt required' }); return; }
-  const r = await runLocalAgent(body.id, body.prompt, { model: body.model, timeoutMs: body.timeoutMs });
-  res.json({ id: body.id, ...r });
+
+  let effectivePrompt: string = body.prompt;
+  const sessionId: string | undefined = body.sessionId;
+
+  if (sessionId) {
+    const session = getOrCreateSession(sessionId, body.id);
+    const prefix = buildContextPrefix(session);
+    effectivePrompt = prefix + body.prompt;
+    appendToSession(sessionId, 'user', body.prompt);
+  }
+
+  const r = await runLocalAgent(body.id, effectivePrompt, { model: body.model, timeoutMs: body.timeoutMs });
+
+  if (sessionId && r.ok) {
+    appendToSession(sessionId, 'assistant', r.output);
+  }
+
+  res.json({ id: body.id, sessionId: sessionId ?? null, ...r });
 });
 
 // POST /api/agents/local/disconnect { id }
@@ -7494,14 +7466,186 @@ app.get('/api/agents/local/status', async (req: Request, res: Response): Promise
 });
 
 // =============================================================================
+// AGENT SESSIONS — multi-turn conversation history
+// =============================================================================
+
+// GET /api/agents/local/sessions — list all sessions
+app.get('/api/agents/local/sessions', (_req: Request, res: Response): void => {
+  res.json({ sessions: listSessions() });
+});
+
+// GET /api/agents/local/sessions/:id — get a specific session
+app.get('/api/agents/local/sessions/:id', (req: Request, res: Response): void => {
+  const session = getSession(req.params.id);
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+  res.json(session);
+});
+
+// POST /api/agents/local/sessions — create a new session (returns a fresh sessionId)
+app.post('/api/agents/local/sessions', (req: Request, res: Response): void => {
+  const { agentId } = req.body || {};
+  if (!agentId) { res.status(400).json({ error: 'agentId required' }); return; }
+  const id = newSessionId();
+  const session = getOrCreateSession(id, agentId);
+  res.json(session);
+});
+
+// DELETE /api/agents/local/sessions/:id — delete a session and its history
+app.delete('/api/agents/local/sessions/:id', (req: Request, res: Response): void => {
+  const ok = deleteSession(req.params.id);
+  res.json({ ok });
+});
+
+// =============================================================================
+// OUTBOUND WEBHOOKS
+// =============================================================================
+
+// GET /api/webhooks — list registered webhooks
+app.get('/api/webhooks', (_req: Request, res: Response): void => {
+  res.json({ webhooks: listWebhooks() });
+});
+
+// POST /api/webhooks — register a new webhook
+// body: { url, events?: string[], secret?: string }
+app.post('/api/webhooks', (req: Request, res: Response): void => {
+  const { url, events, secret } = req.body || {};
+  if (!url) { res.status(400).json({ error: 'url required' }); return; }
+  if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+    res.status(400).json({ error: 'url must be an http:// or https:// URL' });
+    return;
+  }
+  const wh = registerWebhook(url, Array.isArray(events) ? events : ['*'], secret);
+  res.status(201).json(wh);
+});
+
+// PATCH /api/webhooks/:id — enable/disable a webhook
+app.patch('/api/webhooks/:id', (req: Request, res: Response): void => {
+  const { enabled } = req.body || {};
+  if (typeof enabled !== 'boolean') { res.status(400).json({ error: 'enabled (boolean) required' }); return; }
+  const ok = setWebhookEnabled(req.params.id, enabled);
+  if (!ok) { res.status(404).json({ error: 'Webhook not found' }); return; }
+  res.json({ ok });
+});
+
+// DELETE /api/webhooks/:id — remove a webhook
+app.delete('/api/webhooks/:id', (req: Request, res: Response): void => {
+  const ok = removeWebhook(req.params.id);
+  res.json({ ok });
+});
+
+// POST /api/webhooks/:id/test — send a test ping to a webhook
+app.post('/api/webhooks/:id/test', async (req: Request, res: Response): Promise<void> => {
+  const all = listWebhooks();
+  const wh = all.find((w) => w.id === req.params.id);
+  if (!wh) { res.status(404).json({ error: 'Webhook not found' }); return; }
+  try {
+    await fireWebhooks('webhook.test', { message: 'T3MP3ST webhook test ping', webhookId: wh.id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// =============================================================================
+// MCP CLIENT — connect to external MCP servers
+// =============================================================================
+
+// GET /api/mcp/servers — list connected MCP servers
+app.get('/api/mcp/servers', (_req: Request, res: Response): void => {
+  res.json({ servers: listConnectedServers() });
+});
+
+// POST /api/mcp/servers/connect — connect to an external MCP server
+// body: McpServerConfig (id, label, transport, command/args/env or url)
+app.post('/api/mcp/servers/connect', async (req: Request, res: Response): Promise<void> => {
+  const config = req.body as McpServerConfig;
+  if (!config?.id || !config?.label || !config?.transport) {
+    res.status(400).json({ error: 'id, label, and transport are required' });
+    return;
+  }
+  try {
+    const tools = await connectMcpServer(config);
+    broadcastEvent('mcp.server.connected', { serverId: config.id, label: config.label, toolCount: tools.length });
+    res.json({ ok: true, serverId: config.id, tools });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/mcp/servers/:id/disconnect — disconnect an MCP server
+app.post('/api/mcp/servers/:id/disconnect', async (req: Request, res: Response): Promise<void> => {
+  await disconnectMcpServer(req.params.id);
+  broadcastEvent('mcp.server.disconnected', { serverId: req.params.id });
+  res.json({ ok: true });
+});
+
+// GET /api/mcp/tools — list all tools across all connected MCP servers
+app.get('/api/mcp/tools', (_req: Request, res: Response): void => {
+  res.json({ tools: listRemoteTools() });
+});
+
+// POST /api/mcp/tools/call — invoke a tool on a connected MCP server
+// body: { serverId, toolName, args }
+app.post('/api/mcp/tools/call', async (req: Request, res: Response): Promise<void> => {
+  const { serverId, toolName, args } = req.body || {};
+  if (!serverId || !toolName) {
+    res.status(400).json({ error: 'serverId and toolName are required' });
+    return;
+  }
+  try {
+    const result = await callRemoteTool(serverId, toolName, args ?? {});
+    broadcastEvent('mcp.tool.called', { serverId, toolName });
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// =============================================================================
+// AUTOMATION RULES ENGINE
+// =============================================================================
+
+// GET /api/automation/rules — list all rules
+app.get('/api/automation/rules', (_req: Request, res: Response): void => {
+  res.json({ rules: listRules() });
+});
+
+// POST /api/automation/rules — create a rule
+// body: { name, enabled?, trigger: { event, condition? }, action: { type, ... } }
+app.post('/api/automation/rules', (req: Request, res: Response): void => {
+  const { name, enabled, trigger, action } = req.body || {};
+  if (!name || !trigger?.event || !action?.type) {
+    res.status(400).json({ error: 'name, trigger.event, and action.type are required' });
+    return;
+  }
+  const rule = addRule({ name, enabled: enabled !== false, trigger, action });
+  res.status(201).json(rule);
+});
+
+// PATCH /api/automation/rules/:id — update name/enabled/trigger/action
+app.patch('/api/automation/rules/:id', (req: Request, res: Response): void => {
+  const { name, enabled, trigger, action } = req.body || {};
+  const updated = updateRule(req.params.id, { name, enabled, trigger, action });
+  if (!updated) { res.status(404).json({ error: 'Rule not found' }); return; }
+  res.json(updated);
+});
+
+// DELETE /api/automation/rules/:id — remove a rule
+app.delete('/api/automation/rules/:id', (req: Request, res: Response): void => {
+  const ok = removeRule(req.params.id);
+  res.json({ ok });
+});
+
+// =============================================================================
 // STATIC FILE SERVING
 // =============================================================================
 
-// Bare root → land on the UI. Registered right beside the /ui mount so it only
-// matches the exact '/' path and never shadows the /api/* routes above.
-app.get('/', (_req: Request, res: Response) => res.redirect('/ui/'));
+app.get('/', (_req, res) => res.redirect('/ui/'));
+app.use('/ui', express.static('docs', { maxAge: 0, etag: false, lastModified: false }));
 
-app.use('/ui', express.static('docs'));
+// Auth routes registered at module level so they are ahead of the error handler
+// in the Express stack and cannot be shadowed by it.
+initAuth(app);
 
 // =============================================================================
 // ERROR HANDLING
@@ -7516,15 +7660,6 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // SERVER STARTUP
 // =============================================================================
 
-// Crash net: a stray rejected promise or thrown error must never take the whole
-// server down mid-mission. Log it and keep the process alive.
-process.on('unhandledRejection', (reason) => {
-  console.error('[T3MP3ST] unhandledRejection (process kept alive):', reason instanceof Error ? reason.stack || reason.message : reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('[T3MP3ST] uncaughtException (process kept alive):', err instanceof Error ? err.stack || err.message : err);
-});
-
 async function startServer() {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════════╗');
@@ -7536,31 +7671,20 @@ async function startServer() {
   await loadPersistedState();
   llm = await initLLM();
 
-  // Graceful-shutdown flush: on SIGTERM/SIGINT (Ctrl-C, docker stop, systemctl restart) write
-  // any pending debounced snapshot before exiting, so the persistState debounce can't lose the
-  // last <1s of state. Registered here (the server-start path) so it never affects test imports.
-  // `once` so a second signal falls through to the default disposition if a flush ever hangs.
-  let shuttingDown = false;
-  const flushAndExit = (signal: NodeJS.Signals): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`[T3MP3ST] ${signal} received — flushing state, shutting down…`);
-    void flushPersist().catch(() => { /* best-effort */ }).finally(() => process.exit(0));
+  // Wire automation context now that connectedLocalAgents and runLocalAgent are in scope
+  _automationCtx = {
+    broadcast: broadcastEvent,
+    dispatchAgent: async (agentId: string, prompt: string) => {
+      if (!connectedLocalAgents.has(agentId)) {
+        throw new Error(`Agent not connected: ${agentId}`);
+      }
+      return runLocalAgent(agentId, prompt, {});
+    },
   };
-  process.once('SIGTERM', flushAndExit);
-  process.once('SIGINT', flushAndExit);
 
   app.listen(Number(PORT), HOST, () => {
     console.log(`[T3MP3ST] Server running at http://${HOST}:${PORT}`);
     console.log(`[T3MP3ST] Web UI available at http://${HOST}:${PORT}/ui`);
-    if (!HOST_IS_LOOPBACK) {
-      console.warn('');
-      console.warn(`  ⚠️  EXPOSURE WARNING: bound to NON-LOOPBACK host "${HOST}". This API executes`);
-      console.warn('     commands and has NO built-in authentication — the Origin/Host guards only');
-      console.warn('     cover the localhost threat model. Do NOT put this on a LAN or the internet');
-      console.warn('     without real auth (a Bearer-token reverse proxy) in front of it.');
-      console.warn('');
-    }
     console.log('');
     console.log('[T3MP3ST] Mission Dispatch (NEW):');
     console.log('  POST /api/mission/start              - Start mission with real operators');
@@ -7569,6 +7693,7 @@ async function startServer() {
     console.log('  POST /api/mission/resume             - Resume mission');
     console.log('  GET  /api/mission/status             - Mission status + operator states');
     console.log('  GET  /api/mission/findings           - All findings from mission');
+  console.log('  GET  /api/mission/history            - Past mission runs (completed engagements)');
     console.log('  POST /api/pressure-paths             - Plan receipt-gated offensive pressure paths');
     console.log('  POST /api/pressure-paths/canary      - Rehearse top path in local canary simulator');
     console.log('  POST /api/pressure-paths/duel        - Run hunter-vs-skeptic route duel');

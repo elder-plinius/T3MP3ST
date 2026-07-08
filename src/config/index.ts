@@ -179,11 +179,10 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       name: 'Venice Uncensored',
       provider: 'Venice',
       contextWindow: 32768,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'uncensored'],
+      maxOutput: 4096,
+      capabilities: ['reasoning', 'code', 'uncensored'],
     },
   ],
-
   openrouter: [
     // Anthropic (Feb 2026)
     {
@@ -402,35 +401,14 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['testing'],
     },
   ],
-  // Model IDs verified against xAI's published model list (docs.x.ai/docs/models, 2026-07-05):
-  // grok-build-0.1 = coding model (256K ctx); grok-4.3 = general (1M ctx). Any current xAI
-  // model id can be passed via config/CLI/model arg — these are just the curated defaults.
-  xai: [
-    {
-      id: 'grok-build-0.1',
-      name: 'Grok Build (grok-build-0.1, 256K)',
-      provider: 'xAI',
-      contextWindow: 256000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
-    {
-      id: 'grok-4.3',
-      name: 'Grok 4.3 (general, 1M)',
-      provider: 'xAI',
-      contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
-  ],
   local: [
     {
       id: 'local-model',
-      name: 'Local model (Ollama / LM Studio / vLLM — set TEMPEST_LOCAL_MODEL)',
+      name: 'Local Model',
       provider: 'Local',
       contextWindow: 32000,
       maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'tools'],
+      capabilities: ['reasoning', 'code'],
     },
   ],
   'local-agent': [
@@ -461,6 +439,45 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'agents', 'local-cli'],
     },
   ],
+  // Model IDs verified against xAI's published model list (docs.x.ai/docs/models, 2026-07-05):
+  // grok-build-0.1 = coding model (256K ctx); grok-4.3 = general (1M ctx). Any current xAI
+  // model id can be passed via config/CLI/model arg — these are just the curated defaults.
+  xai: [
+    {
+      id: 'grok-build-0.1',
+      name: 'Grok Build (grok-build-0.1, 256K)',
+      provider: 'xAI',
+      contextWindow: 256000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
+    },
+    {
+      id: 'grok-4.3',
+      name: 'Grok 4.3 (general, 1M)',
+      provider: 'xAI',
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
+    },
+  ],
+  bedrock: [
+    {
+      id: 'anthropic.claude-opus-4-8',
+      name: 'Claude Opus 4.8 (Bedrock)',
+      provider: 'AWS Bedrock',
+      contextWindow: 200000,
+      maxOutput: 32000,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'agents', 'tools'],
+    },
+    {
+      id: 'anthropic.claude-sonnet-4-6',
+      name: 'Claude Sonnet 4.6 (Bedrock)',
+      provider: 'AWS Bedrock',
+      contextWindow: 200000,
+      maxOutput: 16384,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
+    },
+  ],
 };
 
 // =============================================================================
@@ -486,10 +503,9 @@ class ConfigManager {
   private loadEnvVariables(): void {
     if (this.envLoaded) return;
 
-    // Load only T3MP3ST-owned/home env files. Do NOT read process.cwd()/.env:
-    // operators often run T3MP3ST inside target repos, and importing that repo's
-    // secrets would contaminate this process with unrelated credentials.
+    // Try to load from .env file in current directory or home
     const envPaths = [
+      join(process.cwd(), '.env'),
       join(homedir(), '.t3mp3st', '.env'),
       join(homedir(), '.env'),
     ];
@@ -504,11 +520,7 @@ class ConfigManager {
           if (trimmed && !trimmed.startsWith('#')) {
             const [key, ...valueParts] = trimmed.split('=');
             const value = valueParts.join('=').replace(/^["']|["']$/g, '');
-            // Real env vars take precedence over the .env file (standard dotenv
-            // semantics): only fill a key that is not already set. This also lets a
-            // caller force an UNCONFIGURED server (e.g. arsenal:smoke) by exporting an
-            // empty OPENROUTER_API_KEY= — the .env file no longer clobbers it.
-            if (key && value && process.env[key] === undefined) {
+            if (key && value) {
               process.env[key] = value;
             }
           }
@@ -517,10 +529,22 @@ class ConfigManager {
       }
     }
 
-    // Environment variables (including values loaded from ~/.t3mp3st/.env above)
-    // are intentionally process-local. getApiKey() already gives env vars highest
-    // priority, so do not persist them into Conf's apiKeys store as a side effect.
-    // (XAI_API_KEY / Grok Build follows the same safe path — see the envVarMap in getApiKey.)
+    // Check environment variables for API keys
+    const envKeys = {
+      openrouter: process.env.OPENROUTER_API_KEY,
+      anthropic: process.env.ANTHROPIC_API_KEY,
+      openai: process.env.OPENAI_API_KEY,
+    };
+
+    // Only set from env if not already set in config
+    const currentKeys = this.config.get('apiKeys');
+
+    for (const [provider, envKey] of Object.entries(envKeys)) {
+      if (envKey && !currentKeys[provider as keyof typeof currentKeys]) {
+        this.setApiKey(provider as 'openrouter' | 'anthropic' | 'openai', envKey);
+      }
+    }
+
     this.envLoaded = true;
   }
 
@@ -675,8 +699,6 @@ class ConfigManager {
         // Some OpenAI-compatible servers require a real bearer (Zhipu, Together, etc.) —
         // TEMPEST_LOCAL_API_KEY (or a provider-specific env like ZAI_API_KEY) provides it.
         baseUrl = process.env.TEMPEST_LOCAL_BASE_URL?.trim() || 'http://localhost:11434/api';
-        // 'local-model' is the placeholder id from AVAILABLE_MODELS — treat it as unset so
-        // TEMPEST_LOCAL_MODEL (or the llama3 default) wins; a real tag passed in still takes priority.
         actualModel = (model && model !== 'local-model' ? model : undefined) || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3';
         apiKey = process.env.TEMPEST_LOCAL_API_KEY?.trim() || process.env.ZAI_API_KEY?.trim() || process.env.ZHIPUAI_API_KEY?.trim();
         break;
@@ -701,7 +723,7 @@ class ConfigManager {
    * model failure that the model can't self-recover from — a refusal, an empty 200,
    * or a hard error that survives same-model retries (rate-limit, 5xx, timeout, dead
    * key, missing model, context blowout) — escalates across the OTHER configured
-   * providers in priority order (openrouter → venice → anthropic → openai), each with its own
+   * providers in priority order (openrouter → anthropic → openai), each with its own
    * key/model. OFF by default (no surprise model-switching). On a refusal the real
    * authorization context is restated — honest escalation, no jailbreak prompts
    * (see LLMBackbone.chat).

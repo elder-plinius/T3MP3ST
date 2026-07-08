@@ -31,7 +31,7 @@ export interface AgentLoopOptions {
   maxTokens?: number;
   /** Tool categories to expose (default: all) */
   toolCategories?: string[];
-  /** Explicit tool-NAME allowlist — the operator's role toolkit. Overrides toolCategories. */
+  /** Explicit tool-name allowlist — takes precedence over toolCategories when non-empty. */
   tools?: string[];
   /** Whether to include detailed tool output in context (default: true) */
   verboseToolOutput?: boolean;
@@ -65,8 +65,6 @@ export interface AgentResult {
   durationMs: number;
   /** Whether the agent hit the iteration limit */
   hitLimit: boolean;
-  /** Error from the forced final-summary call after hitting limits, if any */
-  finalSummaryError?: string;
 }
 
 export interface AgentEvents {
@@ -108,8 +106,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     task: Task,
     systemPrompt: string,
     target?: Target,
-    sourceContext?: string,
-    sharedContext?: string
+    signal?: AbortSignal
   ): Promise<AgentResult> {
     const startTime = Date.now();
     const steps: AgentStep[] = [];
@@ -119,29 +116,32 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     // anti-stall: dedup identical tool calls + detect runs of no-new-findings (ported from the hunter)
     const seenCalls = new Map<string, string>();
     let noProgress = 0;
+    let consecutiveDupIterations = 0; // iterations where EVERY tool call was a duplicate
 
-    // Get tool definitions from Arsenal (the operator's role toolkit: name allowlist wins,
-    // then category filter, then all).
+    // Get tool definitions — name allowlist takes precedence over category filter
     const toolDefs = this.arsenal.getToolDefinitions(
       this.options.toolCategories.length > 0 ? this.options.toolCategories : undefined,
-      this.options.tools.length > 0 ? this.options.tools : undefined
+      this.options.tools && this.options.tools.length > 0 ? this.options.tools : undefined
     );
 
     // Build initial messages
     const messages: LLMMessage[] = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext, sharedContext) },
+      { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs) },
     ];
 
     for (let i = 0; i < this.options.maxIterations; i++) {
+      if (signal?.aborted) break;
       try {
         // Ask the LLM what to do next
         const response = await this.llm.chatWithTools(messages, toolDefs, {
           maxTokens: 4096,
           temperature: 0.3, // Lower temperature for tool-using tasks
+          signal,
         });
 
         tokensUsed += response.usage?.totalTokens || 0;
+        process.stderr.write(`[AgentLoop] task="${task.name}" step=${i} toolCalls=${response.toolCalls?.length ?? 0} hasContent=${response.content?.length > 0}\n`);
 
         // If the LLM wants to call tools
         if (response.toolCalls?.length) {
@@ -166,11 +166,13 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
 
           // Execute each tool call
           const findingsBefore = allFindings.length;
+          let dupCountThisIteration = 0;
           for (const toolCall of response.toolCalls) {
             // ANTI-STALL: a byte-identical repeat is almost always wasted — steer instead of re-running.
             const callHash = `${toolCall.name}:${JSON.stringify(toolCall.arguments || {})}`;
             let toolStep: AgentStep;
             if (seenCalls.has(callHash)) {
+              dupCountThisIteration++;
               const dup: ToolResult = {
                 success: false,
                 error: `Duplicate call — you already ran ${toolCall.name} with these exact arguments. ` +
@@ -182,12 +184,32 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
               seenCalls.set(callHash, String(toolStep.toolResult?.output || toolStep.toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160));
             }
             steps.push(toolStep);
+            process.stderr.write(`[AgentLoop] tool="${toolCall.name}" args=${JSON.stringify(toolCall.arguments).slice(0,120)} success=${toolStep.toolResult?.success} findings=${toolStep.toolResult?.findings?.length ?? 0} err=${toolStep.toolResult?.error?.slice(0,80) ?? ''}\n`);
+
+            // Emit all tool results so consumers can surface failures to the operator UI
+            if (toolStep.toolResult) {
+              this.emit('agent:tool_result', { name: toolCall.name, result: toolStep.toolResult });
+            }
 
             // Collect findings — tag with REAL tool provenance (the output that backs them)
             if (toolStep.toolResult?.findings) {
               const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
+              // Forward additionalEvidence (request/response) from the tool call to each finding
+              const addlEv = toolStep.toolResult.additionalEvidence;
+              const reqItem = addlEv?.find(e => e.type === 'request');
+              const respItem = addlEv?.find(e => e.type === 'response');
               for (const tf of toolStep.toolResult.findings) {
-                allFindings.push({ ...tf, provenance: 'tool', toolName: toolCall.name, toolOutput: out || tf.details });
+                allFindings.push({
+                  ...tf,
+                  provenance: 'tool',
+                  toolName: toolCall.name,
+                  // Preserve the per-finding toolOutput (e.g. "rule at file:line — message")
+                  // rather than overwriting it with the full tool summary which is the same
+                  // for every finding and buries the specific location information.
+                  toolOutput: tf.toolOutput || out || tf.details,
+                  ...(reqItem ? { httpRequest: reqItem.content } : {}),
+                  ...(respItem ? { httpResponse: respItem.content } : {}),
+                });
               }
             }
 
@@ -201,6 +223,21 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
               toolCallId: toolCall.id,
               name: toolCall.name,
             });
+          }
+
+          // ANTI-STALL: if every tool call this iteration was a duplicate, track it.
+          // After 2 consecutive all-duplicate iterations the agent is clearly stuck — force termination.
+          if (dupCountThisIteration > 0 && dupCountThisIteration === response.toolCalls.length) {
+            consecutiveDupIterations++;
+            if (consecutiveDupIterations >= 2) {
+              messages.push({
+                role: 'user',
+                content: '[System: TERMINATE — you have repeated the same tool calls in 2 consecutive iterations after being told not to. You MUST produce your final debrief NOW with the findings you have. Do not call any more tools.]',
+              });
+              consecutiveDupIterations = 0;
+            }
+          } else {
+            consecutiveDupIterations = 0;
           }
 
           // ANTI-STALL: after a run of iterations with no new findings, steer (once) toward a new
@@ -250,10 +287,12 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
           break;
         }
       } catch (error) {
+        if (signal?.aborted) break;
         this.emit('agent:error', { error: error as Error, step: i });
 
         // On error, try to continue with a reduced context
         const errMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[AgentLoop] step ${i} error:`, errMsg);
         messages.push({
           role: 'user',
           content: `[System: Tool execution error: ${errMsg}. Please continue with available information or try a different approach.]`,
@@ -261,26 +300,29 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       }
     }
 
-    // Hit iteration or token limit — ask LLM for a final summary
+    // Hit iteration or token limit — ask LLM for a final summary (skip if aborted)
     hitLimit = true;
+    let summary = 'Agent reached iteration limit without producing a final summary.';
+    if (signal?.aborted) {
+      summary = 'Mission aborted.';
+    } else {
     messages.push({
       role: 'user',
       content: 'You have reached the maximum number of steps. Please provide a final summary of everything you discovered, including all findings and recommendations.',
     });
 
-    let summary = 'Agent reached iteration limit without producing a final summary.';
-    let finalSummaryError: string | undefined;
     try {
-      const finalResponse = await this.llm.chat(messages, { maxTokens: 2048 });
+      const finalResponse = await this.llm.chat(messages, { maxTokens: 2048, signal });
       summary = finalResponse.content;
       tokensUsed += finalResponse.usage?.totalTokens || 0;
       // capture the structured debrief from the limit-summary too (same contract as the clean finish)
       for (const f of this.parseFinalFindings(summary)) {
         if (!allFindings.some((x) => x.title === f.title)) allFindings.push(f);
       }
-    } catch (error) {
-      finalSummaryError = error instanceof Error ? error.message : String(error);
+    } catch {
+      // Use what we have
     }
+    } // end else (not aborted)
 
     const result: AgentResult = {
       success: allFindings.length > 0 || steps.some(s => s.toolResult?.success),
@@ -291,7 +333,6 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       tokensUsed,
       durationMs: Date.now() - startTime,
       hitLimit,
-      finalSummaryError,
     };
 
     this.emit('agent:complete', result);
@@ -320,7 +361,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       const available = this.arsenal
         .getToolDefinitions(
           this.options.toolCategories.length ? this.options.toolCategories : undefined,
-          this.options.tools.length ? this.options.tools : undefined
+          this.options.tools && this.options.tools.length > 0 ? this.options.tools : undefined
         )
         .map((t) => t.name);
       toolResult = {
@@ -345,32 +386,13 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   /**
    * Build the initial task prompt with target context and prior intel
    */
-  private buildTaskPrompt(task: Task, target?: Target, tools?: LLMToolDefinition[], sourceContext?: string, sharedContext?: string): string {
+  private buildTaskPrompt(task: Task, target?: Target, tools?: LLMToolDefinition[]): string {
     const parts: string[] = [];
 
     parts.push(`## MISSION TASK: ${task.name}`);
     parts.push(`**Phase**: ${task.phase} | **Priority**: ${task.priority}/10`);
     parts.push(`\n### Objective`);
     parts.push(task.description);
-
-    // White-box source excerpt (security-prioritized) — provided by the large-repo
-    // analysis pipeline. Optional + backward-compatible: absent/empty keeps the
-    // original black-box prompt. When present, give the model the real source so it
-    // can ground findings in code rather than probing blind.
-    if (sourceContext && sourceContext.trim().length > 0) {
-      parts.push(`\n### White-box source (security-prioritized excerpt)`);
-      parts.push(`The following is a security-prioritized excerpt of the target's own source code. Use it to locate and confirm vulnerabilities against the actual implementation — but only report a finding as verified when a tool result backs it.`);
-      parts.push(sourceContext);
-    }
-
-    // Shared intel from the pack board (Phase-2 coordination): what sibling operators have already
-    // found/claimed on this mission. Lets this operator build on tool-verified leads and NOT re-tread
-    // surface a teammate already owns. Absent/empty keeps the solo-operator prompt (the baseline).
-    if (sharedContext && sharedContext.trim().length > 0) {
-      parts.push(`\n### Shared intel from the pack (your teammates' live board)`);
-      parts.push(`Other operators are working this same target in parallel. Below is the current lead-board — tool-verified leads, who has claimed what, and open surface. Build on verified leads, do not duplicate a teammate's claimed work, and chase the hottest UNCLAIMED lead that fits your role.`);
-      parts.push(sharedContext);
-    }
 
     if (target) {
       parts.push(`\n### Target Intelligence`);

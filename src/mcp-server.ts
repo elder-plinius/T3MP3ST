@@ -2,9 +2,8 @@
 /**
  * T3MP3ST MCP Server v3.0
  *
- * Production-grade Model Context Protocol server exposing t3mp3st security
- * tooling (security_recon — nmap/DNS reconnaissance).
- *
+ * Model Context Protocol server exposing t3mp3st security tooling.
+ * Exposes: security_recon — nmap/DNS reconnaissance.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -18,30 +17,6 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
-
-// Strict target allowlist: hostnames, IPv4/IPv6, no shell metacharacters.
-// Anything outside this set is rejected before it can reach a subprocess.
-const TARGET_RE = /^[A-Za-z0-9._:-]+$/;
-
-// =============================================================================
-// COMPREHENSIVE PAYLOAD DATABASES
-// =============================================================================
-
-
-// =============================================================================
-// SECRET PATTERNS DATABASE (GRIFFIN)
-// =============================================================================
-
-
-// =============================================================================
-// PRIVILEGE ESCALATION DATABASE (CERBERUS)
-// =============================================================================
-
-
-// =============================================================================
-// WAF BYPASS TECHNIQUES (TYPHON)
-// =============================================================================
-
 
 // =============================================================================
 // TOOL DEFINITIONS
@@ -59,7 +34,7 @@ Requires: Target hostname or IP.`,
     inputSchema: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'Target hostname or IP' },
+        target: { type: 'string', description: 'Target hostname or IP (hostname/IP only — no shell metacharacters)' },
         scan_type: { type: 'string', enum: ['quick', 'standard', 'full', 'stealth'], description: 'Scan depth' }
       },
       required: ['target']
@@ -71,40 +46,39 @@ Requires: Target hostname or IP.`,
 // TOOL IMPLEMENTATIONS
 // =============================================================================
 
-const SAFE_COMMANDS = ['nmap', 'curl', 'dig', 'host', 'whois', 'nikto', 'gobuster', 'whatweb'];
+// Strict allowlist: only these binaries may be invoked
+const ALLOWED_BINARIES: Record<string, string> = {
+  nmap: 'nmap',
+  dig: 'dig',
+};
 
-/**
- * Run a whitelisted binary with an explicit argument array — NO shell.
- *
- * Because execFile does not spawn a shell and each arg is passed verbatim as a
- * single argv entry, shell metacharacters in the (already regex-validated)
- * target cannot be interpreted as command separators. The binary is checked
- * against the allowlist, and every arg is validated for the absence of NUL.
- */
-async function runTool(
-  binary: string,
-  args: string[],
-  timeout = 30000
-): Promise<{ success: boolean; output: string; error?: string }> {
-  if (!SAFE_COMMANDS.includes(binary)) {
-    return { success: false, output: '', error: `Command not allowed: ${binary}` };
-  }
-  // Defence-in-depth: reject NUL bytes which can truncate args at the syscall boundary.
-  if (args.some((a) => a.includes('\0'))) {
-    return { success: false, output: '', error: 'Invalid argument: NUL byte' };
-  }
-  try {
-    const { stdout, stderr } = await execFileAsync(binary, args, {
-      timeout,
-      maxBuffer: 1024 * 1024 * 5,
-    });
-    return { success: true, output: stdout || stderr };
-  } catch (error: any) {
-    return { success: false, output: error.stdout || '', error: error.message };
+// Target must be a plain hostname or IP — no shell metacharacters
+const TARGET_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/;
+
+function validateTarget(target: string): void {
+  if (!target || !TARGET_RE.test(target)) {
+    throw new Error(`Invalid target: "${target}" — must be a hostname or IP with no shell metacharacters`);
   }
 }
 
-
+async function runCommand(
+  binary: keyof typeof ALLOWED_BINARIES,
+  args: string[],
+  timeoutMs = 30000,
+): Promise<{ success: boolean; output: string; error?: string }> {
+  const bin = ALLOWED_BINARIES[binary];
+  if (!bin) return { success: false, output: '', error: `Binary not allowed: ${binary}` };
+  try {
+    const { stdout, stderr } = await execFileAsync(bin, args, {
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024 * 5,
+    });
+    return { success: true, output: stdout || stderr };
+  } catch (error: unknown) {
+    const e = error as { stdout?: string; message?: string };
+    return { success: false, output: e.stdout || '', error: e.message };
+  }
+}
 
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
@@ -112,41 +86,31 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     // SECURITY RECON
     // =========================================================================
     case 'security_recon': {
-      const { target, scan_type = 'quick' } = args as any;
+      const target = args.target as string;
+      const scan_type = (args.scan_type as string | undefined) ?? 'quick';
 
-      // Validate the target BEFORE it reaches any subprocess. Only hostnames /
-      // IPv4 / IPv6 literals are permitted; shell metacharacters (';', '|',
-      // '&', '$', spaces, backticks, ...) are rejected here. Combined with the
-      // no-shell execFile call below, "evil.com; id" is refused and, even if it
-      // slipped through, would be passed as a single inert argv entry.
-      if (typeof target !== 'string' || !TARGET_RE.test(target)) {
-        return JSON.stringify({
-          error: 'Invalid target: only hostnames, IPv4/IPv6 addresses are allowed ([A-Za-z0-9._:-]).',
-          target: typeof target === 'string' ? target : String(target)
-        }, null, 2);
-      }
+      validateTarget(target);
 
-      const scanConfigs: Record<string, { portArgs: string[]; timing: string; scripts: boolean }> = {
-        quick: { portArgs: ['-F'], timing: '-T4', scripts: false },
-        standard: { portArgs: ['--top-ports', '1000'], timing: '-T3', scripts: true },
-        full: { portArgs: ['-p-'], timing: '-T2', scripts: true },
-        stealth: { portArgs: ['--top-ports', '100'], timing: '-T1', scripts: false }
+      const scanConfigs: Record<string, { ports: string[]; timing: string; scripts: boolean }> = {
+        quick:    { ports: ['-F'],                timing: '-T4', scripts: false },
+        standard: { ports: ['--top-ports', '1000'], timing: '-T3', scripts: true  },
+        full:     { ports: ['-p-'],               timing: '-T2', scripts: true  },
+        stealth:  { ports: ['--top-ports', '100'], timing: '-T1', scripts: false },
       };
 
-      const config = scanConfigs[scan_type] || scanConfigs.quick;
-
+      const cfg = scanConfigs[scan_type] ?? scanConfigs.quick;
       const nmapArgs = [
-        ...config.portArgs,
-        config.timing,
+        ...cfg.ports,
+        cfg.timing,
         '-sV',
-        ...(config.scripts ? ['-sC'] : []),
+        ...(cfg.scripts ? ['-sC'] : []),
         '--open',
-        target
+        target,
       ];
 
       const [dns, ports] = await Promise.all([
-        runTool('dig', ['+short', target, 'ANY']),
-        runTool('nmap', nmapArgs, 300000)
+        runCommand('dig', ['+short', target, 'ANY']),
+        runCommand('nmap', nmapArgs, 300000),
       ]);
 
       return JSON.stringify({
@@ -155,25 +119,14 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         target,
         scan_type,
         results: {
-          dns: {
-            success: dns.success,
-            records: dns.output.trim().split('\n').filter(Boolean)
-          },
-          ports: {
-            success: ports.success,
-            output: ports.output,
-            error: ports.error
-          }
+          dns:   { success: dns.success,   records: dns.output.trim().split('\n').filter(Boolean) },
+          ports: { success: ports.success, output: ports.output, error: ports.error },
         },
-        commands_executed: [
-          `dig +short ${target} ANY`,
-          `nmap ${nmapArgs.join(' ')}`
-        ],
         next_steps: [
           'Run vulnerability scan with nuclei',
           'Enumerate web directories with gobuster',
-          'Check for common vulnerabilities'
-        ]
+          'Check for common vulnerabilities',
+        ],
       }, null, 2);
     }
 
@@ -187,7 +140,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
 // =============================================================================
 
 const server = new Server(
-  { name: 't3mp3st-chef-specials', version: '3.0.0' },
+  { name: 't3mp3st-mcp', version: '3.0.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -195,13 +148,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: MCP_TOOLS,
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-  const { name, arguments: args } = request.params;
+server.setRequestHandler(CallToolRequestSchema, async (request: unknown) => {
+  const req = request as { params: { name: string; arguments?: Record<string, unknown> } };
+  const { name, arguments: args } = req.params;
   try {
     const result = await handleToolCall(name, args || {});
     return { content: [{ type: 'text', text: result }] };
-  } catch (error: any) {
-    return { content: [{ type: 'text', text: JSON.stringify({ error: error.message }) }], isError: true };
+  } catch (error: unknown) {
+    const e = error as { message?: string };
+    return { content: [{ type: 'text', text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 

@@ -1,0 +1,10 @@
+{
+  "name": "tempest-binary-sidecar",
+  "version": "1.0.0",
+  "description": "T3MP3ST binary analysis tool execution sidecar",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

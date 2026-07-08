@@ -88,32 +88,6 @@ console.log('\naggregateRuns — shape and counts');
 }
 
 // ── 3. Backwards-compat smoke (stub hunter, no LLM spend) ──
-// This portion drives the real bench end-to-end, which needs the Cybench challenge corpus. That
-// corpus is third-party content (writeups/flags/solutions) and is NOT redistributed — it is
-// gitignored and absent on a clone. Rather than crash the CI gate, SKIP this portion with an
-// explicit "corpus unavailable" status when the corpus is missing. The Wilson/aggregation unit
-// checks (parts 1-2 above) are the corpus-independent contract and always run.
-// Resolve the corpus dir exactly like cybench-bench.mjs does (respecting the CYB_CHAL_DIR override).
-const CHAL_DIR = process.env.CYB_CHAL_DIR
-  ? path.resolve(process.env.CYB_CHAL_DIR)
-  : path.join(__dirname, '..', 'bench', 'cybench', 'challenges');
-const corpusAvailable = fs.existsSync(CHAL_DIR)
-  && fs.readdirSync(CHAL_DIR).some((name) => {
-    const dir = path.join(CHAL_DIR, name);
-    return fs.statSync(dir).isDirectory()
-      && fs.existsSync(path.join(dir, 'challenge.json'))
-      && fs.existsSync(path.join(dir, 'flag.expected'));
-  });
-
-if (!corpusAvailable) {
-  console.log('\nbackwards-compat smoke — SKIPPED: Cybench corpus unavailable');
-  console.log(`  ⓘ corpus unavailable — skipped (no challenges under ${CHAL_DIR}; it is third-party`);
-  console.log('    content, gitignored and not redistributed — see bench/cybench/README.md to acquire).');
-  console.log('    Wilson/aggregation unit checks above are the corpus-independent contract and passed.');
-  console.log(`\n════════ ${fail === 0 ? '✅ ALL PASS' : `❌ ${fail} FAILED`} — ${pass} passed, ${fail} failed, corpus smoke skipped ════════\n`);
-  process.exit(fail === 0 ? 0 : 1);
-}
-
 console.log('\nbackwards-compat smoke — N=1 byte-identical, N=3 repeated schema');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't3mp3st-cyb-ci-'));
 const run = (extra) => {

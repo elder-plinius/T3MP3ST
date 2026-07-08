@@ -7,14 +7,15 @@
 
 import { EventEmitter } from 'eventemitter3';
 import { randomUUID } from 'crypto';
-import type { PackBoard } from '../pack/board.js';
 import {
   KillChainPhase,
+  type MissionFamily,
   type OperatorArchetype,
   type OperatorStatus,
   type OperatorState,
   type OperatorConfig,
   type Finding,
+  type Evidence,
   type Credential,
   type Task,
   type TaskResult,
@@ -74,7 +75,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Specialized in OSINT, network discovery, and asset enumeration',
     mitreTactics: ['TA0043'],
     primaryPhases: [KillChainPhase.RECON],
-    defaultTools: ['dns_lookup', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery'],
+    defaultTools: ['nmap_scan', 'port_scan', 'dns_lookup', 'subdomain_enum', 'whois_lookup', 'reverse_dns', 'technology_detect'],
     toolCategories: ['recon', 'web'],
     capabilities: ['osint', 'dns_enum', 'subdomain_discovery', 'port_scanning', 'service_detection'],
     techniques: ['T1595', 'T1592', 'T1589', 'T1590', 'T1591'],
@@ -82,23 +83,45 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
   },
   scanner: {
     name: 'Vulnerability Scanner',
-    description: 'Identifies vulnerabilities and security misconfigurations',
+    description: 'Identifies vulnerabilities and security misconfigurations (legacy — prefer web_scanner or code_scanner)',
     mitreTactics: ['TA0007'],
     primaryPhases: [KillChainPhase.WEAPONIZE],
-    defaultTools: ['nuclei_scan', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request'],
-    toolCategories: ['vuln', 'web', 'recon'],
+    defaultTools: ['nuclei_scan', 'ssl_scan', 'cors_check', 'csp_analysis', 'header_analysis', 'http_methods_test', 'api_endpoint_discovery'],
+    toolCategories: ['vuln', 'web', 'recon', 'code'],
     capabilities: ['vuln_scanning', 'web_scanning', 'service_enum', 'config_audit'],
     techniques: ['T1046', 'T1082', 'T1083', 'T1087'],
     systemPrompt: OPERATOR_SYSTEM_PROMPTS.scanner,
+  },
+  code_scanner: {
+    name: 'Code Security Scanner',
+    description: 'Static analysis of source code: finds injection sinks, secrets, and vulnerable dependencies',
+    mitreTactics: ['TA0007'],
+    primaryPhases: [KillChainPhase.RECON, KillChainPhase.WEAPONIZE],
+    defaultTools: ['git_clone_analyze', 'semgrep_scan', 'gitleaks_scan', 'trivy_scan', 'llm_code_review'],
+    toolCategories: ['code', 'reverse', 'sandbox'],
+    capabilities: ['static_analysis', 'secret_scanning', 'dependency_audit', 'code_review', 'binary_analysis'],
+    techniques: ['T1195', 'T1083', 'T1552'],
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.code_scanner,
+  },
+  web_scanner: {
+    name: 'Web Vulnerability Scanner',
+    description: 'Web application and network vulnerability assessment: OWASP Top 10, CVEs, API security',
+    mitreTactics: ['TA0007'],
+    primaryPhases: [KillChainPhase.WEAPONIZE],
+    defaultTools: ['nuclei_scan', 'ssl_scan', 'cors_check', 'csp_analysis', 'header_analysis', 'http_methods_test', 'api_endpoint_discovery'],
+    toolCategories: ['vuln', 'web', 'recon'],
+    capabilities: ['vuln_scanning', 'web_scanning', 'service_enum', 'config_audit'],
+    techniques: ['T1046', 'T1082', 'T1083', 'T1087'],
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.web_scanner,
   },
   exploiter: {
     name: 'Exploitation Specialist',
     description: 'Executes exploits and achieves initial access',
     mitreTactics: ['TA0001', 'TA0002'],
     primaryPhases: [KillChainPhase.DELIVER, KillChainPhase.EXPLOIT],
-    defaultTools: ['sqli_scan', 'xss_scan', 'ssti_test', 'lfi_test', 'open_redirect_test', 'nuclei_scan', 'ffuf_fuzz', 'dir_bruteforce', 'api_endpoint_discovery', 'http_methods_test', 'password_spray', 'hash_crack', 'base64_decode', 'url_encode', 'jwt_decode', 'http_request', 'curl_request', 'technology_detect', 'header_analysis'],
-    toolCategories: ['vuln', 'web', 'auth', 'util'],
-    capabilities: ['exploit_dev', 'payload_delivery', 'initial_access', 'code_execution'],
+    defaultTools: ['sqli_scan', 'xss_scan', 'ssti_test', 'lfi_test', 'open_redirect_test', 'ffuf_fuzz', 'dir_bruteforce', 'http_request'],
+    toolCategories: ['vuln', 'web', 'auth', 'util', 'reverse', 'sandbox'],
+    capabilities: ['exploit_dev', 'payload_delivery', 'initial_access', 'code_execution', 'binary_analysis'],
     techniques: ['T1190', 'T1133', 'T1078', 'T1059'],
     systemPrompt: OPERATOR_SYSTEM_PROMPTS.exploiter,
   },
@@ -107,7 +130,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Moves through networks and escalates privileges',
     mitreTactics: ['TA0008', 'TA0004'],
     primaryPhases: [KillChainPhase.INSTALL],
-    defaultTools: ['hash_crack', 'password_spray', 'jwt_decode', 'cookie_analysis', 'dns_lookup', 'port_scan', 'subdomain_enum', 'network_trace', 'nmap_scan', 'sqli_scan', 'lfi_test', 'cve_lookup', 'base64_decode', 'http_request', 'curl_request', 'technology_detect'],
+    defaultTools: ['hash_crack', 'password_spray', 'jwt_decode', 'http_request'],
     toolCategories: ['recon', 'web', 'auth', 'vuln'],
     capabilities: ['priv_esc', 'lateral_movement', 'credential_access', 'domain_enum'],
     techniques: ['T1021', 'T1078', 'T1068', 'T1548'],
@@ -118,7 +141,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Collects and extracts sensitive data',
     mitreTactics: ['TA0009', 'TA0010'],
     primaryPhases: [KillChainPhase.ACTIONS],
-    defaultTools: ['http_request', 'curl_request', 'api_endpoint_discovery', 'dir_bruteforce', 'base64_decode', 'url_encode', 'jwt_decode', 'cookie_analysis', 'subdomain_enum', 'robots_txt_fetch', 'technology_detect', 'lfi_test', 'sqli_scan', 'header_analysis', 'cve_lookup'],
+    defaultTools: ['http_request', 'curl_request', 'api_endpoint_discovery'],
     toolCategories: ['web', 'recon', 'util'],
     capabilities: ['data_collection', 'exfiltration', 'staging', 'compression'],
     techniques: ['T1041', 'T1048', 'T1567', 'T1560'],
@@ -129,7 +152,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Establishes persistence and covers tracks',
     mitreTactics: ['TA0003', 'TA0005'],
     primaryPhases: [KillChainPhase.INSTALL, KillChainPhase.C2],
-    defaultTools: ['http_request', 'curl_request', 'cookie_analysis', 'header_analysis', 'csp_analysis', 'clickjacking_test', 'technology_detect', 'http_methods_test', 'jwt_decode', 'base64_decode', 'url_encode', 'robots_txt_fetch', 'subdomain_enum', 'open_redirect_test', 'ssl_scan'],
+    defaultTools: ['http_request', 'header_analysis', 'cookie_analysis', 'clickjacking_test'],
     toolCategories: ['web', 'recon', 'vuln'],
     capabilities: ['persistence', 'evasion', 'cleanup', 'anti_forensics'],
     techniques: ['T1547', 'T1053', 'T1136', 'T1070'],
@@ -140,8 +163,8 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Orchestrates operations and manages agents',
     mitreTactics: ['TA0011'],
     primaryPhases: [KillChainPhase.C2],
-    defaultTools: ['cve_lookup', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'nmap_scan', 'port_scan', 'dns_lookup', 'subdomain_enum', 'nuclei_scan', 'sqli_scan', 'api_endpoint_discovery', 'version_detect', 'ssl_scan'],
-    toolCategories: ['recon', 'web', 'vuln'],
+    defaultTools: ['cve_lookup', 'technology_detect'],
+    toolCategories: ['recon', 'web'],
     capabilities: ['orchestration', 'task_management', 'communication', 'decision_making'],
     techniques: ['T1071', 'T1095', 'T1573', 'T1132'],
     systemPrompt: OPERATOR_SYSTEM_PROMPTS.coordinator,
@@ -151,8 +174,8 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Analyzes findings and generates reports',
     mitreTactics: [],
     primaryPhases: [KillChainPhase.ACTIONS],
-    defaultTools: ['cve_lookup', 'jwt_decode', 'hash_crack', 'base64_decode', 'url_encode', 'technology_detect', 'ssl_scan', 'header_analysis', 'cors_check', 'csp_analysis', 'cookie_analysis', 'whois_lookup', 'dns_lookup', 'http_request', 'curl_request'],
-    toolCategories: ['web', 'vuln', 'recon', 'util'],
+    defaultTools: ['cve_lookup', 'jwt_decode', 'hash_crack', 'technology_detect'],
+    toolCategories: ['web', 'vuln', 'recon', 'code', 'reverse', 'sandbox'],
     capabilities: ['analysis', 'reporting', 'recommendations', 'risk_assessment'],
     techniques: [],
     systemPrompt: OPERATOR_SYSTEM_PROMPTS.analyst,
@@ -234,6 +257,61 @@ export const KILL_CHAIN_ORDER: KillChainPhase[] = [
   KillChainPhase.ACTIONS,
 ];
 
+// =============================================================================
+// FAMILY-SPECIFIC PHASE SEQUENCES
+// Only run phases that make sense for the target type.
+// A git repo never needs C2 or persistence operators.
+// A web app never needs semgrep.
+// =============================================================================
+
+export const FAMILY_PHASES: Record<MissionFamily, KillChainPhase[]> = {
+  web_api:              [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.DELIVER, KillChainPhase.EXPLOIT, KillChainPhase.ACTIONS],
+  code_supply_chain:    [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.ACTIONS],
+  local_code_scan:      [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.ACTIONS],
+  cloud_infra:          [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.EXPLOIT, KillChainPhase.ACTIONS],
+  ai_red_team:          [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.EXPLOIT, KillChainPhase.ACTIONS],
+  smart_contract:       [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.EXPLOIT, KillChainPhase.ACTIONS],
+  crypto_secrets:       [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.ACTIONS],
+  reverse_binary:       [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.EXPLOIT, KillChainPhase.ACTIONS],
+  agent_warfare:        [KillChainPhase.RECON, KillChainPhase.WEAPONIZE, KillChainPhase.EXPLOIT, KillChainPhase.ACTIONS],
+  social_osint:         [KillChainPhase.RECON, KillChainPhase.ACTIONS],
+  reporting_remediation:[KillChainPhase.ACTIONS],
+};
+
+export const FAMILY_ARCHETYPES: Record<MissionFamily, OperatorArchetype[]> = {
+  // Web/API targets: network recon, web vuln scanning, exploitation, analysis
+  web_api:              ['recon', 'web_scanner', 'exploiter', 'analyst'],
+  // Code repos: static analysis only — no network recon, no C2, no persistence
+  code_supply_chain:    ['code_scanner', 'analyst'],
+  // Local ZIP/folder scan: identical operator set to code_supply_chain
+  local_code_scan:      ['code_scanner', 'analyst'],
+  // Cloud infra: network recon, web scanning, misconfiguration exploitation, analysis
+  cloud_infra:          ['recon', 'web_scanner', 'exploiter', 'analyst'],
+  // AI red-team: probe HTTP APIs and model endpoints — web scanning + exploitation
+  ai_red_team:          ['recon', 'web_scanner', 'exploiter', 'analyst'],
+  // Smart contracts: on-chain source code review + web interface testing
+  smart_contract:       ['recon', 'code_scanner', 'web_scanner', 'exploiter', 'analyst'],
+  // Credential/secret exposure: git history + code static analysis
+  crypto_secrets:       ['recon', 'code_scanner', 'analyst'],
+  // Binary/reverse: local file analysis — no network recon needed
+  reverse_binary:       ['code_scanner', 'exploiter', 'analyst'],
+  // Agent warfare: adversarial probing of agent HTTP endpoints
+  agent_warfare:        ['recon', 'web_scanner', 'exploiter', 'analyst'],
+  // OSINT: passive intelligence gathering only
+  social_osint:         ['recon', 'analyst'],
+  // Reporting: findings synthesis only
+  reporting_remediation:['analyst'],
+};
+
+export function getPhasesForFamily(family?: MissionFamily): KillChainPhase[] {
+  return family ? (FAMILY_PHASES[family] ?? KILL_CHAIN_ORDER) : KILL_CHAIN_ORDER;
+}
+
+export function getArchetypesForFamily(family?: MissionFamily): OperatorArchetype[] {
+  if (!family) return Object.keys(ARCHETYPE_PROFILES) as OperatorArchetype[];
+  return FAMILY_ARCHETYPES[family] ?? (Object.keys(ARCHETYPE_PROFILES) as OperatorArchetype[]);
+}
+
 export const PHASE_DESCRIPTIONS: Record<KillChainPhase, string> = {
   [KillChainPhase.RECON]: 'Gathering intelligence about the target',
   [KillChainPhase.WEAPONIZE]: 'Preparing exploits and payloads',
@@ -271,13 +349,9 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   private _state: OperatorState;
   private llm?: LLMBackbone;
   private agentLoop?: AgentLoop;
-  /** Shared pack board (Phase-2). Attached only when swarm coordination is on; absent = solo baseline. */
-  private board?: PackBoard;
   private cooldownTimer: NodeJS.Timeout | null = null;
   private findings: Finding[] = [];
   private credentials: Credential[] = [];
-  /** White-box source excerpt (security-prioritized), set by TempestCommand.setWhiteboxSource */
-  private whiteboxSource: string = '';
 
   constructor(
     callsign: string,
@@ -336,7 +410,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   /**
    * Assign a task to the operator
    */
-  async assignTask(task: Task, target?: Target): Promise<TaskResult> {
+  async assignTask(task: Task, target?: Target, signal?: AbortSignal): Promise<TaskResult> {
     if (!this.isAvailable()) {
       throw new Error(`Operator ${this.callsign} is not available (status: ${this._state.status})`);
     }
@@ -349,7 +423,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
 
     try {
       this.setStatus('executing');
-      const result = await this.executeTask(task, target);
+      const result = await this.executeTask(task, target, signal);
 
       this._state.completedTasks++;
       this._state.currentTask = null;
@@ -369,7 +443,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       // Decompose fallback: if we have an LLM and retries left, break the
       // failed task into smaller subtasks instead of giving up.
       const attempt = (task as any)._decomposeAttempt || 0;
-      if (this.llm && attempt < this.config.maxRetries) {
+      if (!signal?.aborted && this.llm && attempt < this.config.maxRetries) {
         const subtasks = await this.decomposeTask(task, errorMessage);
         if (subtasks.length > 0) {
           this.emit('task:decomposed', { parent: task, subtasks, reason: errorMessage });
@@ -377,8 +451,9 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
 
           const subResults: TaskResult[] = [];
           for (const sub of subtasks) {
+            if (signal?.aborted) break;
             (sub as any)._decomposeAttempt = attempt + 1;
-            const r = await this.assignTask(sub, target);
+            const r = await this.assignTask(sub, target, signal);
             subResults.push(r);
           }
 
@@ -409,24 +484,13 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.agentLoop = agentLoop;
   }
 
-  /** Attach the shared pack board so this operator sees the swarm's live lead-board (Phase-2). */
-  attachBoard(board: PackBoard): void {
-    this.board = board;
-  }
-
   /**
    * Execute a task with an optional target context
    */
-  async executeTask(task: Task, target?: Target): Promise<TaskResult> {
-    // If we have an agent loop (LLM + Arsenal), use autonomous ReAct execution.
-    // Pass the white-box source excerpt (if any) so the model sees the target's
-    // real source alongside the task; empty string keeps black-box behavior.
+  async executeTask(task: Task, target?: Target, signal?: AbortSignal): Promise<TaskResult> {
+    // If we have an agent loop (LLM + Arsenal), use autonomous ReAct execution
     if (this.agentLoop && this.llm) {
-      // [Phase-2] Register as live on the board and pull the shared situation report so this
-      // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
-      this.board?.heartbeat(this.id, 'hunting', task.name);
-      const sharedContext = this.board?.situationReport(this.id);
-      const result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext);
+      const result = await this.agentLoop.run(task, this.profile.systemPrompt, target, signal);
 
       // Convert agent findings to operator findings.
       // PROVENANCE-HONEST: only a tool-backed finding gets tool-output evidence (the raw
@@ -435,6 +499,40 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       // model's prose summary as `type:'output'` for EVERY finding, which passed the gate.
       for (const finding of result.findings) {
         const toolBacked = finding.provenance === 'tool';
+        // Every phase requires tool-backed evidence. A model-asserted finding is the LLM
+        // restating (or hallucinating) what scan tools already reported with proper evidence.
+        // Drop it across ALL phases so tool findings aren't buried by evidenceless noise and
+        // the gate doesn't waste cycles on prose it can never verify.
+        // Tool-backed findings (provenance:'tool') always survive — this includes
+        // llm_code_review and llm_validate_finding which run as real tool calls.
+        if (!toolBacked) continue;
+        const evidenceItems: Evidence[] = [];
+        if (toolBacked) {
+          evidenceItems.push({
+            type: 'output',
+            content: finding.toolOutput || finding.details || '',
+            timestamp: Date.now(),
+            metadata: { tool: finding.toolName },
+          });
+          if (finding.httpRequest) {
+            evidenceItems.push({ type: 'request', content: finding.httpRequest, timestamp: Date.now(), metadata: { tool: finding.toolName } });
+          }
+          if (finding.httpResponse) {
+            evidenceItems.push({ type: 'response', content: finding.httpResponse, timestamp: Date.now(), metadata: { tool: finding.toolName } });
+          }
+          // Always emit a command evidence item — either the tool's own scanCommand (e.g.
+          // the exact semgrep/gitleaks/trivy invocation) or a synthetic one derived from
+          // the tool name. The gate's web-probe-phase check requires either command evidence
+          // OR both request+response; without this, every tool that lacks HTTP exchange
+          // capture (ssl_scan, nuclei_scan, sqli_scan, etc.) gets silently blocked.
+          const cmdContent = finding.scanCommand || (finding.toolName ? `${finding.toolName}: ${finding.title}` : '');
+          if (cmdContent) {
+            evidenceItems.push({ type: 'command', content: cmdContent, timestamp: Date.now(), metadata: { tool: finding.toolName } });
+          }
+          if (finding.scanOutput) {
+            evidenceItems.push({ type: 'output', content: finding.scanOutput, timestamp: Date.now(), metadata: { tool: finding.toolName } });
+          }
+        }
         this.recordFinding({
           id: `finding-${randomUUID()}`,
           title: finding.title,
@@ -445,14 +543,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           phase: task.phase as KillChainPhase,
           cvss: finding.cvss,
           cve: finding.cve,
-          evidence: toolBacked
-            ? [{
-                type: 'output',
-                content: finding.toolOutput || finding.details || '',
-                timestamp: Date.now(),
-                metadata: { tool: finding.toolName },
-              }]
-            : [],
+          evidence: evidenceItems,
           remediation: finding.remediation,
           discoveredAt: Date.now(),
         });
@@ -461,9 +552,6 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       return {
         success: result.success,
         output: result.summary,
-        error: result.finalSummaryError
-          ? `${result.summary} Final summary failed: ${result.finalSummaryError}`
-          : undefined,
         findings: result.findings.map(f => f.title),
         nextTasks: undefined,
       };
@@ -687,39 +775,16 @@ Respond in a structured format.`;
   }
 
   /**
-   * Force-abort whatever this operator is doing and return it to idle.
-   *
-   * This is the recovery hatch for a WEDGED dispatch: the normal completion
-   * path clears `currentTask` and sets status via assignTask()'s resolve/reject,
-   * but if the underlying agent-loop promise never settles (a truly hung LLM
-   * call, a stuck subprocess, etc.) the operator stays pinned in
-   * `executing`/`tasked` forever and can never take new work. TempestCommand's
-   * per-dispatch wall-clock backstop calls this to free the operator so the
-   * mission can make progress.
-   *
-   * It does NOT touch the normal completion path — assignTask()'s own
-   * resolve/reject still run if/when the wedged promise eventually settles;
-   * they simply find the operator already idle (setStatus is idempotent) and
-   * their taskQueue.complete/fail call is a no-op because the task is already
-   * terminal. Only status-machine state is reset here; findings already
-   * recorded are preserved.
+   * Abort whatever task this operator is currently running and return to idle.
+   * Used as a backstop reset when a task hangs or times out.
    */
-  abortActiveTask(reason: string): void {
-    // Nothing to abort if the operator isn't holding a task.
-    if (this._state.status === 'idle' || this._state.status === 'burned' || this._state.status === 'exfiltrated') {
-      return;
-    }
+  abortActiveTask(_reason: string): void {
     if (this.cooldownTimer) {
       clearTimeout(this.cooldownTimer);
       this.cooldownTimer = null;
     }
-    this._state.failedTasks++;
     this._state.currentTask = null;
-    this._state.lastActivityTime = Date.now();
-    this.emit('task:failed', {
-      task: { id: 'unknown', name: reason } as unknown as Task,
-      error: `aborted: ${reason}`,
-    });
+    this._state.failedTasks++;
     this.setStatus('idle');
   }
 
@@ -737,15 +802,6 @@ Respond in a structured format.`;
    */
   setLLM(llm: LLMBackbone): void {
     this.llm = llm;
-  }
-
-  /**
-   * Set the white-box source context (security-prioritized code excerpt).
-   * Passed through to the agent loop in executeTask so the model analyzes the
-   * target against its real source. Empty string = black-box (unchanged).
-   */
-  setWhiteboxSource(s: string): void {
-    this.whiteboxSource = s;
   }
 
   /**

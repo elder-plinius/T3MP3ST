@@ -90,7 +90,7 @@ async function runScenario(name, scenario) {
 
   const routePreview = await post('/api/route-preview', { draftId: missionDraft.data.id });
   record(`[${name}] route family classified`, routePreview.ok && routePreview.data.route?.family === scenario.family, routePreview.data.route?.family || routePreview.data.error);
-  record(`[${name}] operation contract emitted`, routePreview.data.operationDraft?.schema_version === 't3mp3st_operation/v1', routePreview.data.operationDraft?.schema_version || 'missing schema');
+  record(`[${name}] operation contract emitted`, routePreview.data.operationDraft?.schema_version === 'plinyos.t3mp3st_operation/v1', routePreview.data.operationDraft?.schema_version || 'missing schema');
   record(`[${name}] operation contract carries runbook context`, Boolean(routePreview.data.operationDraft?.knowledge_context?.operator_runbook), routePreview.data.operationDraft?.knowledge_context?.operator_runbook || 'missing runbook context');
 
   const evidence = await post('/api/evidence', {
@@ -135,10 +135,10 @@ async function runScenario(name, scenario) {
   record(`[${name}] retest can complete`, completedRetest.ok && completedRetest.data.status === 'passed', completedRetest.data.status || completedRetest.data.error);
 
   const bundle = await post('/api/mission-bundles', { operationDraft: routePreview.data.operationDraft });
-  record(`[${name}] mission bundle exports handoff`, bundle.ok && bundle.data.schema_version === 't3mp3st_mission_bundle/v1' && bundle.data.runbook?.family === scenario.family && bundle.data.promptPacks?.some(pack => pack.id === scenario.expectedPromptPack), bundle.data.handoff?.humanSummary || bundle.data.error);
+  record(`[${name}] mission bundle exports handoff`, bundle.ok && bundle.data.schema_version === 'plinyos.t3mp3st_mission_bundle/v1' && bundle.data.runbook?.family === scenario.family && bundle.data.promptPacks?.some(pack => pack.id === scenario.expectedPromptPack), bundle.data.handoff?.humanSummary || bundle.data.error);
 
   const gate = await post('/api/mission-gate', { operationDraft: routePreview.data.operationDraft });
-  record(`[${name}] mission gate reports launch status`, gate.ok && gate.data.schema_version === 't3mp3st_mission_gate/v1' && ['hold', 'ready'].includes(gate.data.status), `${gate.data.status || 'unknown'} ${gate.data.score ?? 'n/a'}/100`);
+  record(`[${name}] mission gate reports launch status`, gate.ok && gate.data.schema_version === 'plinyos.t3mp3st_mission_gate/v1' && ['hold', 'ready'].includes(gate.data.status), `${gate.data.status || 'unknown'} ${gate.data.score ?? 'n/a'}/100`);
 
   return { missionDraft, routePreview, evidence, finding, retest };
 }
@@ -203,19 +203,19 @@ async function main() {
   }
 
   const arsenalStatus = await get('/api/arsenal/status?family=web_api');
-  record('Arsenal adapter status reports mission readiness', arsenalStatus.ok && arsenalStatus.data.schema_version === 't3mp3st_arsenal_status/v1' && typeof arsenalStatus.data.summary?.readiness === 'number', `${arsenalStatus.data.summary?.readiness ?? 'n/a'}% ready`);
+  record('Arsenal adapter status reports mission readiness', arsenalStatus.ok && arsenalStatus.data.schema_version === 'plinyos.t3mp3st_arsenal_status/v1' && typeof arsenalStatus.data.summary?.readiness === 'number', `${arsenalStatus.data.summary?.readiness ?? 'n/a'}% ready`);
   const arsenalPlan = await post('/api/arsenal/plan', {
     family: 'web_api',
     target: 'local-lab',
     objective: 'Field drill validates gated tool planning.',
   });
-  record('Arsenal planner emits gated evidence steps', arsenalPlan.ok && arsenalPlan.data.schema_version === 't3mp3st_arsenal_plan/v1' && (arsenalPlan.data.steps || []).length >= 4 && (arsenalPlan.data.stopConditions || []).length >= 2, `${arsenalPlan.data.steps?.length || 0} steps / ${arsenalPlan.data.stopConditions?.length || 0} stops`);
+  record('Arsenal planner emits gated evidence steps', arsenalPlan.ok && arsenalPlan.data.schema_version === 'plinyos.t3mp3st_arsenal_plan/v1' && (arsenalPlan.data.steps || []).length >= 4 && (arsenalPlan.data.stopConditions || []).length >= 2, `${arsenalPlan.data.steps?.length || 0} steps / ${arsenalPlan.data.stopConditions?.length || 0} stops`);
 
   const doctrine = await get('/api/operator-doctrine');
   record('Operator doctrine exposes authority model', doctrine.ok && /scope receipts/.test(doctrine.data.doctrine || '') && doctrine.data.authorityModel?.claimHardening === 'hypothesis -> evidence -> finding -> fix -> retest', doctrine.data.authorityModel?.claimHardening || doctrine.data.error);
 
   const learningStatus = await get('/api/learning/status');
-  record('Learning loop exposes explicit proposal policy', learningStatus.ok && learningStatus.data.schema_version === 't3mp3st_learning_status/v1' && learningStatus.data.policy?.silentLearning === false && learningStatus.data.policy?.acceptanceRequired === true, learningStatus.data.policy?.proposalFlow || learningStatus.data.error);
+  record('Learning loop exposes explicit proposal policy', learningStatus.ok && learningStatus.data.schema_version === 'plinyos.t3mp3st_learning_status/v1' && learningStatus.data.policy?.silentLearning === false && learningStatus.data.policy?.acceptanceRequired === true, learningStatus.data.policy?.proposalFlow || learningStatus.data.error);
   record('Learning loop deduplicates repeated reviews', learningStatus.ok && learningStatus.data.dedupe?.enabled === true && /canonical content fingerprint/.test(learningStatus.data.dedupe?.strategy || ''), learningStatus.data.dedupe?.strategy || learningStatus.data.error);
 
   const runbooks = await get('/api/operator-runbooks');
@@ -223,7 +223,7 @@ async function main() {
 
   const forefrontRadar = await get('/api/forefront-radar');
   const laneIds = (forefrontRadar.data.lanes || []).map(lane => lane.id);
-  record('Forefront radar exposes pressure lanes', forefrontRadar.ok && forefrontRadar.data.schema_version === 't3mp3st_forefront_radar/v1' && laneIds.includes('frontier-agent-command-injection') && laneIds.includes('frontier-browser-tool-privilege'), laneIds.join(', '));
+  record('Forefront radar exposes pressure lanes', forefrontRadar.ok && forefrontRadar.data.schema_version === 'plinyos.t3mp3st_forefront_radar/v1' && laneIds.includes('frontier-agent-command-injection') && laneIds.includes('frontier-browser-tool-privilege'), laneIds.join(', '));
 
   const cveSearch = await post('/api/resource-packs/search', { query: 'CVE' });
   const cveResourceIds = (cveSearch.data.resources || []).map(resource => resource.id);

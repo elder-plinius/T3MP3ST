@@ -6,7 +6,7 @@
 // LLM CONFIGURATION
 // =============================================================================
 
-export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'codex' | 'mock' | 'local' | 'local-agent';
+export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'bedrock' | 'codex' | 'mock' | 'local' | 'local-agent';
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -98,6 +98,8 @@ export interface LLMToolCall {
 export type OperatorArchetype =
   | 'recon'
   | 'scanner'
+  | 'code_scanner'
+  | 'web_scanner'
   | 'exploiter'
   | 'infiltrator'
   | 'exfiltrator'
@@ -148,6 +150,23 @@ export enum KillChainPhase {
 }
 
 // =============================================================================
+// MISSION FAMILY
+// =============================================================================
+
+export type MissionFamily =
+  | 'web_api'
+  | 'ai_red_team'
+  | 'cloud_infra'
+  | 'smart_contract'
+  | 'code_supply_chain'
+  | 'local_code_scan'
+  | 'crypto_secrets'
+  | 'reverse_binary'
+  | 'agent_warfare'
+  | 'social_osint'
+  | 'reporting_remediation';
+
+// =============================================================================
 // TARGET TYPES
 // =============================================================================
 
@@ -193,6 +212,8 @@ export interface Target {
   discoveredAt: number;
   lastScannedAt?: number;
   ownedAt?: number;
+  /** The mission family this target should be approached with */
+  family?: MissionFamily;
 }
 
 export interface Service {
@@ -225,10 +246,15 @@ export interface Finding {
   remediation?: string;
   references?: string[];
   discoveredAt: number;
+  /** The mission this finding belongs to — set when finding is stored in the vault */
+  missionId?: string;
+  missionName?: string;
   verifiedAt?: number;
   exploitedAt?: number;
   /** Result of the live verification gate — present once verifyFinding() has run. */
   verifyGate?: { passed: boolean; provenance: 'none' | 'context' | 'tool'; reasons: string[]; checkedAt: number };
+  /** Second-pass LLM skeptic validation — present after FindingValidator runs. */
+  validationResult?: ValidationResult;
 }
 
 export interface Evidence {
@@ -236,6 +262,17 @@ export interface Evidence {
   content: string;
   timestamp: number;
   metadata?: Record<string, unknown>;
+  /** For request/response pairs: links to the partner evidence entry */
+  pairedWithId?: string;
+  /** For response evidence: the vulnerability pattern that matched (if any) */
+  matchedPattern?: string;
+}
+
+export interface ValidationResult {
+  confirmed: boolean;
+  confidence: number;
+  reasoning: string;
+  validatedAt: number;
 }
 
 // =============================================================================
@@ -287,6 +324,53 @@ export interface Credential {
 // MISSION TYPES
 // =============================================================================
 
+// =============================================================================
+// CLOUD CREDENTIAL TYPES
+// =============================================================================
+
+export interface CloudCredentialsAWS {
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  sessionToken?: string;         // Temporary/STS credentials
+  region?: string;               // AWS_DEFAULT_REGION
+  profile?: string;              // Named profile (AWS_PROFILE)
+  roleArn?: string;              // AssumeRole target (AWS_ROLE_ARN)
+  roleSessionName?: string;      // AWS_ROLE_SESSION_NAME
+  externalId?: string;           // Cross-account AssumeRole (AWS_EXTERNAL_ID)
+  webIdentityTokenFile?: string; // IRSA/OIDC (AWS_WEB_IDENTITY_TOKEN_FILE)
+}
+
+export interface CloudCredentialsGCP {
+  serviceAccountJson?: string;            // Inline SA JSON (→ temp file)
+  projectId?: string;                     // GOOGLE_CLOUD_PROJECT
+  impersonateServiceAccount?: string;     // CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT
+  applicationCredentialsPath?: string;   // GOOGLE_APPLICATION_CREDENTIALS (existing file)
+  accessToken?: string;                   // CLOUDSDK_AUTH_ACCESS_TOKEN (short-lived OAuth2 token)
+  configDir?: string;                     // CLOUDSDK_CONFIG (gcloud config directory)
+}
+
+export interface CloudCredentialsAzure {
+  tenantId?: string;                  // AZURE_TENANT_ID
+  clientId?: string;                  // AZURE_CLIENT_ID
+  clientSecret?: string;              // AZURE_CLIENT_SECRET (service principal)
+  clientCertificatePath?: string;     // AZURE_CLIENT_CERTIFICATE_PATH
+  clientCertificatePassword?: string; // AZURE_CLIENT_CERTIFICATE_PASSWORD
+  subscriptionId?: string;            // AZURE_SUBSCRIPTION_ID
+  federatedTokenFile?: string;        // AZURE_FEDERATED_TOKEN_FILE (workload identity)
+  authorityHost?: string;             // AZURE_AUTHORITY_HOST (sovereign clouds)
+  useManagedIdentity?: boolean;       // Use MSI/system-assigned identity
+  cloud?: string;                     // AZURE_CLOUD (AzureCloud|AzureGermanCloud|AzureChinaCloud)
+  username?: string;                  // AZURE_USERNAME (legacy non-interactive auth)
+  password?: string;                  // AZURE_PASSWORD (legacy non-interactive auth — avoid SP when possible)
+}
+
+export interface CloudCredentials {
+  provider?: 'aws' | 'gcp' | 'azure' | 'auto'; // which provider to target
+  aws?: CloudCredentialsAWS;
+  gcp?: CloudCredentialsGCP;
+  azure?: CloudCredentialsAzure;
+}
+
 export interface Mission {
   id: string;
   name: string;
@@ -299,6 +383,8 @@ export interface Mission {
   completedAt?: number;
   currentPhase: KillChainPhase;
   progress: number;
+  family?: MissionFamily;
+  cloudCredentials?: CloudCredentials; // session-only, never persisted
 }
 
 export interface RulesOfEngagement {
@@ -386,11 +472,6 @@ export interface Message {
 // TOOL TYPES
 // =============================================================================
 
-/** A tool's risk tier — the catalog's `risk` vocabulary. Drives the approval + spicy-warning gate
- *  (see src/arsenal/approval.ts): intrusive/credential/dangerous require approval; credential/dangerous
- *  additionally fire a loud warning. Absent/safe/active tools are ungated. */
-export type RiskTier = 'local_read' | 'passive' | 'active' | 'intrusive' | 'credential' | 'dangerous';
-
 export interface CustomTool {
   name: string;
   description: string;
@@ -398,8 +479,8 @@ export interface CustomTool {
   handler: (context: ToolContext) => Promise<ToolResult>;
   parameters?: ToolParameter[];
   requiredPermissions?: string[];
-  /** Risk tier carried from the catalog when the tool is a minted adapter — gates approval. */
-  riskTier?: RiskTier;
+  /** Risk tier carried from the catalog adapter (passive/active/intrusive/credential/dangerous). */
+  riskTier?: string;
 }
 
 export interface ToolParameter {
@@ -415,6 +496,8 @@ export interface ToolContext {
   operator?: string;
   mission?: string;
   parameters: Record<string, unknown>;
+  /** LLMBackbone injected by Arsenal.execute() — cast to LLMBackbone in tool handlers that need it */
+  llm?: unknown;
 }
 
 /**
@@ -437,6 +520,14 @@ export interface ToolFinding {
   /** For 'tool' provenance: the tool that produced it + the raw output backing the claim. */
   toolName?: string;
   toolOutput?: string;
+  /** Raw HTTP request line+headers sent (for web probe evidence) */
+  httpRequest?: string;
+  /** Raw HTTP response status+headers+body snippet received */
+  httpResponse?: string;
+  /** CLI command that produced this finding (for code scan evidence) */
+  scanCommand?: string;
+  /** Raw scan tool output specific to this finding (for code scan evidence) */
+  scanOutput?: string;
 }
 
 export interface ToolResult {
@@ -446,6 +537,8 @@ export interface ToolResult {
   credentials?: Credential[];
   error?: string;
   duration?: number;
+  /** Additional typed evidence items to attach to all findings from this tool call */
+  additionalEvidence?: Array<{ type: 'request' | 'response' | 'command' | 'output'; content: string; metadata?: Record<string, unknown> }>;
 }
 
 // =============================================================================
@@ -455,6 +548,7 @@ export interface ToolResult {
 export interface TempestConfig {
   name: string;
   llm: LLMConfig;
+  missionFamily?: MissionFamily;
   opsec?: Partial<OpsecConfig>;
   operators?: {
     maxConcurrent?: number;
@@ -542,24 +636,13 @@ export interface CommandEvents {
   'tick': number;
   'operator:spawned': { id: string; archetype: OperatorArchetype };
   'operator:burned': { id: string };
+  'operator:error': { operatorId: string; callsign: string; archetype: OperatorArchetype; error: string; step: number };
   'finding:discovered': { finding: Finding; operatorId: string };
   'credential:harvested': { credential: Credential; operatorId: string };
   'target:owned': { target: Target; operatorId: string };
   'detection:triggered': DetectionEvent;
   'mission:phase_changed': { missionId: string; phase: KillChainPhase };
   'abort:recommended': string;
-  /** A capability-approval gate decision (allowed/denied) on an intrusive/dangerous tool — bridged to
-   *  the dashboard's live approval/audit feed. Structural match for arsenal/approval.ts ApprovalRecord. */
-  'approval:decision': {
-    tool: string;
-    risk: RiskTier;
-    operator?: string;
-    target?: string;
-    action: string;
-    outcome: string;
-    spicy: boolean;
-    at: number;
-  };
 }
 
 // =============================================================================

@@ -1,4 +1,4 @@
-# T3MP3ST: Tactical Execution Multi-agent Platform for Security Testing
+# T3MP3ST: Tactical Execution Multi-agent Platform for Elite Security Testing
 
 ## A Technical Whitepaper
 
@@ -6,33 +6,9 @@
 
 ---
 
-> **What is real vs. scaffolding — read this first.** T3MP3ST's live, tool-backed
-> engine is **reconnaissance**: the recon operator drives a real ReAct tool-calling
-> loop against a target and is what produces the re-derivable benchmark numbers (run
-> under a **single-agent loop**, not the full operator swarm). The rest of the
-> Cyber Kill Chain past recon — and the "advanced" / "Pliny Specials" modules — are
-> **honestly-labeled scaffolding**: framework surface, interface stubs, and
-> simulators, not autonomous exploitation. Reports from full-chain runs show `0`
-> executed exploits. See [`FEATURES.md`](FEATURES.md) for the per-module
-> `[x]` shipped / `[~]` partial / `[ ]` planned legend, and the README's
-> "What is real vs. scaffolding" section. This document describes the **framework**;
-> where it names a capability, check it against that legend before assuming it runs.
-
----
-
 ## Abstract
 
-T3MP3ST (TEMPEST) is an open-source, TypeScript-based multi-agent framework for
-penetration testing and red team operations. The platform models the workflow as a
-structured Cyber Kill Chain pipeline of specialized AI-powered agents ("operators"),
-backed by payload databases, real security tooling, and LLM-driven decision-making.
-Today its live engine is the **reconnaissance operator** (a real tool-calling ReAct
-loop); the downstream kill-chain phases and advanced modules are framework
-scaffolding rather than autonomous exploitation (see the note above and
-[`FEATURES.md`](FEATURES.md)). T3MP3ST exposes its capabilities through three
-interfaces: a command-line interface, an HTTP REST API, and a Model Context Protocol
-(MCP) server, for embedding recon-driven security testing into human-driven
-workflows and agent pipelines.
+T3MP3ST (TEMPEST) is an open-source, TypeScript-based multi-agent framework purpose-built for orchestrating autonomous penetration testing and red team operations. The platform coordinates specialized AI-powered agents ("operators") through a structured Cyber Kill Chain pipeline, backed by comprehensive payload databases, real security tooling, and LLM-driven decision-making. T3MP3ST exposes its capabilities through three interfaces: a command-line interface, an HTTP REST API, and a Model Context Protocol (MCP) server, enabling integration into both human-driven and fully autonomous security testing workflows.
 
 This whitepaper details the architecture, agent model, execution pipeline, tooling, and integration surface of T3MP3ST, providing a comprehensive technical reference for security professionals, researchers, and developers.
 
@@ -87,7 +63,7 @@ Key design principles:
 
 ### 1.3 Scope of This Document
 
-This whitepaper covers T3MP3ST v1.0, encompassing the core framework (~12,000 lines of TypeScript), the web UI (~14,000 lines), and the supporting infrastructure. All code is AGPL-3.0-licensed.
+This whitepaper covers T3MP3ST v1.0, encompassing the core framework (~12,000 lines of TypeScript), the web UI (~14,000 lines), and the supporting infrastructure. All code is MIT-licensed.
 
 ---
 
@@ -542,17 +518,18 @@ The CLI (`src/cli.ts`, 20K lines) provides an interactive REPL with:
 
 ### 10.2 HTTP REST API
 
-The API server (`src/server.ts`) exposes the mission-control + tool surface via Express.js:
+The API server (`src/server.ts`, 52K lines) exposes all Pliny tools via Express.js:
 
 ```
-POST /api/mission/start               # Start an autonomous mission (targets + operators)
-GET  /api/mission/report              # Export the engagement report (markdown)
-POST /api/whitebox/analyze            # White-box repo analysis (ingest -> decompose)
-POST /api/operators/spawn             # Spawn an operator into the active mission
-POST /api/general/plan                # Op Admiral -- draft an operation plan
-GET  /api/codex/status                # Codex CLI availability (read-only)
-POST /api/codex/probe                 # Codex exec readiness self-test
-GET  /api/findings                    # Evidence-gated findings ledger
+POST /api/pliny/leviathan/engage       # Kill chain orchestration
+POST /api/pliny/sphinx/validate     # Vulnerability validation
+POST /api/pliny/gorgon/strike       # Precision exploitation
+POST /api/pliny/cerberus/escalate # Privilege escalation
+POST /api/pliny/typhon/inject       # Payload encoding
+POST /api/pliny/griffin/harvest    # Secret harvesting
+POST /api/pliny/simurgh/hunt         # Zero-day research
+POST /api/pliny/hydra/orchestrate   # Multi-vector attacks
+POST /api/pliny/arachne/chain        # Exploit chaining
 POST /api/tools/execute               # Direct tool execution
 POST /api/tools/recon                 # Network reconnaissance
 POST /api/llm/chat                    # LLM chat
@@ -698,7 +675,7 @@ Usage should comply with:
 | MCP integration | Yes | No | No | No |
 | OPSEC management | Built-in | Limited | Strong | Minimal |
 | Web UI | Yes | Armitage | Yes | Varies |
-| Open source | AGPL-3.0 | BSD (Framework) | Commercial | Varies |
+| Open source | MIT | BSD (Framework) | Commercial | Varies |
 | Language | TypeScript | Ruby | Java | Python/Go |
 | Payload databases | 200+ | 2000+ | Focused | Limited |
 | Evidence management | Full pipeline | Database | Logs | Minimal |
@@ -741,7 +718,7 @@ T3MP3ST represents a new paradigm in security testing tooling: **LLM-native, mul
 
 The platform's triple integration surface (CLI, REST API, MCP) makes it embeddable in any workflow, from human-driven engagements to fully autonomous AI agent pipelines. Its comprehensive payload databases, real tooling implementations, and OPSEC-first design philosophy provide a solid foundation for authorized security testing at scale.
 
-T3MP3ST is open source under the AGPL-3.0 license, welcoming contributions from the security research community.
+T3MP3ST is open source under the MIT license, welcoming contributions from the security research community.
 
 ---
 

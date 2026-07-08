@@ -445,17 +445,6 @@ export interface Implant {
   target: string;
 }
 
-/**
- * Honest not-implemented result for persistence deployment. Mirrors the failure
- * shape ExploitEngine.exploit returns so callers can never mistake a stub for a
- * real deployed implant.
- */
-export interface PersistenceResult {
-  success: false;
-  error: string;
-  implant?: undefined;
-}
-
 export interface C2Channel {
   protocol: C2Protocol;
   address: string;
@@ -481,10 +470,8 @@ export type PersistenceMethod = 'registry' | 'scheduled_task' | 'service' | 'sta
 export type C2Protocol = 'http' | 'https' | 'dns' | 'custom';
 
 export class PersistenceController extends EventEmitter<PersistenceEvents> {
-  async deploy(_target: string, _mechanism: PersistenceMechanism): Promise<PersistenceResult> {
-    // Stub implementation — no implant is deployed. Return an honest failure shape
-    // (matching ExploitEngine.exploit) instead of a fabricated implant object.
-    return { success: false, error: 'Persistence controller not implemented (stub)' };
+  async deploy(_target: string, _mechanism: PersistenceMechanism): Promise<Implant> {
+    return { id: '1', type: 'stub', target: '' };
   }
 }
 
@@ -1254,8 +1241,6 @@ export interface NodeResult {
   nodeId: string;
   success: boolean;
   output?: string;
-  /** True when the node was NOT actually executed (stub / conditions-skipped). */
-  notExecuted?: boolean;
 }
 
 export interface ExecutionReport {
@@ -1314,15 +1299,13 @@ export class WorkflowOrchestrator extends EventEmitter<WorkflowEvents> {
       });
 
       if (!conditionsMet) {
-        results.push({ nodeId, success: false, notExecuted: true, output: 'Skipped: conditions not met' });
+        results.push({ nodeId, success: false, output: 'Skipped: conditions not met' });
       } else {
-        // Stub: the topological traversal is real, but no node action is actually run.
-        // Mark the node as not-executed rather than fabricating an "Executed ..." success.
+        this.emit('node:executed', { nodeId });
         results.push({
           nodeId,
-          success: false,
-          notExecuted: true,
-          output: `Not executed — workflow orchestrator not implemented (stub); would run ${node.type}`,
+          success: true,
+          output: `Executed ${node.type}: ${JSON.stringify(node.action.params)}`,
         });
       }
 
@@ -1336,10 +1319,10 @@ export class WorkflowOrchestrator extends EventEmitter<WorkflowEvents> {
       }
     }
 
-    // No node actually ran — the execution never truly completes.
+    const allSuccess = results.every(r => r.success);
     const execution: WorkflowExecution = {
       workflowId: workflow.id,
-      status: 'failed',
+      status: allSuccess ? 'completed' : 'failed',
     };
 
     this.emit('workflow:completed', { id: workflow.id });

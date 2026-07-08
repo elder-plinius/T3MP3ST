@@ -100,7 +100,7 @@ That's the full-corpus moment.
 ## Reproduce the standalone subset
 
 ```bash
-cd t3mp3st
+cd 03-PLINYOS/organs/t3mp3st
 
 # 1. Drop OpenRouter key
 echo 'OPENROUTER_API_KEY=sk-or-v1-…' >> .env

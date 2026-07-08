@@ -60,5 +60,3 @@ Before trusting a finding:
 - Does the finding cite the evidence or tool name?
 - Did any receipt or scope gate apply?
 - Has the claim been retested or falsified?
-
-When in doubt, keep the finding labeled as unverified and queue a retest.

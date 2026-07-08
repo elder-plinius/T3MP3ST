@@ -3,7 +3,6 @@
  *
  * Multi-provider LLM integration supporting:
  * - OpenRouter (recommended - access to Claude, GPT-4, Llama, etc.)
- * - Venice (OpenAI-compatible, privacy-focused / uncensored models)
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
  * - Mock (for testing)
@@ -11,6 +10,7 @@
  */
 
 import { EventEmitter } from 'eventemitter3';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { spawn } from 'child_process';
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -55,6 +55,8 @@ export interface ChatOptions {
   systemPrompt?: string;
   /** Tool definitions for function calling */
   tools?: LLMToolDefinition[];
+  /** Optional abort signal — combined with the provider's own timeout */
+  signal?: AbortSignal;
 }
 
 /**
@@ -131,6 +133,7 @@ class OpenRouterAdapter implements LLMProviderAdapter {
   }
 
   validateConfig(): { valid: boolean; error?: string } {
+
     if (!this.config.apiKey) {
       return {
         valid: false,
@@ -210,7 +213,9 @@ class OpenRouterAdapter implements LLMProviderAdapter {
         'X-Title': siteName,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: options?.signal
+        ? AbortSignal.any([AbortSignal.timeout(this.config.timeout || 60000), options.signal])
+        : AbortSignal.timeout(this.config.timeout || 60000),
     });
 
     if (!response.ok) {
@@ -276,13 +281,6 @@ class OpenRouterAdapter implements LLMProviderAdapter {
       stream: true,
     };
 
-    // Stall guard: the streaming fetch previously had NO timeout, so a provider that opens the
-    // connection then goes silent could hang the read loop forever. This is an INACTIVITY
-    // (idle) timeout, deliberately NOT a total cap — it is reset on every received chunk, so a
-    // legitimately long ACTIVE stream is never cut off; only a genuinely stalled/silent stream
-    // is aborted (after config.timeout, default 60s of no data).
-    const controller = new AbortController();
-    const idleMs = this.config.timeout || 60000;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -292,7 +290,6 @@ class OpenRouterAdapter implements LLMProviderAdapter {
         'X-Title': siteName,
       },
       body: JSON.stringify(requestBody),
-      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -304,13 +301,11 @@ class OpenRouterAdapter implements LLMProviderAdapter {
 
     const decoder = new TextDecoder();
     let buffer = '';
-    const idleTimer = setTimeout(() => { try { controller.abort(); } catch { /* noop */ } }, idleMs);
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        idleTimer.refresh(); // a chunk arrived — restart the inactivity countdown
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -332,24 +327,20 @@ class OpenRouterAdapter implements LLMProviderAdapter {
         }
       }
     } finally {
-      clearTimeout(idleTimer);
       reader.releaseLock();
     }
   }
 }
 
 // =============================================================================
-// VENICE ADAPTER
+// VENICE ADAPTER — OpenAI-compatible, privacy-focused (same wire as OpenRouter)
 // =============================================================================
-// Venice AI is OpenAI-compatible on the wire (Bearer auth, POST /chat/completions,
-// identical request/response + tool-calling + SSE stream shape), so it reuses the entire
-// OpenRouter adapter and only differs in its default base URL (set via the `venice` config
-// block), its name, and the key-required error message. The optional HTTP-Referer/X-Title
-// headers the parent sends are harmless (Venice ignores unknown headers).
+
 class VeniceAdapter extends OpenRouterAdapter {
   name = 'venice';
 
   validateConfig(): { valid: boolean; error?: string } {
+
     if (!this.config.apiKey) {
       return {
         valid: false,
@@ -373,6 +364,7 @@ class AnthropicAdapter implements LLMProviderAdapter {
   }
 
   validateConfig(): { valid: boolean; error?: string } {
+
     if (!this.config.apiKey) {
       return {
         valid: false,
@@ -446,7 +438,9 @@ class AnthropicAdapter implements LLMProviderAdapter {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: options?.signal
+        ? AbortSignal.any([AbortSignal.timeout(this.config.timeout || 60000), options.signal])
+        : AbortSignal.timeout(this.config.timeout || 60000),
     });
 
     if (!response.ok) {
@@ -512,6 +506,7 @@ class OpenAIAdapter implements LLMProviderAdapter {
   }
 
   validateConfig(): { valid: boolean; error?: string } {
+
     if (!this.config.apiKey) {
       return {
         valid: false,
@@ -572,7 +567,9 @@ class OpenAIAdapter implements LLMProviderAdapter {
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: options?.signal
+        ? AbortSignal.any([AbortSignal.timeout(this.config.timeout || 60000), options.signal])
+        : AbortSignal.timeout(this.config.timeout || 60000),
     });
 
     if (!response.ok) {
@@ -620,6 +617,7 @@ class MockAdapter implements LLMProviderAdapter {
   }
 
   validateConfig(): { valid: boolean; error?: string } {
+
     return { valid: true };
   }
 
@@ -702,17 +700,114 @@ class MockAdapter implements LLMProviderAdapter {
 }
 
 // =============================================================================
-// LOCAL ADAPTER (Ollama, etc.)
+// TEXT TOOL-CALLING HELPERS
+// Shared by LocalAdapter, CodexAdapter, and LocalAgentAdapter so models without
+// native function-calling can still drive the Arsenal via a text-based contract.
 // =============================================================================
 
-// Local model over HTTP — a fully self-hosted, keyless backbone. Talks to Ollama's
-// native /api/chat by default, or any OpenAI-compatible local server (LM Studio,
-// vLLM, llama.cpp, Ollama's own /v1) when TEMPEST_LOCAL_BASE_URL is a /v1 endpoint.
-// Tool-calling is done over TEXT (renderToolContract + parseTextToolCalls, defined
-// below and shared with the CLI-agent adapters): it works on ANY local model,
-// whether or not it supports native function-calling — without it a local model
-// hits the keyless-path abstain bug (no toolCalls → ReAct bails turn 0 → Arsenal
-// never runs).
+function renderToolContract(tools?: LLMToolDefinition[]): string {
+  if (!tools?.length) return '';
+  const lines = ['\n## ARSENAL — tools the HARNESS runs for you (you REQUEST them, it EXECUTES + returns the output):'];
+  for (const t of tools) {
+    const props = (t.parameters?.properties || {}) as Record<string, { type?: string }>;
+    const req = new Set(t.parameters?.required || []);
+    const sig = Object.entries(props).map(([k, v]) => `${k}${req.has(k) ? '*' : ''}: ${v.type || 'any'}`).join(', ');
+    lines.push(`- ${t.name}(${sig}) — ${t.description}`);
+  }
+  lines.push(
+    '',
+    '## ACTION CONTRACT — follow EXACTLY:',
+    '• To run one or more tools, reply with ONLY this fenced block, nothing else:',
+    '```json',
+    '{"tool_calls":[{"name":"<tool>","arguments":{ ... }}]}',
+    '```',
+    '  The harness runs them (scope-gated) and returns the results as new messages; then you reason again.',
+    '• When the attack surface is exhausted and you are DONE, reply with your final debrief in prose (NO json block).',
+    '• Never run these tools yourself — REQUEST them. Requesting is how you act.',
+  );
+  return lines.join('\n');
+}
+
+// Yield each brace-BALANCED {...} substring (string-aware). Linear + hard-budgeted.
+// Replaces a greedy /\{[\s\S]*\}/ that both over-matched and backtracked quadratically (ReDoS).
+function* balancedObjectSpans(text: string): Generator<string> {
+  const n = text.length;
+  let budget = 2_000_000;
+  let spans = 0;
+  for (let i = 0; i < n && spans < 200 && budget > 0; i++) {
+    if (text[i] !== '{') continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < n && budget > 0; j++, budget--) {
+      const c = text[j];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) { spans++; yield text.slice(i, j + 1); i = j; break; } }
+    }
+  }
+}
+
+// Parse an LLMToolCall[] out of a text-CLI reply. Tolerant of realistic model drift.
+export function parseTextToolCalls(text: string): LLMToolCall[] | undefined {
+  const coerceArgs = (a: unknown): Record<string, unknown> => {
+    if (typeof a === 'string') {
+      try { const p: unknown = JSON.parse(a); return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : {}; } catch { return {}; }
+    }
+    return a && typeof a === 'object' && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
+  };
+  const build = (v: unknown): LLMToolCall[] | undefined => {
+    let arr: unknown;
+    if (Array.isArray(v)) arr = v;
+    else if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      arr = o.tool_calls ?? o.toolCalls ?? o.actions ?? o.calls ?? o.tools;
+      if (arr === undefined && typeof o.name === 'string') arr = [o];
+    }
+    if (!Array.isArray(arr) || arr.length === 0) return undefined;
+    const calls = arr
+      .filter((tc): tc is { name: string } => !!tc && typeof (tc as { name?: unknown }).name === 'string')
+      .map((tc, i) => {
+        const o = tc as { name: string; arguments?: unknown; args?: unknown; parameters?: unknown; input?: unknown };
+        return { id: `lc_${Date.now()}_${i}`, name: o.name, arguments: coerceArgs(o.arguments ?? o.args ?? o.parameters ?? o.input) };
+      });
+    return calls.length ? calls : undefined;
+  };
+  const tryParse = (s: string): LLMToolCall[] | undefined => {
+    const cleaned = s.trim().replace(/,(\s*[}\]])/g, '$1');
+    let obj: unknown;
+    try { obj = JSON.parse(cleaned); } catch { return undefined; }
+    return build(obj);
+  };
+  // 1) fenced ```json / ```tool blocks
+  for (const m of text.matchAll(/```(?:json|tool)?\s*([\s\S]*?)```/g)) {
+    const r = tryParse(m[1]); if (r) return r;
+  }
+  // 2) each brace-balanced object span
+  for (const span of balancedObjectSpans(text)) {
+    const r = tryParse(span); if (r) return r;
+  }
+  // 3) the whole reply
+  return tryParse(text);
+}
+
+// Render a conversation message for a text-CLI prompt. Prevents re-parsing prior
+// tool requests from triggering again (the "```json``` re-emit" termination bug).
+export function renderCliMessage(m: LLMMessage): string {
+  if (m.role === 'assistant' && m.toolCalls?.length) {
+    return `\n### ASSISTANT\n[requested tools: ${m.toolCalls.map((t) => t.name).join(', ')}]`;
+  }
+  if (m.role === 'tool') {
+    return `\n### TOOL RESULT (${m.name || 'tool'})\n${m.content}`;
+  }
+  return `\n### ${m.role.toUpperCase()}\n${m.content}`;
+}
+
+// =============================================================================
+// LOCAL ADAPTER — Ollama native + OpenAI-compatible (LM Studio, vLLM, llama.cpp)
+// Uses text-based tool calling so models without native function-calling can still
+// drive the Arsenal — without this the ReAct loop abstains on turn 0.
+// =============================================================================
+
 class LocalAdapter implements LLMProviderAdapter {
   name = 'local';
   private config: LLMConfig;
@@ -722,6 +817,7 @@ class LocalAdapter implements LLMProviderAdapter {
   }
 
   validateConfig(): { valid: boolean; error?: string } {
+
     return { valid: true };
   }
 
@@ -733,11 +829,8 @@ class LocalAdapter implements LLMProviderAdapter {
     return /\/v\d+(\/|$)/.test(baseUrl);
   }
 
-  // Inject the Arsenal contract as a system turn when tools are offered, and
-  // sanitize prior tool-request / tool-result turns — a plain local model doesn't
-  // understand role:'tool', and re-emitting a prior ```json``` block would get
-  // re-parsed as a fresh live call (defeats termination). Its TEXT reply is parsed
-  // back into tool calls after the round-trip.
+  // Inject Arsenal contract as system turn; sanitize prior tool turns that the
+  // local model doesn't understand (role:'tool', prior ```json``` blocks).
   private buildMessages(messages: LLMMessage[], options?: ChatOptions): { role: string; content: string }[] {
     const contract = renderToolContract(options?.tools);
     const preamble = 'You are the planning brain for T3MP3ST, an authorized offensive-security harness.'
@@ -774,12 +867,12 @@ class LocalAdapter implements LLMProviderAdapter {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // Local OpenAI-compatible servers usually ignore auth, but LM Studio & co.
-          // expect *some* bearer — send a dummy unless the operator set a real key.
           ...(openaiWire ? { Authorization: `Bearer ${this.config.apiKey || 'local'}` } : {}),
         },
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(this.config.timeout || 120000),
+        signal: options?.signal
+          ? AbortSignal.any([AbortSignal.timeout(this.config.timeout || 120000), options.signal])
+          : AbortSignal.timeout(this.config.timeout || 120000),
       });
 
       if (!response.ok) {
@@ -791,18 +884,11 @@ class LocalAdapter implements LLMProviderAdapter {
         usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
       };
       const content = openaiWire ? (data.choices?.[0]?.message?.content || '') : (data.message?.content || '');
-
-      // Tool-calling over text: if the Arsenal was offered, parse the model's tool
-      // requests so the ReAct loop EXECUTES them instead of abstaining on turn 0.
       const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
 
       const usage = openaiWire
-        ? (data.usage
-            ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens, totalTokens: data.usage.total_tokens }
-            : undefined)
-        : (data.eval_count
-            ? { promptTokens: data.prompt_eval_count || 0, completionTokens: data.eval_count || 0, totalTokens: (data.prompt_eval_count || 0) + (data.eval_count || 0) }
-            : undefined);
+        ? (data.usage ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens, totalTokens: data.usage.total_tokens } : undefined)
+        : (data.eval_count ? { promptTokens: data.prompt_eval_count || 0, completionTokens: data.eval_count || 0, totalTokens: (data.prompt_eval_count || 0) + (data.eval_count || 0) } : undefined);
 
       return {
         content,
@@ -826,113 +912,6 @@ class LocalAdapter implements LLMProviderAdapter {
 // CODEX ADAPTER (local Codex CLI/account subscription)
 // =============================================================================
 
-// ── tool-calling over a plain-text CLI agent (local-agent / codex backbones) ──
-// These CLIs return TEXT, not structured tool_calls like an API — so historically
-// the ReAct loop got no `toolCalls`, took its "final answer" branch on turn 0, and
-// abstained without ever running the Arsenal (the keyless-path bug). Fix: describe
-// the Arsenal + a strict JSON action-contract in the prompt, then parse the agent's
-// text reply back into LLMToolCall[] so `arsenal.execute` actually runs the tools.
-function renderToolContract(tools?: LLMToolDefinition[]): string {
-  if (!tools?.length) return '';
-  const lines = ['\n## ARSENAL — tools the HARNESS runs for you (you REQUEST them, it EXECUTES + returns the output):'];
-  for (const t of tools) {
-    const props = (t.parameters?.properties || {}) as Record<string, { type?: string }>;
-    const req = new Set(t.parameters?.required || []);
-    const sig = Object.entries(props).map(([k, v]) => `${k}${req.has(k) ? '*' : ''}: ${v.type || 'any'}`).join(', ');
-    lines.push(`- ${t.name}(${sig}) — ${t.description}`);
-  }
-  lines.push(
-    '',
-    '## ACTION CONTRACT — follow EXACTLY:',
-    '• To run one or more tools, reply with ONLY this fenced block, nothing else:',
-    '```json',
-    '{"tool_calls":[{"name":"<tool>","arguments":{ ... }}]}',
-    '```',
-    '  The harness runs them (scope-gated) and returns the results as new messages; then you reason again.',
-    '• When the attack surface is exhausted and you are DONE, reply with your final debrief in prose (NO json block).',
-    '• Never run these tools yourself — REQUEST them. Requesting is how you act.',
-  );
-  return lines.join('\n');
-}
-
-// Yield each brace-BALANCED {...} substring (string-aware). Linear + hard-budgeted, so it replaces a
-// greedy /\{[\s\S]*\}/ that both over-matched (first-'{' to last-'}') and backtracked quadratically
-// (ReDoS). Bounded work regardless of input shape (unbalanced braces, 80k '{', etc.).
-function* balancedObjectSpans(text: string): Generator<string> {
-  const n = text.length;
-  let budget = 2_000_000; // total-scan cap → DoS-safe upper bound on worst-case work
-  let spans = 0;
-  for (let i = 0; i < n && spans < 200 && budget > 0; i++) {
-    if (text[i] !== '{') continue;
-    let depth = 0, inStr = false, esc = false;
-    for (let j = i; j < n && budget > 0; j++, budget--) {
-      const c = text[j];
-      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
-      if (c === '"') inStr = true;
-      else if (c === '{') depth++;
-      else if (c === '}') { depth--; if (depth === 0) { spans++; yield text.slice(i, j + 1); i = j; break; } }
-    }
-  }
-}
-
-// Parse an LLMToolCall[] out of a text-CLI reply. Tolerant of realistic model drift so a valid tool
-// intent doesn't silently degrade to a zero-tool abstain: fenced blocks, balanced bare objects, a
-// single un-wrapped {name,...}, {tool_calls|actions|calls|tools:[...]} wrappers, and trailing commas.
-export function parseTextToolCalls(text: string): LLMToolCall[] | undefined {
-  const coerceArgs = (a: unknown): Record<string, unknown> => {
-    if (typeof a === 'string') {
-      try { const p: unknown = JSON.parse(a); return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : {}; } catch { return {}; }
-    }
-    return a && typeof a === 'object' && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
-  };
-  const build = (v: unknown): LLMToolCall[] | undefined => {
-    let arr: unknown;
-    if (Array.isArray(v)) arr = v;
-    else if (v && typeof v === 'object') {
-      const o = v as Record<string, unknown>;
-      arr = o.tool_calls ?? o.toolCalls ?? o.actions ?? o.calls ?? o.tools;
-      if (arr === undefined && typeof o.name === 'string') arr = [o]; // a single un-wrapped call
-    }
-    if (!Array.isArray(arr) || arr.length === 0) return undefined;
-    const calls = arr
-      .filter((tc): tc is { name: string } => !!tc && typeof (tc as { name?: unknown }).name === 'string')
-      .map((tc, i) => {
-        const o = tc as { name: string; arguments?: unknown; args?: unknown; parameters?: unknown; input?: unknown };
-        return { id: `lc_${Date.now()}_${i}`, name: o.name, arguments: coerceArgs(o.arguments ?? o.args ?? o.parameters ?? o.input) };
-      });
-    return calls.length ? calls : undefined;
-  };
-  const tryParse = (s: string): LLMToolCall[] | undefined => {
-    const cleaned = s.trim().replace(/,(\s*[}\]])/g, '$1'); // tolerate trailing commas
-    let obj: unknown;
-    try { obj = JSON.parse(cleaned); } catch { return undefined; }
-    return build(obj);
-  };
-  // 1) fenced ```json / ```tool blocks (the contracted format)
-  for (const m of text.matchAll(/```(?:json|tool)?\s*([\s\S]*?)```/g)) {
-    const r = tryParse(m[1]); if (r) return r;
-  }
-  // 2) each brace-balanced object span (bounded scan — no greedy regex, no ReDoS)
-  for (const span of balancedObjectSpans(text)) {
-    const r = tryParse(span); if (r) return r;
-  }
-  // 3) the whole reply (e.g. a top-level array)
-  return tryParse(text);
-}
-
-// Render one conversation message for a text-CLI prompt. A prior assistant TOOL REQUEST is rendered as
-// a compact summary, NOT its raw ```json``` block — re-emitting the block let the CLI's next reply (or a
-// final debrief that quotes what it ran) get re-parsed as a fresh live call, defeating termination.
-function renderCliMessage(m: LLMMessage): string {
-  if (m.role === 'assistant' && m.toolCalls?.length) {
-    return `\n### ASSISTANT\n[requested tools: ${m.toolCalls.map((t) => t.name).join(', ')}]`;
-  }
-  if (m.role === 'tool') {
-    return `\n### TOOL RESULT (${m.name || 'tool'})\n${m.content}`;
-  }
-  return `\n### ${m.role.toUpperCase()}\n${m.content}`;
-}
-
 class CodexAdapter implements LLMProviderAdapter {
   name = 'codex';
   private config: LLMConfig;
@@ -942,24 +921,20 @@ class CodexAdapter implements LLMProviderAdapter {
   }
 
   validateConfig(): { valid: boolean; error?: string } {
+
     return { valid: true };
   }
 
   private formatPrompt(messages: LLMMessage[], options?: ChatOptions): string {
     const parts = [
-      'You are acting as the Codex-backed planning brain for T3MP3ST, an authorized offensive-security harness.',
-      'Do not modify files and do not run active probes yourself.',
+      'You are acting as the Codex-backed planning brain for T3MP3ST.',
+      'Operate in planning, critique, and evidence-contract mode only. Do not modify files. Do not run active probes. If tools are available, use read-only inspection only.',
+      'When the caller requests JSON, return only valid JSON or the exact requested fenced JSON block.',
     ];
-    const contract = renderToolContract(options?.tools);
-    if (contract) {
-      parts.push('You drive a ReAct loop: REQUEST tools via the contract below — the HARNESS runs them scope-gated and returns results — then reason until the surface is exhausted.');
-      parts.push(contract);
-    } else {
-      parts.push('Operate in planning, critique, and evidence-contract mode only. If tools are available, use read-only inspection only.');
-      parts.push('When the caller requests JSON, return only valid JSON or the exact requested fenced JSON block.');
-    }
     if (options?.maxTokens) parts.push(`Target max output tokens: ${options.maxTokens}.`);
-    for (const message of messages) parts.push(renderCliMessage(message));
+    for (const message of messages) {
+      parts.push(`\n### ${message.role.toUpperCase()}\n${message.content}`);
+    }
     return parts.join('\n');
   }
 
@@ -1028,18 +1003,72 @@ class CodexAdapter implements LLMProviderAdapter {
         content = result.stdout;
       }
 
-      const trimmed = content.trim();
-      // Tool-calling over text: parse the agent's tool requests so the ReAct loop EXECUTES them.
-      const toolCalls = options?.tools?.length ? parseTextToolCalls(trimmed) : undefined;
       return {
-        content: trimmed,
+        content: content.trim(),
         model: this.config.model || 'codex-default',
-        finishReason: toolCalls?.length ? 'tool_calls' : 'stop',
-        toolCalls,
+        finishReason: 'stop',
       };
     } finally {
       await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+}
+
+// =============================================================================
+// AWS BEDROCK ADAPTER
+// =============================================================================
+
+class BedrockAdapter implements LLMProviderAdapter {
+  name = 'bedrock';
+  private llmConfig: LLMConfig;
+  private client: BedrockRuntimeClient;
+
+  constructor(llmConfig: LLMConfig) {
+    this.llmConfig = llmConfig;
+    this.client = new BedrockRuntimeClient({
+      region: llmConfig.baseUrl || 'us-west-2',
+    });
+  }
+
+  validateConfig(): { valid: boolean; error?: string } {
+
+    return { valid: true };
+  }
+
+  async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
+    const systemMessage = messages.find(m => m.role === 'system');
+    const chatMessages = messages.filter(m => m.role !== 'system');
+
+    const body: Record<string, unknown> = {
+      anthropic_version: 'bedrock-2023-05-31',
+      max_tokens: options?.maxTokens || this.llmConfig.maxTokens || 4096,
+      temperature: options?.temperature ?? this.llmConfig.temperature ?? 0.7,
+      messages: chatMessages.map(m => ({ role: m.role, content: m.content })),
+    };
+
+    if (systemMessage) body.system = systemMessage.content;
+    if (options?.stopSequences) body.stop_sequences = options.stopSequences;
+
+    const command = new InvokeModelCommand({
+      modelId: this.llmConfig.model,
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: new TextEncoder().encode(JSON.stringify(body)),
+    });
+
+    const response = await this.client.send(command);
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+    return {
+      content: responseBody.content?.[0]?.text || '',
+      model: responseBody.model || this.llmConfig.model,
+      usage: responseBody.usage ? {
+        promptTokens: responseBody.usage.input_tokens,
+        completionTokens: responseBody.usage.output_tokens,
+        totalTokens: responseBody.usage.input_tokens + responseBody.usage.output_tokens,
+      } : undefined,
+      finishReason: responseBody.stop_reason,
+    };
   }
 }
 
@@ -1050,37 +1079,23 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   private config: LLMConfig;
   constructor(config: LLMConfig) { this.config = config; }
   validateConfig(): { valid: boolean; error?: string } {
+
     return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes)' };
   }
   private formatPrompt(messages: LLMMessage[], options?: ChatOptions): string {
     const parts = [
       'You are the local-agent planning brain for T3MP3ST, an authorized offensive-security harness.',
+      'Operate in planning, analysis, and evidence-contract mode. When the caller requests JSON, return ONLY valid JSON or the exact requested fenced block — no preamble.',
     ];
-    const contract = renderToolContract(options?.tools);
-    if (contract) {
-      parts.push('You drive a ReAct loop: REQUEST tools, the harness runs them and returns results, you reason until the surface is exhausted.');
-      parts.push(contract);
-    } else {
-      parts.push('Operate in planning, analysis, and evidence-contract mode. When the caller requests JSON, return ONLY valid JSON or the exact requested fenced block — no preamble.');
-    }
     if (options?.maxTokens) parts.push(`Target max output tokens: ${options.maxTokens}.`);
-    for (const m of messages) parts.push(renderCliMessage(m));
+    for (const m of messages) parts.push(`\n### ${m.role.toUpperCase()}\n${m.content}`);
     return parts.join('\n');
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const agentId = this.config.model || 'codex';
     const prompt = this.formatPrompt(messages, options);
-    const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
-    const content = (await localAgentChat(agentId, prompt, { timeoutMs })).trim();
-    // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
-    // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
-    const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
-    return {
-      content,
-      model: `local-agent:${agentId}`,
-      finishReason: toolCalls?.length ? 'tool_calls' : 'stop',
-      toolCalls,
-    };
+    const content = await localAgentChat(agentId, prompt, { timeoutMs: this.config.timeout || 240000, signal: options?.signal });
+    return { content: content.trim(), model: `local-agent:${agentId}`, finishReason: 'stop' };
   }
 }
 
@@ -1201,12 +1216,12 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenRouterAdapter(config);
       case 'venice':
         return new VeniceAdapter(config);
+      case 'xai':
+        return new OpenAIAdapter(config); // xAI (Grok Build / grok-*) is OpenAI-compatible
       case 'anthropic':
         return new AnthropicAdapter(config);
       case 'openai':
         return new OpenAIAdapter(config);
-      case 'xai':
-        return new OpenAIAdapter(config); // xAI (Grok Build / grok-*) is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1215,6 +1230,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new LocalAdapter(config);
       case 'local-agent':
         return new LocalAgentAdapter(config);
+      case 'bedrock':
+        return new BedrockAdapter(config);
       default:
         throw new Error(`Unknown LLM provider: ${config.provider}`);
     }
@@ -1238,6 +1255,7 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
    * Validate the configuration
    */
   validateConfig(): { valid: boolean; error?: string } {
+
     return this.adapter.validateConfig();
   }
 
@@ -1265,6 +1283,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
     const trail: string[] = [];
 
     for (let rung = 0; rung < ladder.length; rung++) {
+      // Stop climbing the ladder if the caller has aborted
+      if (options?.signal?.aborted) break;
       const hop = ladder[rung];
       const onFallback = rung > 0;
       const hasNext = rung < ladder.length - 1;
@@ -1274,23 +1294,29 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
       // ── same-model retry loop: only transient hard errors retry in place ──
       let response: LLMResponse | null = null;
       for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+        // Abort signal fired — stop immediately, no retries
+        if (options?.signal?.aborted) { lastError = new Error('Aborted'); break; }
         try {
           response = await adapter.chat(msgs, options);
           break;
         } catch (error) {
           lastError = error as Error;
+          // Abort signal fired (fetch threw AbortError) — don't retry
+          if (options?.signal?.aborted) break;
           // auth / forbidden / missing-model won't fix on retry — bail to next hop
           const permanent = error instanceof LLMApiError &&
             (error.status === 401 || error.status === 403 || error.status === 404);
           if (permanent || attempt >= this.retryAttempts) break;
           let delayMs = this.retryDelayMs * Math.pow(2, attempt - 1);
           if (error instanceof LLMApiError && error.retryAfterMs) {
-            // Honor Retry-After but CAP it (2 min) so a hostile/oversized header can't pin the
-            // call for a long time; a normal Retry-After (seconds) is honored unchanged.
-            delayMs = Math.max(delayMs, Math.min(error.retryAfterMs, 120_000));
+            delayMs = Math.max(delayMs, error.retryAfterMs);
           }
           this.emit('request:retry', { attempt, maxAttempts: this.retryAttempts, error: lastError });
-          await new Promise(resolve => setTimeout(resolve, delayMs));
+          // Use an abort-aware delay so a stop() during backoff exits immediately
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, delayMs);
+            options?.signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+          });
         }
       }
 
@@ -1469,12 +1495,6 @@ export function createOpenRouterBackbone(apiKey?: string, model?: string): LLMBa
   return new LLMBackbone(llmConfig);
 }
 
-export function createVeniceBackbone(apiKey?: string, model?: string): LLMBackbone {
-  const llmConfig = config.getLLMConfig('venice', model);
-  if (apiKey) llmConfig.apiKey = apiKey;
-  return new LLMBackbone(llmConfig);
-}
-
 export function createOpenAIBackbone(apiKey?: string, model?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('openai', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1504,14 +1524,11 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > Anthropic > OpenAI > Local > Mock
+  // Priority: OpenRouter > Anthropic > OpenAI > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
     return createOpenRouterBackbone();
-  }
-  if (providers.includes('venice')) {
-    return createVeniceBackbone();
   }
   if (providers.includes('anthropic')) {
     return createAnthropicBackbone();

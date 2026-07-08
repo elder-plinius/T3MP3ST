@@ -1,0 +1,45 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-tag-id',{
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value:""},
+            tagName: {value:"", required:true}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "white-globe.png",
+        label: function() {
+            return this.name||this.tagName||"get tag id";
+        },
+        oneditprepare: function() {
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-tags-id');
+                datalist.empty();
+                data.forEach(function(device) {
+                    device.tags.forEach(function(tag) {
+                        datalist.append('<option value="' + tag.name + '">' + device.name + ' - ' + tag.name + '</option>');
+                    });
+                });
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-tag-id">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-tagName"><i class="fa fa-tag"></i> Tag Name</label>
+        <input type="text" id="node-input-tagName" list="fuxa-tags-id" placeholder="Tag Name">
+        <datalist id="fuxa-tags-id"></datalist>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-tag-id">
+    <p>Get the ID of a FUXA tag by name.</p>
+    <p>The tag ID is set to <code>msg.payload</code>.</p>
+    <p>Use <code>msg.tagName</code> to override the configured tag name.</p>
+</script>

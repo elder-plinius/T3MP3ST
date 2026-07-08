@@ -1,0 +1,99 @@
+<script type="text/javascript">
+    RED.nodes.registerType('get-tag', {
+        category: 'FUXA',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value: ""},
+            tag: {value: ""},
+            tagId: {value: ""}
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: "white-globe.png",
+        label: function() {
+            if (this.name) {
+                return this.name;
+            }
+            return this.tag || this.tagId || "get tag";
+        },
+        oneditprepare: function() {
+            var node = this;
+            var tagMap = {};
+
+            $.getJSON('/nodered/fuxa/devices', function(data) {
+                var datalist = $('#fuxa-tags');
+                datalist.empty();
+
+                (data || []).forEach(function(device) {
+                    (device.tags || []).forEach(function(tag) {
+                        var fullName = device.name + ' - ' + tag.name;
+                        var optionValue = tag.name + '(' + tag.id + ')';
+                        datalist.append('<option value="' + optionValue + '">' + fullName + '</option>');
+                        tagMap[tag.id] = {
+                            name: tag.name,
+                            deviceName: device.name,
+                            fullName: fullName
+                        };
+                    });
+                });
+
+                $('#node-input-tagSelected').on('change', function() {
+                    var selectedValue = $(this).val();
+                    var match = selectedValue.match(/^(.+)\(([^)]+)\)$/);
+                    if (match) {
+                        $('#node-input-tag').val(match[1]);
+                        $('#node-input-tagId').val(match[2]);
+                    } else if (!selectedValue || !selectedValue.trim()) {
+                        $('#node-input-tag').val('');
+                        $('#node-input-tagId').val('');
+                    }
+                });
+
+                if (node.tagId && tagMap[node.tagId]) {
+                    var tagName = node.tag || tagMap[node.tagId].name;
+                    $('#node-input-tagSelected').val(tagName + '(' + node.tagId + ')');
+                } else if (node.tag && !node.tagId) {
+                    for (var id in tagMap) {
+                        if (tagMap[id].name === node.tag) {
+                            $('#node-input-tagSelected').val(node.tag + '(' + id + ')');
+                            $('#node-input-tagId').val(id);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            $('#node-input-tagSelected').attr('placeholder', 'Optional - leave empty to use msg.topic');
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="get-tag">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-tagSelected"><i class="fa fa-tag"></i> Tag</label>
+        <input type="text" id="node-input-tagSelected" list="fuxa-tags" placeholder="Optional - leave empty to use msg.topic">
+        <datalist id="fuxa-tags"></datalist>
+    </div>
+    <input type="hidden" id="node-input-tag">
+    <input type="hidden" id="node-input-tagId">
+    <div class="form-row">
+        <div style="margin-left:105px;font-size:12px;color:#666;">
+            If <b>Tag</b> is empty, the node uses <code>msg.topic</code>.
+        </div>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="get-tag">
+    <p>Gets the value of a FUXA tag.</p>
+    <ul>
+        <li>If <b>Tag</b> is set in the node, that tag is used.</li>
+        <li>If <b>Tag</b> is empty, <code>msg.topic</code> is used.</li>
+    </ul>
+    <p>The tag value is returned in <code>msg.payload</code>.</p>
+    <p>The resolved tag name is always set on <code>msg.topic</code>.</p>
+    <pre>msg.topic = "V2";</pre>
+</script>
