@@ -17,6 +17,12 @@ export interface LLMConfig {
   temperature?: number;
   timeout?: number;
   /**
+   * When true, force native Ollama / OpenAI-compatible function calling. When
+   * false, always use text-based tool contract injection. When unset, probe
+   * on the first call and cache per-model.
+   */
+  nativeTools?: boolean;
+  /**
    * Ordered model/provider ladder to fall back to when the PRIMARY model fails for
    * ANY reason it can't self-recover from — hard errors after same-model retries
    * (rate-limit, 5xx, timeout, auth, unavailable model, context-length) AND soft
@@ -79,6 +85,13 @@ export interface LLMToolDefinition {
       enum?: string[];
       items?: { type: string };
       default?: unknown;
+      properties?: Record<string, {
+        type: string;
+        description?: string;
+        enum?: string[];
+      }>;
+      required?: string[];
+      additionalProperties?: boolean;
     }>;
     required?: string[];
   };
@@ -391,6 +404,27 @@ export interface Message {
  *  additionally fire a loud warning. Absent/safe/active tools are ungated. */
 export type RiskTier = 'local_read' | 'passive' | 'active' | 'intrusive' | 'credential' | 'dangerous';
 
+/** Structured error categories for tool failures — enables LLM feedback without leaking internals. */
+export enum ToolErrorCategory {
+  ScopeDenied = 'scope_denied',
+  ToolNotFound = 'tool_not_found',
+  Timeout = 'timeout',
+  ExecutionError = 'execution_error',
+  ValidationError = 'validation_error',
+}
+
+/** Structured error thrown by tool execution — carries category for LLM feedback and optional tool name. */
+export class ToolError extends Error {
+  constructor(
+    public readonly category: ToolErrorCategory,
+    message: string,
+    public readonly toolName?: string,
+  ) {
+    super(message);
+    this.name = 'ToolError';
+  }
+}
+
 export interface CustomTool {
   name: string;
   description: string;
@@ -408,6 +442,26 @@ export interface ToolParameter {
   description: string;
   required: boolean;
   default?: unknown;
+  /** Allowed values — constrains the parameter to a fixed set. */
+  enum?: (string | number)[];
+  /** Schema for array items (when type === 'array'). */
+  items?: {
+    type: string;
+    description?: string;
+    properties?: Record<string, ToolParameter>;
+  };
+  /** Nested object properties (when type === 'object'). */
+  properties?: Record<string, ToolParameter>;
+  /** Whether additional properties are allowed on object parameters. */
+  additionalProperties?: boolean;
+}
+
+/** A single validation error produced by validateToolArgs. */
+export interface ToolValidationError {
+  field: string;
+  message: string;
+  received: unknown;
+  expected: string;
 }
 
 export interface ToolContext {
