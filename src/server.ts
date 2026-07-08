@@ -5858,12 +5858,14 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     sandboxNetworkMode,
     sandboxDurationSec,
     sandboxAlias,
+    toolDefaults,
   } = req.body as {
     name?: string; targets?: any[]; operators?: string[];
     apiKey?: string; provider?: string; model?: string;
     family?: string; spiderScope?: string; spiderDepth?: number; spiderMaxPages?: number;
     cloudCredentials?: CloudCredentials;
     sandboxNetworkMode?: string; sandboxDurationSec?: number; sandboxAlias?: string;
+    toolDefaults?: Record<string, Record<string, unknown>>;
   };
 
   // Use provided apiKey or fall back to server-configured one. Local-agent backends
@@ -5951,6 +5953,11 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     if (sandboxDurationSec !== undefined) sbxOpts.durationSec = Math.max(5, Math.min(300, Number(sandboxDurationSec)));
     if (sandboxAlias?.trim()) sbxOpts.alias = sandboxAlias.trim();
     if (Object.keys(sbxOpts).length > 0) cmd.setSandboxOptions(sbxOpts);
+
+    // Apply per-tool parameter defaults (e.g. git repo credentials for git_clone_analyze)
+    if (toolDefaults && typeof toolDefaults === 'object') {
+      cmd.toolDefaults = toolDefaults;
+    }
 
     // Add targets
     for (const t of targets) {

@@ -3850,6 +3850,38 @@
                                             Drop ZIPs into <code style="color:#4caf80;background:rgba(0,180,100,0.1);padding:1px 4px;border-radius:2px;">./scan-targets/</code> next to docker-compose.yml, or upload above. Select a target below, then click ENGAGE.
                                         </div>
                                     </div>
+                                    <!-- Git credentials panel — shown when scan type = code_supply_chain -->
+                                    <div id="gitCredsPanel" style="display:none;flex-direction:column;gap:6px;padding:8px;background:rgba(100,50,255,0.04);border:1px solid rgba(100,50,255,0.22);border-radius:4px;">
+                                        <div style="display:flex;align-items:center;justify-content:space-between;">
+                                            <span style="font-size:9px;color:#9966ff;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">🔐 Repo Credentials</span>
+                                            <span style="font-size:9px;color:#554;font-style:italic;">private repos only — not stored</span>
+                                        </div>
+                                        <!-- Auth method tabs -->
+                                        <div style="display:flex;gap:3px;">
+                                            <button id="gitCredsTabToken" onclick="switchGitCredsTab('token')" style="flex:1;padding:3px 0;font-size:9px;font-weight:700;background:rgba(100,50,255,0.2);border:1px solid rgba(100,50,255,0.5);border-radius:3px;color:#bb99ff;cursor:pointer;">Token / PAT</button>
+                                            <button id="gitCredsTabSsh" onclick="switchGitCredsTab('ssh')" style="flex:1;padding:3px 0;font-size:9px;font-weight:600;background:rgba(0,0,0,0.3);border:1px solid rgba(100,50,255,0.2);border-radius:3px;color:#776699;cursor:pointer;">SSH Key</button>
+                                        </div>
+                                        <!-- Token / PAT panel -->
+                                        <div id="gitCredsTokenPanel" style="display:flex;flex-direction:column;gap:4px;">
+                                            <div style="display:flex;gap:4px;align-items:center;">
+                                                <input type="password" id="gitRepoToken" placeholder="ghp_… · glpat-… · Azure PAT · app password" autocomplete="off" style="flex:1;padding:4px 7px;font-size:10px;background:rgba(0,0,0,0.45);border:1px solid rgba(100,50,255,0.3);border-radius:3px;color:#ccc;font-family:'JetBrains Mono',monospace;">
+                                                <button onclick="toggleGitField('gitRepoToken')" title="Show / hide token" style="padding:4px 7px;font-size:10px;background:rgba(100,50,255,0.1);border:1px solid rgba(100,50,255,0.2);border-radius:3px;color:#9966ff;cursor:pointer;">👁</button>
+                                            </div>
+                                            <input type="text" id="gitRepoUsername" placeholder="Username — optional, auto per host (oauth2 / pat / x-token-auth)" autocomplete="off" style="padding:4px 7px;font-size:10px;background:rgba(0,0,0,0.35);border:1px solid rgba(100,50,255,0.18);border-radius:3px;color:#aaa;font-family:'JetBrains Mono',monospace;">
+                                            <div style="font-size:9px;color:#554;line-height:1.5;">GitHub · Gitea → token only &nbsp;·&nbsp; GitLab → oauth2:token &nbsp;·&nbsp; Azure DevOps → any:PAT &nbsp;·&nbsp; Bitbucket → user:app-password</div>
+                                        </div>
+                                        <!-- SSH key panel -->
+                                        <div id="gitCredsSshPanel" style="display:none;flex-direction:column;gap:4px;">
+                                            <div style="display:flex;gap:4px;align-items:flex-start;">
+                                                <textarea id="gitSshKey" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----" autocomplete="off" spellcheck="false" style="flex:1;padding:4px 7px;font-size:9px;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.45);border:1px solid rgba(100,50,255,0.3);border-radius:3px;color:#ccc;resize:vertical;min-height:72px;"></textarea>
+                                                <button onclick="toggleGitField('gitSshKey')" title="Show / hide key" style="padding:4px 7px;font-size:10px;background:rgba(100,50,255,0.1);border:1px solid rgba(100,50,255,0.2);border-radius:3px;color:#9966ff;cursor:pointer;white-space:nowrap;">👁</button>
+                                            </div>
+                                            <div style="display:flex;align-items:center;justify-content:space-between;">
+                                                <span style="font-size:9px;color:#554;">For <code style="color:#bb99ff;background:rgba(100,50,255,0.1);padding:1px 4px;border-radius:2px;">git@host:org/repo.git</code> URLs. Key is used only for cloning.</span>
+                                                <button onclick="document.getElementById('gitSshKey').value=''" style="padding:2px 7px;font-size:9px;background:rgba(255,50,50,0.08);border:1px solid rgba(255,50,50,0.2);border-radius:3px;color:#cc6666;cursor:pointer;">Clear</button>
+                                            </div>
+                                        </div>
+                                    </div>
                                     <!-- Binary / Firmware analysis panel — shown when scan type = reverse_binary -->
                                     <div id="binaryScanPanel" style="display:none;flex-direction:column;gap:6px;padding:8px;background:rgba(136,255,0,0.04);border:1px solid rgba(136,255,0,0.2);border-radius:4px;">
                                         <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -6459,7 +6491,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
             /**
              * Start a mission via the backend
              */
-            async startMission(missionName, targets, operators, apiKey, provider, model, approvalId, family, spiderOpts, cloudCredentials, sandboxOpts) {
+            async startMission(missionName, targets, operators, apiKey, provider, model, approvalId, family, spiderOpts, cloudCredentials, sandboxOpts, toolDefaults) {
                 const result = await T3MP3ST_API.post('/api/mission/start', {
                     name: missionName,
                     targets: targets.map(t => ({ host: t.host || t, ...(t.family ? { family: t.family } : {}) })),
@@ -6476,6 +6508,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                     ...(sandboxOpts?.sandboxNetworkMode ? { sandboxNetworkMode: sandboxOpts.sandboxNetworkMode } : {}),
                     ...(sandboxOpts?.sandboxDurationSec !== undefined ? { sandboxDurationSec: sandboxOpts.sandboxDurationSec } : {}),
                     ...(sandboxOpts?.sandboxAlias ? { sandboxAlias: sandboxOpts.sandboxAlias } : {}),
+                    ...(toolDefaults && Object.keys(toolDefaults).length > 0 ? { toolDefaults } : {}),
                 });
                 if (result.success) {
                     this._operatorMap = {};
@@ -19930,6 +19963,10 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         ...(_sbxAlias ? { sandboxAlias: _sbxAlias } : {}),
                     } : null;
                     if (sandboxOpts) addMissionLog('info', `Sandbox: network=${_sbxNet}${_sbxNet !== 'none' ? `, duration=${_sbxDur}s` : ''}${_sbxAlias ? `, alias=${_sbxAlias}` : ''}`);
+                    const gitToolDefaults = (missionFamily === 'code_supply_chain') ? (() => {
+                        const creds = getGitRepoCredentials();
+                        return (creds.token || creds.ssh_key) ? { git_clone_analyze: creds } : null;
+                    })() : null;
                     let result = await BackendDispatch.startMission(
                         missionName,
                         state.targets,
@@ -19941,7 +19978,8 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         missionFamily,
                         spiderOpts,
                         cloudCreds,
-                        sandboxOpts
+                        sandboxOpts,
+                        gitToolDefaults
                     );
 
                     // The backend gates active execution behind an approval receipt. Auto-grant it
@@ -19957,7 +19995,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                             await T3MP3ST_API.post(`/api/approvals/${result.approval.id}/approve`, {});
                             state.approvalId = result.approval.id;
                             result = await BackendDispatch.startMission(
-                                missionName, state.targets, state.operators, apiKey, provider, model, result.approval.id, missionFamily, spiderOpts, cloudCreds, sandboxOpts
+                                missionName, state.targets, state.operators, apiKey, provider, model, result.approval.id, missionFamily, spiderOpts, cloudCreds, sandboxOpts, gitToolDefaults
                             );
                         } else {
                             throw new Error(`Approval required for ${target} — external targets need an explicit receipt. Enable AUTONOMOUS mode or approve in the receipts panel.`);
@@ -21744,6 +21782,7 @@ ${entries}
             const localPanel  = document.getElementById('localScanPanel');
             const binaryPanel = document.getElementById('binaryScanPanel');
             const cloudPanel  = document.getElementById('cloudScanPanel');
+            const gitCredsPanel = document.getElementById('gitCredsPanel');
             const hostRow  = document.getElementById('targetHostRow');
             const portsRow = document.getElementById('targetPortsRow');
             const hostInput = document.getElementById('targetHost');
@@ -21752,6 +21791,7 @@ ${entries}
             if (localPanel)  localPanel.style.display  = 'none';
             if (binaryPanel) binaryPanel.style.display = 'none';
             if (cloudPanel)  cloudPanel.style.display  = 'none';
+            if (gitCredsPanel) gitCredsPanel.style.display = 'none';
 
             if (family === 'local_code_scan') {
                 if (localPanel) localPanel.style.display = 'flex';
@@ -21767,11 +21807,48 @@ ${entries}
                 if (cloudPanel) cloudPanel.style.display = 'flex';
                 if (hostRow)  hostRow.style.display  = 'flex';
                 if (portsRow) portsRow.style.display = '';
+            } else if (family === 'code_supply_chain') {
+                if (gitCredsPanel) gitCredsPanel.style.display = 'flex';
+                if (hostRow)  hostRow.style.display  = 'flex';
+                if (portsRow) portsRow.style.display = '';
             } else {
                 if (hostRow)  hostRow.style.display  = 'flex';
                 if (portsRow) portsRow.style.display = '';
                 if (hostInput && hostInput.value.startsWith('local://')) hostInput.value = '';
             }
+        }
+
+        function switchGitCredsTab(tab) {
+            const tokenPanel = document.getElementById('gitCredsTokenPanel');
+            const sshPanel   = document.getElementById('gitCredsSshPanel');
+            const tabToken   = document.getElementById('gitCredsTabToken');
+            const tabSsh     = document.getElementById('gitCredsTabSsh');
+            const isToken    = tab === 'token';
+            if (tokenPanel) tokenPanel.style.display = isToken ? 'flex' : 'none';
+            if (sshPanel)   sshPanel.style.display   = isToken ? 'none' : 'flex';
+            if (tabToken) { tabToken.style.background = isToken ? 'rgba(100,50,255,0.2)' : 'rgba(0,0,0,0.3)'; tabToken.style.color = isToken ? '#bb99ff' : '#776699'; tabToken.style.borderColor = isToken ? 'rgba(100,50,255,0.5)' : 'rgba(100,50,255,0.2)'; tabToken.style.fontWeight = isToken ? '700' : '600'; }
+            if (tabSsh)   { tabSsh.style.background   = isToken ? 'rgba(0,0,0,0.3)' : 'rgba(100,50,255,0.2)'; tabSsh.style.color   = isToken ? '#776699' : '#bb99ff'; tabSsh.style.borderColor   = isToken ? 'rgba(100,50,255,0.2)' : 'rgba(100,50,255,0.5)'; tabSsh.style.fontWeight   = isToken ? '600' : '700'; }
+        }
+
+        function toggleGitField(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el.tagName === 'TEXTAREA') {
+                el.style.webkitTextSecurity = el.style.webkitTextSecurity === 'disc' ? 'none' : 'disc';
+            } else {
+                el.type = el.type === 'password' ? 'text' : 'password';
+            }
+        }
+
+        function getGitRepoCredentials() {
+            const token    = (document.getElementById('gitRepoToken')?.value  || '').trim();
+            const username = (document.getElementById('gitRepoUsername')?.value || '').trim();
+            const sshKey   = (document.getElementById('gitSshKey')?.value      || '').trim();
+            const creds = {};
+            if (token)    creds.token    = token;
+            if (username) creds.username = username;
+            if (sshKey)   creds.ssh_key  = sshKey;
+            return creds;
         }
 
         // ── Binary scan panel helpers ──────────────────────────────────────────
@@ -30404,6 +30481,14 @@ Format as precise JSON.`;
                     outputs: ['mission_brief', 'findings_table', 'technical_appendix', 'ledger', 'fix_plan']
                 }
             };
+            // Attach git repo credentials as tool-level defaults so the backend can
+            // pass them directly to git_clone_analyze without the LLM seeing the raw values.
+            if (family === 'code_supply_chain') {
+                const gitCreds = getGitRepoCredentials();
+                if (gitCreds.token || gitCreds.ssh_key) {
+                    draft.toolDefaults = { git_clone_analyze: gitCreds };
+                }
+            }
             plinyCurrentDraft = draft;
             plinyDraftFingerprint = fingerprint;
             return draft;

@@ -271,6 +271,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public missionFamily: import('./types/index.js').MissionFamily | undefined;
   public scanOptions: { spiderScope?: string; spiderDepth?: number; spiderMaxPages?: number } = {};
   public sandboxOptions: { networkMode?: string; durationSec?: number; alias?: string } = {};
+  /** Per-tool parameter defaults injected at execution time — credentials never enter the LLM prompt */
+  public toolDefaults: Record<string, Record<string, unknown>> = {};
   public readonly cell: OperatorCell;
   public readonly mission: MissionControl;
   public readonly targetEnv: TargetEnvironment;
@@ -935,6 +937,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       maxIterations: 25,
       maxTokens: 50000,
       toolCategories: profile.toolCategories,
+      toolDefaults: Object.keys(this.toolDefaults).length > 0 ? this.toolDefaults : undefined,
     });
     operator.attachArsenal(this.arsenal, agentLoop);
 

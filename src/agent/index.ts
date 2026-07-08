@@ -33,6 +33,10 @@ export interface AgentLoopOptions {
   toolCategories?: string[];
   /** Explicit tool-name allowlist — takes precedence over toolCategories when non-empty. */
   tools?: string[];
+  /** Default parameter overrides injected into specific tool calls — keyed by tool name.
+   *  Values are merged (not replaced) with the LLM-supplied arguments, so the LLM can still
+   *  override any default. Primary use: repo credentials for git_clone_analyze. */
+  toolDefaults?: Record<string, Record<string, unknown>>;
   /** Whether to include detailed tool output in context (default: true) */
   verboseToolOutput?: boolean;
   /** Max characters per tool result before truncation (default: 4000) */
@@ -94,6 +98,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       maxTokens: options?.maxTokens ?? 50000,
       toolCategories: options?.toolCategories ?? [],
       tools: options?.tools ?? [],
+      toolDefaults: options?.toolDefaults ?? {},
       verboseToolOutput: options?.verboseToolOutput ?? true,
       maxToolOutputLength: options?.maxToolOutputLength ?? 4000,
     };
@@ -351,9 +356,13 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
 
     let toolResult: ToolResult;
     try {
+      const defaults = this.options.toolDefaults?.[toolCall.name];
+      const parameters = defaults
+        ? { ...defaults, ...toolCall.arguments }
+        : toolCall.arguments;
       toolResult = await this.arsenal.execute(toolCall.name, {
         target,
-        parameters: toolCall.arguments,
+        parameters,
       });
     } catch (err) {
       // A bad/hallucinated tool name must NOT crash the loop. Return the callable set so the
