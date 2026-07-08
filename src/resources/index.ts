@@ -4,6 +4,7 @@ export type MissionFamily =
   | 'cloud_infra'
   | 'smart_contract'
   | 'code_supply_chain'
+  | 'local_code_scan'
   | 'crypto_secrets'
   | 'reverse_binary'
   | 'agent_warfare'

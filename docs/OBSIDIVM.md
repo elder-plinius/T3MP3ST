@@ -57,11 +57,11 @@ npm run obsidivm:agent            # serve :8889 for warroom + evolve.py
 
 ```bash
 # 1. Start OBSIDIVM
-cd ~/Desktop/workspace/OBSIDIVM
+cd ~/Desktop/younger_plinius/OBSIDIVM
 python3 range.py        # listens on :4200
 
 # 2. (Optional) Start t3mp3st server if you want the :8889 shim
-cd ~/Desktop/t3mp3st
+cd ~/Desktop/younger_plinius/03-PLINYOS/organs/t3mp3st
 npm run server          # listens on :3333
 
 # 3. Drop your LLM key (one-time, persists in macOS Keychain)

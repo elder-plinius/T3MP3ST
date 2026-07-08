@@ -10,7 +10,7 @@
  * Each decomposed query is a legitimate code-analysis question:
  *   "Does this function validate the length parameter before the memcpy?"
  *   "Trace the data flow from recvfrom() to all sinks in this file."
- *   "What is sizeof(TlvRecord) and which fields are <4 bytes?"
+ *   "What is sizeof(DirectLidarStateInfo) and which fields are <4 bytes?"
  *
  * The orchestrator never sends the full offensive context to the worker model.
  * Only the orchestrator knows the attack plan — workers see benign analytical

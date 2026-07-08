@@ -120,10 +120,10 @@ async function main() {
     const preflight = await apiGet('/api/preflight');
     check('Capability preflight', preflight.ok && typeof preflight.data.score === 'number', `${preflight.data.score ?? 'n/a'}/100`);
     const arsenal = await apiGet('/api/arsenal/status');
-    check('Arsenal status', arsenal.ok && arsenal.data.schema_version === 't3mp3st_arsenal_status/v1', `${arsenal.data.summary?.installedCommandReady ?? 0}/${arsenal.data.summary?.commandReady ?? 0} installed`);
+    check('Arsenal status', arsenal.ok && arsenal.data.schema_version === 'plinyos.t3mp3st_arsenal_status/v1', `${arsenal.data.summary?.installedCommandReady ?? 0}/${arsenal.data.summary?.commandReady ?? 0} installed`);
     check('Arsenal does not fake empty coverage', arsenal.ok && arsenal.data.summary?.unmodeled === false, `unmodeled=${arsenal.data.summary?.unmodeled}`);
     const activation = await apiGet('/api/arsenal/activation');
-    check('Arsenal activation plan', activation.ok && activation.data.schema_version === 't3mp3st_arsenal_activation/v1', `${activation.data.summary?.total || 0} wired / doc ${activation.data.localPlanDoc || 'missing'}`);
+    check('Arsenal activation plan', activation.ok && activation.data.schema_version === 'plinyos.t3mp3st_arsenal_activation/v1', `${activation.data.summary?.total || 0} wired / doc ${activation.data.localPlanDoc || 'missing'}`);
   }
 
   const blocks = checks.filter(item => !item.passed && item.severity === 'block');

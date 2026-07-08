@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-T3MP3ST's own source (`src/`, `scripts/`) is AGPL-3.0-licensed — see [`LICENSE`](LICENSE).
+T3MP3ST's own source (`src/`, `scripts/`) is MIT-licensed — see [`LICENSE`](LICENSE).
 The `bench/` benchmark corpora are **third-party fixtures used for local evaluation
 only**: they are gitignored and **not distributed** with this package, retain their
 original upstream licenses, and are fetched/staged on demand by the benchmark runners.
@@ -17,6 +17,5 @@ pwntools, pycryptodome, sympy, z3-solver, fpylll, numpy/scipy, UPX, etc. — is 
 from upstream package repositories at image-build time under each package's own license;
 none of it is vendored into this repository.
 
-No third-party code is bundled into the published AGPL-3.0 core (the CVE-Zero fixtures ship
-only our own `ground-truth.json` annotations; upstream repo source is stripped at export and
-fetched on demand). If you believe an attribution is missing or incorrect, please open an issue.
+No third-party code is bundled into the published MIT core. If you believe an attribution
+is missing or incorrect, please open an issue.

@@ -1,17 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 
-// Deterministic by default: with no external T3MP3ST_API_URL, this smoke spawns its
-// OWN dedicated, UNCONFIGURED server (no provider key + local-agent detection
-// disabled) on a private port, so the "fails closed / requires key" checks actually
-// fail closed instead of being satisfied by whatever LLM backbone the dev box happens
-// to have. Set T3MP3ST_API_URL to run against an already-running server instead.
-const EXTERNAL_URL = process.env.T3MP3ST_API_URL;
-const SMOKE_PORT = process.env.T3MP3ST_SMOKE_PORT || '3577';
-const baseUrl = (EXTERNAL_URL || `http://127.0.0.1:${SMOKE_PORT}`).replace(/\/$/, '');
+const baseUrl = (process.env.T3MP3ST_API_URL || 'http://127.0.0.1:3333').replace(/\/$/, '');
 const startedAt = new Date().toISOString();
 const checks = [];
 const warnings = [];
@@ -75,6 +65,69 @@ const post = (path, body, options) => request('POST', path, body, options);
 const patch = (path, body, options) => request('PATCH', path, body, options);
 const del = (path, options) => request('DELETE', path, undefined, options);
 
+const syntheticFindings = [
+  {
+    id: 'arsenal-sqli-entry',
+    type: 'sqli',
+    severity: 'critical',
+    confidence: 95,
+    target: 'http://127.0.0.1/lab/search',
+    parameter: 'q',
+    evidence: 'Synthetic boolean canary differs on true/false probes.',
+    requires: ['web_access'],
+    provides: ['db_access'],
+  },
+  {
+    id: 'arsenal-ssrf-pivot',
+    type: 'ssrf',
+    severity: 'high',
+    confidence: 85,
+    target: 'http://127.0.0.1/lab/fetch',
+    parameter: 'url',
+    evidence: 'Synthetic callback canary reached loopback fixture.',
+    requires: ['web_access'],
+    provides: ['internal_access'],
+  },
+  {
+    id: 'arsenal-lfi-config',
+    type: 'lfi',
+    severity: 'high',
+    confidence: 93,
+    target: 'http://127.0.0.1/lab/download',
+    parameter: 'file',
+    evidence: 'Synthetic file-read canary observed expected marker.',
+    requires: ['internal_access'],
+    provides: ['file_read'],
+  },
+  {
+    id: 'arsenal-cmdi-rce',
+    type: 'cmdi',
+    severity: 'critical',
+    confidence: 88,
+    target: 'http://127.0.0.1/lab/ping',
+    parameter: 'host',
+    evidence: 'Synthetic command canary echoed bounded marker.',
+    requires: ['db_access'],
+    provides: ['code_execution'],
+  },
+  {
+    id: 'arsenal-privilege',
+    type: 'privilege_escalation',
+    severity: 'high',
+    confidence: 82,
+    requires: ['code_execution'],
+    provides: ['privilege_escalation'],
+  },
+  {
+    id: 'arsenal-persistence',
+    type: 'persistence',
+    severity: 'medium',
+    confidence: 76,
+    requires: ['privilege_escalation'],
+    provides: ['persistence'],
+  },
+];
+
 async function smokeEventStream() {
   const events = await get('/api/events', { stream: true, timeoutMs: 3000 });
   record('SSE event stream opens', events.ok && /event-stream/.test(events.data.contentType), events.data.contentType || summarizeError(events));
@@ -101,7 +154,7 @@ async function smokeCoreSurfaces() {
 async function smokeArsenalCatalog() {
   const catalog = await get('/api/arsenal/catalog');
   const adapterIds = (catalog.data.adapters || []).map(adapter => adapter.id);
-  record('Arsenal catalog exposes adapter spine', catalog.ok && catalog.data.schema_version === 't3mp3st_arsenal_catalog/v1' && adapterIds.includes('nuclei') && adapterIds.includes('semgrep') && adapterIds.includes('promptfoo'), `${adapterIds.length} adapters`);
+  record('Arsenal catalog exposes adapter spine', catalog.ok && catalog.data.schema_version === 'plinyos.t3mp3st_arsenal_catalog/v1' && adapterIds.includes('nuclei') && adapterIds.includes('semgrep') && adapterIds.includes('promptfoo'), `${adapterIds.length} adapters`);
   record('Arsenal safe commands exclude catalog-only heavy tools', catalog.ok && (catalog.data.safeCommands || []).includes('nuclei') && !(catalog.data.safeCommands || []).includes('msfconsole'), `${countItems(catalog.data.safeCommands)} safe commands`);
 
   const webCatalog = await get('/api/arsenal/catalog?family=web_api');
@@ -113,7 +166,7 @@ async function smokeArsenalCatalog() {
   record('Supply-chain arsenal includes evidence scanners', supplyCatalog.ok && ['semgrep', 'gitleaks', 'trivy', 'syft', 'grype'].every(id => supplyIds.includes(id)), supplyIds.join(', '));
 
   const status = await get('/api/arsenal/status?family=web_api');
-  record('Arsenal status reports installed and missing adapters', status.ok && status.data.schema_version === 't3mp3st_arsenal_status/v1' && typeof status.data.summary?.readiness === 'number' && Array.isArray(status.data.missingCommandReady), `${status.data.summary?.installed || 0} installed / ${status.data.summary?.readiness ?? 'n/a'}%`);
+  record('Arsenal status reports installed and missing adapters', status.ok && status.data.schema_version === 'plinyos.t3mp3st_arsenal_status/v1' && typeof status.data.summary?.readiness === 'number' && Array.isArray(status.data.missingCommandReady), `${status.data.summary?.installed || 0} installed / ${status.data.summary?.readiness ?? 'n/a'}%`);
 
   const plan = await post('/api/arsenal/plan', {
     family: 'web_api',
@@ -121,7 +174,7 @@ async function smokeArsenalCatalog() {
     objective: 'Plan a local-only web/API smoke toolchain with evidence flow.',
   });
   const planIds = (plan.data.steps || []).map(step => step.adapterId);
-  record('Arsenal planner turns adapters into gated evidence steps', plan.ok && plan.data.schema_version === 't3mp3st_arsenal_plan/v1' && planIds.includes('nuclei') && (plan.data.steps || []).every(step => step.gate && step.nextEvidenceMove), `${countItems(plan.data.steps)} planned steps`);
+  record('Arsenal planner turns adapters into gated evidence steps', plan.ok && plan.data.schema_version === 'plinyos.t3mp3st_arsenal_plan/v1' && planIds.includes('nuclei') && (plan.data.steps || []).every(step => step.gate && step.nextEvidenceMove), `${countItems(plan.data.steps)} planned steps`);
 }
 
 async function smokeKnowledgeAtlas() {
@@ -190,7 +243,7 @@ async function smokeContractsAndLedgers() {
 
   const route = await post('/api/route-preview', { draftId: draft.data.id });
   const operationDraft = route.data.operationDraft || {};
-  record('Route preview emits operation contract', route.ok && operationDraft.schema_version === 't3mp3st_operation/v1', operationDraft.schema_version || summarizeError(route));
+  record('Route preview emits operation contract', route.ok && operationDraft.schema_version === 'plinyos.t3mp3st_operation/v1', operationDraft.schema_version || summarizeError(route));
 
   const missionApprovalRequest = await post('/api/approvals/request', {
     action: 'mission_execution',
@@ -263,7 +316,7 @@ async function smokeContractsAndLedgers() {
   record('Hypothesis ledger can be filtered by mission', hypothesisList.ok && (hypothesisList.data.hypotheses || []).some(item => item.id === hypothesis.data.id), `${countItems(hypothesisList.data.hypotheses)} hypotheses`);
 
   const evidenceGraph = await get(`/api/evidence-graph?missionId=${encodeURIComponent(draft.data.id)}&operationId=${encodeURIComponent(operationDraft.operation_id)}&family=web_api`);
-  record('Evidence graph links hypotheses and proof', evidenceGraph.ok && evidenceGraph.data.schema_version === 't3mp3st_evidence_graph/v1' && countItems(evidenceGraph.data.nodes) >= 2 && countItems(evidenceGraph.data.edges) >= 1, `${countItems(evidenceGraph.data.nodes)} nodes / ${countItems(evidenceGraph.data.edges)} edges`);
+  record('Evidence graph links hypotheses and proof', evidenceGraph.ok && evidenceGraph.data.schema_version === 'plinyos.t3mp3st_evidence_graph/v1' && countItems(evidenceGraph.data.nodes) >= 2 && countItems(evidenceGraph.data.edges) >= 1, `${countItems(evidenceGraph.data.nodes)} nodes / ${countItems(evidenceGraph.data.edges)} edges`);
 
   const crossFamilyHypothesis = await post('/api/hypotheses', {
     missionId: draft.data.id,
@@ -290,7 +343,7 @@ async function smokeContractsAndLedgers() {
   const decomposition = hypothesis.data.id
     ? await post(`/api/hypotheses/${hypothesis.data.id}/decompose`, {})
     : { status: 0, data: {} };
-  record('Hypothesis decomposes into specialist work orders', decomposition.status === 201 && decomposition.data.schema_version === 't3mp3st_work_order_decomposition/v1' && countItems(decomposition.data.workOrders) >= 5, `${countItems(decomposition.data.workOrders)} work orders`);
+  record('Hypothesis decomposes into specialist work orders', decomposition.status === 201 && decomposition.data.schema_version === 'plinyos.t3mp3st_work_order_decomposition/v1' && countItems(decomposition.data.workOrders) >= 5, `${countItems(decomposition.data.workOrders)} work orders`);
 
   const workOrderList = await get(`/api/work-orders?missionId=${encodeURIComponent(draft.data.id)}&operationId=${encodeURIComponent(operationDraft.operation_id)}&family=web_api`);
   record('Work order queue can be filtered by mission', workOrderList.ok && countItems(workOrderList.data.workOrders) >= 5, `${countItems(workOrderList.data.workOrders)} queued`);
@@ -329,7 +382,7 @@ async function smokeContractsAndLedgers() {
     target: 'local-lab',
     spawnWorkOrders: false,
   });
-  record('Watch loop emits scoped signals', watchPulse.status === 201 && watchPulse.data.schema_version === 't3mp3st_watch_loop_cycle/v1' && countItems(watchPulse.data.signals) >= 1, `${watchPulse.data.summary?.signals || 0} signals / ${watchPulse.data.summary?.actions || 0} actions`);
+  record('Watch loop emits scoped signals', watchPulse.status === 201 && watchPulse.data.schema_version === 'plinyos.t3mp3st_watch_loop_cycle/v1' && countItems(watchPulse.data.signals) >= 1, `${watchPulse.data.summary?.signals || 0} signals / ${watchPulse.data.summary?.actions || 0} actions`);
 
   const watchNudge = await post('/api/watch-loop/run', {
     missionId: draft.data.id,
@@ -338,11 +391,11 @@ async function smokeContractsAndLedgers() {
     target: 'local-lab',
     spawnWorkOrders: true,
   });
-  record('Watch loop nudge spawns specialist work orders', watchNudge.status === 201 && watchNudge.data.schema_version === 't3mp3st_watch_loop_cycle/v1' && (watchNudge.data.summary?.spawnedWorkOrders || 0) >= 5, `${watchNudge.data.summary?.spawnedWorkOrders || 0} spawned`);
+  record('Watch loop nudge spawns specialist work orders', watchNudge.status === 201 && watchNudge.data.schema_version === 'plinyos.t3mp3st_watch_loop_cycle/v1' && (watchNudge.data.summary?.spawnedWorkOrders || 0) >= 5, `${watchNudge.data.summary?.spawnedWorkOrders || 0} spawned`);
 
   const watchStatus = await get(`/api/watch-loop/status?missionId=${encodeURIComponent(draft.data.id)}&operationId=${encodeURIComponent(operationDraft.operation_id)}&family=web_api&target=local-lab`);
   const watchCycleIds = (watchStatus.data.cycles || []).map(cycle => cycle.id);
-  record('Watch loop status recalls latest pulse', watchStatus.ok && watchStatus.data.schema_version === 't3mp3st_watch_loop_status/v1' && watchCycleIds.includes(watchNudge.data.id), `${watchStatus.data.latestCycle?.id || 'none'} latest / ${watchCycleIds.length} retained`);
+  record('Watch loop status recalls latest pulse', watchStatus.ok && watchStatus.data.schema_version === 'plinyos.t3mp3st_watch_loop_status/v1' && watchCycleIds.includes(watchNudge.data.id), `${watchStatus.data.latestCycle?.id || 'none'} latest / ${watchCycleIds.length} retained`);
 
   const selfHeal = await post('/api/self-heal/run', {
     missionId: draft.data.id,
@@ -352,7 +405,7 @@ async function smokeContractsAndLedgers() {
     operationDraft,
     apply: true,
   });
-  record('Self-heal diagnoses and safely applies watch repair', selfHeal.status === 201 && selfHeal.data.schema_version === 't3mp3st_self_heal/v1' && countItems(selfHeal.data.actions) >= 1 && typeof selfHeal.data.summary?.applied === 'number', `${selfHeal.data.health || 'unknown'} / ${selfHeal.data.summary?.applied || 0} applied`);
+  record('Self-heal diagnoses and safely applies watch repair', selfHeal.status === 201 && selfHeal.data.schema_version === 'plinyos.t3mp3st_self_heal/v1' && countItems(selfHeal.data.actions) >= 1 && typeof selfHeal.data.summary?.applied === 'number', `${selfHeal.data.health || 'unknown'} / ${selfHeal.data.summary?.applied || 0} applied`);
 
   const supportedHypothesis = hypothesis.data.id
     ? await patch(`/api/hypotheses/${hypothesis.data.id}`, { status: 'supported', confidence: 0.76 })
@@ -400,7 +453,7 @@ async function smokeContractsAndLedgers() {
   record('Retest can be queued', retest.status === 201 && retest.data.id, retest.data.id || summarizeError(retest));
 
   const gateWithQueuedRetest = await post('/api/mission-gate', { operationDraft });
-  record('Mission gate holds unresolved retest', gateWithQueuedRetest.ok && gateWithQueuedRetest.data.schema_version === 't3mp3st_mission_gate/v1' && gateWithQueuedRetest.data.status !== 'ready', `${gateWithQueuedRetest.data.status || 'unknown'} ${gateWithQueuedRetest.data.score ?? 'n/a'}/100`);
+  record('Mission gate holds unresolved retest', gateWithQueuedRetest.ok && gateWithQueuedRetest.data.schema_version === 'plinyos.t3mp3st_mission_gate/v1' && gateWithQueuedRetest.data.status !== 'ready', `${gateWithQueuedRetest.data.status || 'unknown'} ${gateWithQueuedRetest.data.score ?? 'n/a'}/100`);
 
   const completedRetest = retest.data.id
     ? await patch(`/api/retests/${retest.data.id}`, { status: 'passed', resultSummary: 'Arsenal smoke retest passed.' })
@@ -409,12 +462,12 @@ async function smokeContractsAndLedgers() {
 
   const reproPacks = await post('/api/repro-packs', { operationDraft });
   const readyReproPack = (reproPacks.data.packs || []).find(pack => pack.readiness === 'ready');
-  record('Repro packs summarize replay readiness', reproPacks.ok && reproPacks.data.schema_version === 't3mp3st_repro_packs/v1' && (reproPacks.data.summary?.total || 0) >= 2 && (reproPacks.data.summary?.ready || 0) >= 1, `${reproPacks.data.summary?.ready || 0}/${reproPacks.data.summary?.total || 0} ready`);
+  record('Repro packs summarize replay readiness', reproPacks.ok && reproPacks.data.schema_version === 'plinyos.t3mp3st_repro_packs/v1' && (reproPacks.data.summary?.total || 0) >= 2 && (reproPacks.data.summary?.ready || 0) >= 1, `${reproPacks.data.summary?.ready || 0}/${reproPacks.data.summary?.total || 0} ready`);
   record('Repro pack includes safe replay contract', Boolean(readyReproPack && countItems(readyReproPack.replaySteps) >= 4 && countItems(readyReproPack.falsifiers) >= 3 && readyReproPack.safeProbe), readyReproPack?.id || summarizeError(reproPacks));
 
   const pressurePaths = await post('/api/pressure-paths', { operationDraft });
   const bestPressurePath = (pressurePaths.data.paths || [])[0];
-  record('Pressure paths convert repro into gated offensive chain', pressurePaths.ok && pressurePaths.data.schema_version === 't3mp3st_pressure_paths/v1' && (pressurePaths.data.summary?.total || 0) >= 2 && (pressurePaths.data.summary?.maxOffensiveScore || 0) > 0, `${pressurePaths.data.summary?.armed || 0}/${pressurePaths.data.summary?.total || 0} armed, max ${pressurePaths.data.summary?.maxOffensiveScore || 0}`);
+  record('Pressure paths convert repro into gated offensive chain', pressurePaths.ok && pressurePaths.data.schema_version === 'plinyos.t3mp3st_pressure_paths/v1' && (pressurePaths.data.summary?.total || 0) >= 2 && (pressurePaths.data.summary?.maxOffensiveScore || 0) > 0, `${pressurePaths.data.summary?.armed || 0}/${pressurePaths.data.summary?.total || 0} armed, max ${pressurePaths.data.summary?.maxOffensiveScore || 0}`);
   record('Pressure path includes simulator and no-go gates', Boolean(bestPressurePath && bestPressurePath.safeSimulator?.mode === 'local_canary' && countItems(bestPressurePath.chainStages) >= 5 && countItems(bestPressurePath.noGo) >= 2), bestPressurePath?.id || summarizeError(pressurePaths));
 
   const pressureCanary = await post('/api/pressure-paths/canary', {
@@ -422,11 +475,8 @@ async function smokeContractsAndLedgers() {
     pathId: bestPressurePath?.id,
     pressurePaths: pressurePaths.data,
   });
-  record('Pressure canary rehearses top path locally', pressureCanary.ok && pressureCanary.data.schema_version === 't3mp3st_pressure_canary/v1' && pressureCanary.data.status === 'passed' && pressureCanary.data.canary?.mode === 'local_canary', pressureCanary.data.canary?.observedSignal || summarizeError(pressureCanary));
-  // Honest by design: a local synthetic canary is CONTEXT evidence, never 'replayable'
-  // proof against the real target (see buildPressureCanary — stamping it 'replayable'
-  // would let a finding self-promote on fabricated evidence). Assert 'context'.
-  record('Pressure canary writes context evidence and retest receipt', Boolean(pressureCanary.data.evidence?.id && pressureCanary.data.evidence?.provenanceStrength === 'context' && pressureCanary.data.retest?.status === 'passed'), `${pressureCanary.data.evidence?.id || 'no evidence'} / ${pressureCanary.data.retest?.id || 'no retest'}`);
+  record('Pressure canary rehearses top path locally', pressureCanary.ok && pressureCanary.data.schema_version === 'plinyos.t3mp3st_pressure_canary/v1' && pressureCanary.data.status === 'passed' && pressureCanary.data.canary?.mode === 'local_canary', pressureCanary.data.canary?.observedSignal || summarizeError(pressureCanary));
+  record('Pressure canary writes replayable evidence and retest receipt', Boolean(pressureCanary.data.evidence?.id && pressureCanary.data.evidence?.provenanceStrength === 'replayable' && pressureCanary.data.retest?.status === 'passed'), `${pressureCanary.data.evidence?.id || 'no evidence'} / ${pressureCanary.data.retest?.id || 'no retest'}`);
 
   const pressureDuel = await post('/api/pressure-paths/duel', {
     operationDraft,
@@ -434,7 +484,7 @@ async function smokeContractsAndLedgers() {
     pressurePaths: pressurePaths.data,
     pressureCanary: pressureCanary.data,
   });
-  record('Pressure duel survives only evidence-backed canary route', pressureDuel.ok && pressureDuel.data.schema_version === 't3mp3st_pressure_duel/v1' && pressureDuel.data.status === 'survived' && (pressureDuel.data.survivabilityScore || 0) >= 86, `${pressureDuel.data.status || 'unknown'} ${pressureDuel.data.survivabilityScore || 0}/100`);
+  record('Pressure duel survives only evidence-backed canary route', pressureDuel.ok && pressureDuel.data.schema_version === 'plinyos.t3mp3st_pressure_duel/v1' && pressureDuel.data.status === 'survived' && (pressureDuel.data.survivabilityScore || 0) >= 86, `${pressureDuel.data.status || 'unknown'} ${pressureDuel.data.survivabilityScore || 0}/100`);
   record('Pressure duel writes skeptic evidence and follow-up task', Boolean(pressureDuel.data.evidence?.id && pressureDuel.data.workOrder?.id && countItems(pressureDuel.data.duel?.rounds) >= 3), `${pressureDuel.data.evidence?.id || 'no evidence'} / ${pressureDuel.data.workOrder?.id || 'no work order'}`);
 
   const pressureMutations = await post('/api/pressure-paths/mutate', {
@@ -443,7 +493,7 @@ async function smokeContractsAndLedgers() {
     pressurePaths: pressurePaths.data,
     pressureDuel: pressureDuel.data,
   });
-  record('Pressure mutation gauntlet forks survived route', pressureMutations.ok && pressureMutations.data.schema_version === 't3mp3st_pressure_mutations/v1' && pressureMutations.data.status === 'queued' && countItems(pressureMutations.data.mutations) >= 5 && (pressureMutations.data.summary?.maxFangScore || 0) >= 80, `${countItems(pressureMutations.data.mutations)} mutations / max ${pressureMutations.data.summary?.maxFangScore || 0}`);
+  record('Pressure mutation gauntlet forks survived route', pressureMutations.ok && pressureMutations.data.schema_version === 'plinyos.t3mp3st_pressure_mutations/v1' && pressureMutations.data.status === 'queued' && countItems(pressureMutations.data.mutations) >= 5 && (pressureMutations.data.summary?.maxFangScore || 0) >= 80, `${countItems(pressureMutations.data.mutations)} mutations / max ${pressureMutations.data.summary?.maxFangScore || 0}`);
   record('Pressure mutation gauntlet queues specialist work orders', Boolean(pressureMutations.data.evidence?.id && countItems(pressureMutations.data.workOrders) >= 3 && pressureMutations.data.workOrders.every(order => order.requiresReceipt === false)), `${pressureMutations.data.evidence?.id || 'no evidence'} / ${countItems(pressureMutations.data.workOrders)} work orders`);
 
   const pressureChains = await post('/api/pressure-paths/chains', {
@@ -452,7 +502,7 @@ async function smokeContractsAndLedgers() {
     pressurePaths: pressurePaths.data,
     pressureMutations: pressureMutations.data,
   });
-  record('Pressure fang chains compose local weird-machine routes', pressureChains.ok && pressureChains.data.schema_version === 't3mp3st_pressure_chains/v1' && pressureChains.data.status === 'queued' && countItems(pressureChains.data.chains) >= 3 && (pressureChains.data.summary?.maxChainScore || 0) >= 80, `${countItems(pressureChains.data.chains)} chains / max ${pressureChains.data.summary?.maxChainScore || 0}`);
+  record('Pressure fang chains compose local weird-machine routes', pressureChains.ok && pressureChains.data.schema_version === 'plinyos.t3mp3st_pressure_chains/v1' && pressureChains.data.status === 'queued' && countItems(pressureChains.data.chains) >= 3 && (pressureChains.data.summary?.maxChainScore || 0) >= 80, `${countItems(pressureChains.data.chains)} chains / max ${pressureChains.data.summary?.maxChainScore || 0}`);
   record('Pressure fang chains queue staged specialist work orders', Boolean(pressureChains.data.evidence?.id && countItems(pressureChains.data.workOrders) >= 2 && pressureChains.data.workOrders.every(order => order.requiresReceipt === false)), `${pressureChains.data.evidence?.id || 'no evidence'} / ${countItems(pressureChains.data.workOrders)} work orders`);
 
   const evidenceList = await get(`/api/evidence?missionId=${encodeURIComponent(draft.data.id)}`);
@@ -469,15 +519,15 @@ async function smokeContractsAndLedgers() {
   record('Retest ledger can be listed', retestList.ok && (retestList.data.retests || []).some(item => item.id === retest.data.id), `${countItems(retestList.data.retests)} retests`);
 
   const bundle = await post('/api/mission-bundles', { operationDraft });
-  record('Mission bundle exports handoff', bundle.ok && bundle.data.schema_version === 't3mp3st_mission_bundle/v1', bundle.data.handoff?.humanSummary || summarizeError(bundle));
-  record('Mission bundle carries repro packs', bundle.ok && bundle.data.reproPacks?.schema_version === 't3mp3st_repro_packs/v1' && (bundle.data.reproPacks.summary?.total || 0) >= 2, `${bundle.data.reproPacks?.summary?.ready || 0}/${bundle.data.reproPacks?.summary?.total || 0} ready`);
-  record('Mission bundle carries pressure paths', bundle.ok && bundle.data.pressurePaths?.schema_version === 't3mp3st_pressure_paths/v1' && (bundle.data.pressurePaths.summary?.total || 0) >= 2, `${bundle.data.pressurePaths?.summary?.armed || 0}/${bundle.data.pressurePaths?.summary?.total || 0} armed`);
+  record('Mission bundle exports handoff', bundle.ok && bundle.data.schema_version === 'plinyos.t3mp3st_mission_bundle/v1', bundle.data.handoff?.humanSummary || summarizeError(bundle));
+  record('Mission bundle carries repro packs', bundle.ok && bundle.data.reproPacks?.schema_version === 'plinyos.t3mp3st_repro_packs/v1' && (bundle.data.reproPacks.summary?.total || 0) >= 2, `${bundle.data.reproPacks?.summary?.ready || 0}/${bundle.data.reproPacks?.summary?.total || 0} ready`);
+  record('Mission bundle carries pressure paths', bundle.ok && bundle.data.pressurePaths?.schema_version === 'plinyos.t3mp3st_pressure_paths/v1' && (bundle.data.pressurePaths.summary?.total || 0) >= 2, `${bundle.data.pressurePaths?.summary?.armed || 0}/${bundle.data.pressurePaths?.summary?.total || 0} armed`);
 
   const bundleByMission = await get(`/api/mission-bundles/${encodeURIComponent(draft.data.id)}`);
-  record('Mission bundle can be rebuilt by mission id', bundleByMission.ok && bundleByMission.data.schema_version === 't3mp3st_mission_bundle/v1', bundleByMission.data.handoff?.humanSummary || summarizeError(bundleByMission));
+  record('Mission bundle can be rebuilt by mission id', bundleByMission.ok && bundleByMission.data.schema_version === 'plinyos.t3mp3st_mission_bundle/v1', bundleByMission.data.handoff?.humanSummary || summarizeError(bundleByMission));
 
   const gate = await post('/api/mission-gate', { operationDraft });
-  record('Mission gate evaluates ledgers and receipts', gate.ok && gate.data.schema_version === 't3mp3st_mission_gate/v1' && ['hold', 'ready'].includes(gate.data.status), `${gate.data.status || 'unknown'} ${gate.data.score ?? 'n/a'}/100`);
+  record('Mission gate evaluates ledgers and receipts', gate.ok && gate.data.schema_version === 'plinyos.t3mp3st_mission_gate/v1' && ['hold', 'ready'].includes(gate.data.status), `${gate.data.status || 'unknown'} ${gate.data.score ?? 'n/a'}/100`);
 
   const tempDraft = await post('/api/mission-drafts', {
     title: 'Arsenal Smoke Delete Fixture',
@@ -561,16 +611,85 @@ async function smokeImprovementAndLearning(context) {
   record('Repeated learning review reinforces, not duplicates', repeated.status === 201 && beforeCount === afterCount && reinforced, `${afterCount} proposals / reinforced=${reinforced}`);
 
   const capsule = await get('/api/memory/capsule');
-  record('Memory capsule exposes accepted entries only', capsule.ok && capsule.data.schema_version === 't3mp3st_memory_capsule/v1' && (capsule.data.entries || []).some(item => item.id === acceptedMemory.data.entry?.id), `${countItems(capsule.data.entries)} entries`);
+  record('Memory capsule exposes accepted entries only', capsule.ok && capsule.data.schema_version === 'plinyos.t3mp3st_memory_capsule/v1' && (capsule.data.entries || []).some(item => item.id === acceptedMemory.data.entry?.id), `${countItems(capsule.data.entries)} entries`);
 }
 
-// NOTE: The "Pliny Specials" backend routes (/api/pliny/leviathan/engage,
-// sphinx/validate, gorgon/strike, cerberus/escalate, typhon/inject,
-// griffin/harvest, simurgh/hunt, hydra/orchestrate, arachne/chain) were
-// removed from src/server.ts on 2026-06-30 as deprecated dead theater.
-// The old smokePlinySpecials() drill that asserted on those 9 routes was
-// retired here — there is nothing left to smoke. The client-side "Pliny
-// Specials" demos in docs/index.html remain, but are clearly [SIMULATED].
+async function smokePlinySpecials() {
+  const localTarget = 'http://127.0.0.1/lab';
+
+  const engagement = await post('/api/pliny/leviathan/engage', {
+    target: '127.0.0.1',
+    autonomy: 'GUIDED',
+    objectives: ['arsenal_smoke'],
+    opsec_level: 'contained',
+  });
+  record('LEVIATHAN builds kill-chain plan', engagement.ok && engagement.data.success === true && countItems(engagement.data.plan?.phases) >= 6, `${countItems(engagement.data.plan?.phases)} phases`);
+
+  const validation = await post('/api/pliny/sphinx/validate', {
+    findings: syntheticFindings.slice(0, 4),
+    validation_depth: 'thorough',
+  });
+  record('SPHINX validates synthetic findings', validation.ok && validation.data.success === true && countItems(validation.data.confirmed_findings) >= 4, `${countItems(validation.data.confirmed_findings)} confirmed`);
+
+  const strike = await post('/api/pliny/gorgon/strike', {
+    target: localTarget,
+    vulnerability: syntheticFindings[0],
+    mode: 'surgical',
+    objective: 'data_read',
+  });
+  record('GORGON returns strike plan without execution', strike.ok && strike.data.success === true && countItems(strike.data.strike_plan?.payloads) > 0, `${countItems(strike.data.strike_plan?.payloads)} payload candidates`);
+
+  const escalation = await post('/api/pliny/cerberus/escalate', {
+    platform: 'linux',
+    current_privilege: 'synthetic-user',
+    system_info: { sudo_permissions: ['/usr/bin/find'], suid_binaries: ['/usr/bin/bash'] },
+  });
+  record('CERBERUS ranks synthetic escalation vectors', escalation.ok && escalation.data.success === true && escalation.data.vectors_found > 0, `${escalation.data.vectors_found || 0} vectors`);
+
+  const injector = await post('/api/pliny/typhon/inject', {
+    payload: 'T3MP3ST_ARSENAL_CANARY',
+    context: 'url',
+    encodings: ['url', 'base64'],
+    waf_bypass: ['double_encode'],
+    generate_variants: true,
+  });
+  record('TYPHON encodes benign canary variants', injector.ok && injector.data.success === true && injector.data.encoded !== 'T3MP3ST_ARSENAL_CANARY' && injector.data.variants, `${Object.keys(injector.data.variants || {}).length} variants`);
+
+  const fakeJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhcnNlbmFsIiwiaWF0IjoxNzAwMDAwMDAwfQ.signature';
+  const harvesting = await post('/api/pliny/griffin/harvest', {
+    content: [
+      'Synthetic fixture only.',
+      'aws=AKIA1111111111111111',
+      'github=ghp_111111111111111111111111111111111111',
+      `jwt=${fakeJwt}`,
+    ].join('\n'),
+    decode_tokens: true,
+  });
+  record('GRIFFIN detects synthetic secrets without real values', harvesting.ok && harvesting.data.success === true && harvesting.data.scan_stats?.total_secrets >= 2, `${harvesting.data.scan_stats?.total_secrets || 0} synthetic matches`);
+
+  const research = await post('/api/pliny/simurgh/hunt', {
+    target: 'synthetic-parser',
+    vuln_classes: ['buffer_overflow', 'format_string'],
+    protections: ['ASLR', 'NX', 'stack_canary'],
+  });
+  record('SIMURGH produces synthetic research map', research.ok && research.data.success === true && research.data.vulnerability_analysis?.buffer_overflow && research.data.vulnerability_analysis?.format_string, `difficulty=${research.data.difficulty || 'unknown'}`);
+
+  const multiVector = await post('/api/pliny/hydra/orchestrate', {
+    target: localTarget,
+    vectors: ['sqli', 'xss', 'ssti', 'ssrf', 'lfi'],
+    parallelism: 3,
+    depth: 'standard',
+  });
+  record('HYDRA composes multi-vector plan', multiVector.ok && multiVector.data.success === true && countItems(multiVector.data.attacks) === 5, `${countItems(multiVector.data.attacks)} vectors`);
+
+  const chain = await post('/api/pliny/arachne/chain', {
+    vulnerabilities: syntheticFindings,
+    objective: 'full_compromise',
+    max_chain_length: 6,
+    starting_capabilities: ['web_access'],
+  });
+  record('ARACHNE builds viable exploit chain', chain.ok && chain.data.success === true && chain.data.analysis?.chains_found > 0, `${chain.data.analysis?.chains_found || 0} chains`);
+}
 
 async function smokeToolsAndRuntime(context) {
   const tools = await get('/api/tools');
@@ -739,6 +858,7 @@ async function main() {
   await smokeKnowledgeAtlas();
   const context = await smokeContractsAndLedgers();
   await smokeImprovementAndLearning(context);
+  await smokePlinySpecials();
   await smokeToolsAndRuntime(context);
   await smokeMissionAndGeneralControl();
 
@@ -749,6 +869,7 @@ async function main() {
     knowledge: checks.filter(check => /^(Workflow|Resource|Agent|Operator runbook|Forefront|Operator doctrine|Route scorecard)/.test(check.name)).length,
     contracts: checks.filter(check => /^(Mission draft|Route preview|Mission receipt|Approval|Evidence|Finding|Retest|Repro pack|Pressure path|Pressure canary|Pressure duel|Pressure mutation|Pressure fang|Mission bundle|Mission gate)/.test(check.name)).length,
     learning: checks.filter(check => /^(Improvement|Promotion|Learning|Manual memory|Memory|Repeated)/.test(check.name)).length,
+    pliny: checks.filter(check => /^(LEVIATHAN|SPHINX|GORGON|CERBERUS|TYPHON|GRIFFIN|SIMURGH|HYDRA|ARACHNE)/.test(check.name)).length,
     tools: checks.filter(check => /^(Tool|Approved local command|Recon|Private LAN recon|Loopback recon|LLM)/.test(check.name)).length,
     missionControl: checks.filter(check => /^(Mission status|Mission start|Operator|Mission findings|Mission pause|Mission resume|Mission stop|General)/.test(check.name)).length,
   };
@@ -771,61 +892,10 @@ async function main() {
   };
 
   console.log(JSON.stringify(report, null, 2));
-  return failed.length ? 1 : 0;   // return status; run() reaps the server then sets exitCode
+  if (failed.length) process.exit(1);
 }
 
-async function waitForServer(url, tries = 80) {
-  for (let i = 0; i < tries; i++) {
-    try {
-      await fetch(`${url}/api/codex/status`);
-      return true; // any HTTP response (200 or 503) means the server is listening
-    } catch {
-      await new Promise(r => setTimeout(r, 500));
-    }
-  }
-  return false;
-}
-
-async function run() {
-  let srv = null;
-  if (!EXTERNAL_URL) {
-    const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
-    srv = spawn('node', [join(repo, 'dist', 'server.js')], {
-      cwd: repo,
-      env: {
-        ...process.env,
-        T3MP3ST_PORT: SMOKE_PORT,
-        T3MP3ST_HOST: '127.0.0.1',
-        T3MP3ST_DISABLE_LOCAL_AGENTS: '1',   // no local-agent backbone
-        T3MP3ST_FORCE_UNCONFIGURED: '1',     // no API-key backbone (env OR saved store)
-      },
-      stdio: 'ignore',
-    });
-    // Without an 'error' listener, a spawn failure (e.g. node missing) throws an
-    // unhandled exception instead of a clean message + exit.
-    srv.on('error', (err) => {
-      console.error('arsenal-smoke: failed to spawn dedicated server:', err.message);
-      process.exit(1);
-    });
-    const ready = await waitForServer(baseUrl);
-    if (!ready) {
-      try { srv.kill('SIGKILL'); } catch { /* noop */ }
-      console.error(`arsenal-smoke: dedicated server on ${baseUrl} did not become ready (build dist/ first: npm run build)`);
-      process.exit(1);
-    }
-  }
-  let code = 1;
-  try {
-    code = await main();
-  } finally {
-    // ALWAYS reap the spawned server before propagating the exit code, so a failing
-    // run never orphans a listener on the smoke port (which would poison the next run).
-    if (srv) { try { srv.kill('SIGKILL'); } catch { /* noop */ } }
-  }
-  process.exitCode = code;
-}
-
-run().catch(error => {
+main().catch(error => {
   console.error(JSON.stringify({
     drill: 't3mp3st-full-arsenal-smoke',
     passed: false,

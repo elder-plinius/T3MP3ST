@@ -33,13 +33,22 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extractFindings, normalizeFinding, parseArgs } from './cli-hunt.mjs';
-// The specialist CLASSES registry (HARDENED focus strings + squad machinery) + the solo GENERALIST
-// control now live in classes.mjs — the single source of truth. LENSES/GENERALIST re-exported there
-// for back-compat. A run deploys a SQUAD (classes x count x effort): --squad <preset|json>, default full.
-import { classList, getClass, LENSES, GENERALIST, SQUAD_PRESETS, expandSquad, parseSquadArg, composeSquad } from './classes.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const now = () => new Date().toISOString().slice(11, 19);
+
+// ── the specialist lenses: a division of labor across vuln classes ──
+const LENSES = [
+  { key: 'injection',         name: 'Injection',            focus: 'command / code / eval / template / SQL injection — any untrusted input reaching an interpreter, shell, child_process, eval/Function, or query.' },
+  { key: 'path-traversal',    name: 'Path traversal',       focus: 'arbitrary file read/write/include via user-influenced paths — sendFile/static, fs.* sinks, require(), view/template resolution, archive extraction, the classic startsWith/normalize prefix bugs.' },
+  { key: 'prototype-pollution', name: 'Prototype pollution', focus: 'recursive merge/extend/clone/defaults and query/body/cookie/header parsing that writes attacker keys (__proto__, constructor, prototype) into objects, and the gadget that turns it into impact.' },
+  { key: 'redos-dos',         name: 'ReDoS / resource DoS',  focus: 'regexes with catastrophic backtracking run on untrusted input; unbounded loops, recursion, allocations, or quadratic parsing reachable from a request.' },
+  { key: 'ssrf-redirect',     name: 'SSRF / open-redirect',  focus: 'URL / host / Location / proxy / redirect parsing — server-side request forgery, open redirect, host-header trust, and parser-differential confusion.' },
+  { key: 'authz-bypass',      name: 'Authz / auth bypass',   focus: 'authentication, session, signature/HMAC verify, CSRF, and access-control checks — and the input that bypasses or skips them (timing, type confusion, missing-check paths).' },
+  { key: 'deserialization',   name: 'Deserialization / parse', focus: 'cookie / JSON / multipart / content-type / config parsing, unsafe deserialization, type confusion, and length/bounds handling on parsed data.' },
+  { key: 'crypto-secrets',    name: 'Crypto / secrets',      focus: 'weak or predictable randomness for security tokens, non-constant-time comparison of secrets, signature-verification flaws, and hardcoded or leaked credentials.' },
+  { key: 'memory-safety',     name: 'Memory safety',         focus: 'out-of-bounds read/write, heap/stack buffer overflow, integer overflow leading to undersized allocation, use-after-free, unchecked length/offset/count/size fields, and missing bounds checks when parsing UNTRUSTED binary input (C/C++/native/unsafe) — the classic malicious-file -> memory-corruption -> RCE surface. Trace attacker-controlled record sizes/offsets to memcpy/resize/indexing sinks.' },
+];
 
 // ── a rate-limited / quota-exhausted / errored backend must NEVER read as "clean" ──
 function isRateLimited(text) {
@@ -114,8 +123,8 @@ Output a SINGLE JSON object on the LAST line, no prose after:
 {"clusters":[{"root_cause":"...","members":["file:line",...],"classification":"NOVEL_REAL|BY_DESIGN|KNOWN|LOW_VALUE|DUPLICATE","severity":"...","why":"..."}],"novel_real":N,"summary":"one honest sentence"}`;
 }
 
-async function triagePass(repo, project, confirmed, commit, model) {
-  const r = await runCodexAsync(repo, triagePrompt(project, confirmed, commit), { label: 'triage', timeoutMs: 12 * 60 * 1000, model });
+async function triagePass(repo, project, confirmed, commit) {
+  const r = await runCodexAsync(repo, triagePrompt(project, confirmed, commit), { label: 'triage', timeoutMs: 12 * 60 * 1000 });
   if (!r.ok) return null;
   const objs = extractObjects(r.text);
   return objs.length ? objs[objs.length - 1] : null;
@@ -123,12 +132,11 @@ async function triagePass(repo, project, confirmed, commit, model) {
 
 // ── async codex runner (parallel-safe: unique out-file per call) ──
 let _runSeq = 0;
-function runCodexAsync(repo, prompt, { model, label, effort, timeoutMs = 10 * 60 * 1000 } = {}) {
+function runCodexAsync(repo, prompt, { model, label, timeoutMs = 10 * 60 * 1000 } = {}) {
   return new Promise((resolve) => {
     const outFile = path.join(os.tmpdir(), `cli-swarm-${process.pid}-${++_runSeq}.txt`);
     const args = ['exec', '--skip-git-repo-check', '-c', 'approval_policy="never"', '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outFile];
     if (model) args.push('-m', model);
-    if (effort) args.push('-c', `model_reasoning_effort="${effort}"`); // per-agent reasoning effort (class/squad loadout)
     args.push(prompt);
     // stdin:'ignore' is critical — an open stdin pipe makes `codex exec` wait on an
     // EOF that never arrives and hang to the timeout. spawnSync closes stdin for us;
@@ -191,9 +199,7 @@ function renderBoard(state) {
 function selfTest() {
   let pass = 0, fail = 0;
   const ok = (l, c) => (c ? (pass++, console.log(`  ✅ ${l}`)) : (fail++, console.log(`  ❌ ${l}`)));
-  ok('10 specialist classes (incl. memory-safety + supply-chain)', LENSES.length === 10 && LENSES.every((l) => l.key && l.focus) && LENSES.some((l) => l.key === 'memory-safety') && LENSES.some((l) => l.key === 'supply-chain'));
-  ok('solo generalist covers all vuln classes', GENERALIST.key === 'generalist' && /memory safety/i.test(GENERALIST.focus) && /injection/i.test(GENERALIST.focus) && /prototype pollution/i.test(GENERALIST.focus) && /crypto/i.test(GENERALIST.focus));
-  ok('squad machinery: full preset expands to 10 agents, --squad json parses', expandSquad(SQUAD_PRESETS.full).length === 10 && parseSquadArg('[{"class":"authz-bypass","count":2}]')[0].class === 'authz-bypass');
+  ok('9 specialist lenses defined (incl. memory-safety)', LENSES.length === 9 && LENSES.every((l) => l.key && l.focus) && LENSES.some((l) => l.key === 'memory-safety'));
   ok('specialist prompt carries anti-fab doctrine', /VALID, respected result/.test(specialistPrompt(LENSES[0], '', 1)));
   ok('specialist prompt demands self-refutation', /REFUTE YOURSELF FIRST/.test(specialistPrompt(LENSES[0], '', 1)));
   ok('specialist prompt threads the swarm board', specialistPrompt(LENSES[0], 'OPEN LEADS: foo', 2).includes('OPEN LEADS: foo'));
@@ -225,58 +231,32 @@ async function main() {
   if (args['self-test']) return selfTest();
 
   if (!args.repo || args.repo === 'true') {
-    console.error('usage: node scripts/cli-swarm.mjs --repo <path> [--squad <preset|json>] [--auto-squad --cwes CWE-x,..] [--effort <lvl>] [--rounds 3] [--concurrency 4] [--budget-min 240] [--commit <sha>] [--model <m>]');
+    console.error('usage: node scripts/cli-swarm.mjs --repo <path> [--rounds 3] [--concurrency 4] [--budget-min 240] [--lenses k1,k2] [--commit <sha>] [--model <m>]');
     process.exit(2);
   }
   const repo = path.resolve(args.repo);
   if (!fs.existsSync(repo)) { console.error(`repo not found: ${repo}`); process.exit(2); }
   const project = path.basename(repo);
   const commit = args.commit && args.commit !== 'true' ? args.commit : null;
-  const model = (args.model && args.model !== 'true') ? args.model : undefined;
-  const solo = !!args.solo && args.solo !== 'false';
-  // the adversarial skeptic is the swarm's refutation filter. Default ON for the swarm, OFF for
-  // the solo control — but independently toggleable via --skeptic so a bake-off can run a
-  // solo+skeptic control arm that isolates "having a refuter" from the rest of coordination.
-  const useSkeptic = args.skeptic === undefined ? !solo : (args.skeptic !== 'false');
-  const maxRounds = solo ? 1 : Math.max(1, parseInt(args.rounds, 10) || 3);
+  const maxRounds = Math.max(1, parseInt(args.rounds, 10) || 3);
   const concurrency = Math.max(1, parseInt(args.concurrency, 10) || 4);
   const budgetMs = (parseFloat(args['budget-min']) || 240) * 60 * 1000;
-  // ── resolve the SQUAD (classes x count x effort): manual --squad / Admiral --auto-squad / default full ──
-  const globalEffort = (args.effort && args.effort !== 'true') ? args.effort : undefined; // squad-wide reasoning-effort override
-  let squad, squadReason;
-  if (solo) {
-    squad = [{ class: 'generalist', count: 1, effort: globalEffort }];
-    squadReason = 'solo control';
-  } else if (args['auto-squad'] && args['auto-squad'] !== 'false') {
-    const cwes = (args.cwes && args.cwes !== 'true') ? String(args.cwes).split(',').map((s) => s.trim()) : [];
-    const c = composeSquad({ cwes });
-    squad = c.squad.map((s) => ({ ...s, effort: s.effort ?? globalEffort }));
-    squadReason = `auto-squad (${c.reason})`;
-  } else {
-    squad = parseSquadArg(args.squad).map((s) => ({ ...s, effort: s.effort ?? globalEffort }));
-    squadReason = (args.squad && args.squad !== 'true') ? `--squad ${typeof args.squad === 'string' ? args.squad : 'json'}` : 'full preset';
-    if (args.lenses && args.lenses !== 'true') { // legacy --lenses filters the squad by class id
-      const keep = new Set(String(args.lenses).split(',').map((s) => s.trim()));
-      squad = squad.filter((s) => keep.has(s.class));
-    }
-  }
-  // flat per-agent run list (solo = the generalist control; expandSquad excludes solo classes)
-  const runList = solo ? [{ class: GENERALIST, agentIndex: 0, effort: globalEffort }] : expandSquad(squad);
-  const classNames = [...new Set(runList.map((u) => u.class.key))];
-  const arm = solo ? (useSkeptic ? 'solo+skeptic' : 'solo') : 'swarm';
+  const lenses = args.lenses && args.lenses !== 'true'
+    ? LENSES.filter((l) => String(args.lenses).split(',').map((s) => s.trim()).includes(l.key))
+    : LENSES;
   const startedAt = Date.now();
   const overBudget = () => Date.now() - startedAt > budgetMs;
 
   console.log(`\n${'═'.repeat(72)}`);
   console.log(`  ⚡ CLI-SWARM — BYO-subscription collaborative zero-day swarm`);
   console.log(`  target:      ${repo}${commit ? ` @ ${commit}` : ''}`);
-  console.log(`  squad:       ${runList.length} agent(s) / ${classNames.length} class(es) [${squadReason}]${globalEffort ? ` · effort=${globalEffort}` : ''}`);
-  console.log(`  plan:        ${solo ? 'ONE pass (single-agent baseline)' : `up to ${maxRounds} collaborative rounds`} · ${concurrency} parallel · budget ${(budgetMs / 60000) | 0}min`);
-  console.log(`  mode:        ${arm === 'swarm' ? 'SWARM — specialists + shared board + adversarial refutation' : arm === 'solo+skeptic' ? 'SOLO+SKEPTIC control — one generalist, then the skeptic refutes (isolates the refuter)' : 'SOLO BASELINE — one generalist, one pass, NO refuter (the control arm)'}${model ? ` · model=${model}` : ' · model=codex-default'} · READ-ONLY · $0 marginal (codex sub)`);
+  console.log(`  specialists: ${lenses.length} (${lenses.map((l) => l.key).join(', ')})`);
+  console.log(`  plan:        up to ${maxRounds} collaborative rounds · ${concurrency} parallel · budget ${(budgetMs / 60000) | 0}min`);
+  console.log(`  mode:        READ-ONLY · anti-fabrication · adversarially self-refuting · $0 marginal (codex sub)`);
   console.log(`${'═'.repeat(72)}\n`);
 
   const state = { confirmed: [], leads: [], refuted: [], cleanLenses: [] };
-  const transcript = { project, commit, mode: solo ? 'solo-baseline' : 'swarm', arm, skeptic: useSkeptic, model: model || 'codex-default', squad, squadReason, runList: runList.map((u) => ({ class: u.class.key, effort: u.effort || null })), started: new Date().toISOString(), rounds: [] };
+  const transcript = { project, commit, started: new Date().toISOString(), rounds: [] };
   let dryRounds = 0;
   let backendCalls = 0, backendFails = 0, rateLimited = false; // distinguish a real clean from a degraded/rate-limited non-run
 
@@ -287,10 +267,9 @@ async function main() {
     const roundRec = { round, started: new Date().toISOString(), specialists: [], newConfirmed: [], newLeads: [], refuted: [], outOfScope: 0 };
 
     // fan out the specialists in parallel
-    const runs = await pool(runList, concurrency, async (unit) => {
-      const lens = unit.class;
+    const runs = await pool(lenses, concurrency, async (lens) => {
       const t0 = Date.now();
-      const r = await runCodexAsync(repo, specialistPrompt(lens, board, round, commit), { label: lens.key, model, effort: unit.effort });
+      const r = await runCodexAsync(repo, specialistPrompt(lens, board, round, commit), { label: lens.key });
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
       backendCalls++;
       if (r.rateLimited) rateLimited = true;
@@ -317,36 +296,28 @@ async function main() {
       }
     }
 
-    // split: confident findings get scored; leads are held (NEVER scored) — this split is
-    // IDENTICAL across all three arms, so the ONLY thing that differs between solo (skeptic off)
-    // and solo+skeptic (skeptic on) is whether the refuter runs. That isolates the refuter as a
-    // clean variable, per the design review.
+    // skeptic refutation for the high-confidence / confirmed fresh items (parallel)
     const toVet = fresh.filter((f) => f.status === 'confirmed' || f.confidence === 'high');
     const leadsOnly = fresh.filter((f) => !(f.status === 'confirmed' || f.confidence === 'high'));
-    if (useSkeptic) {
-      if (toVet.length) console.log(`  ⚔ skeptic refuting ${toVet.length} candidate finding(s)…`);
-      const vetted = await pool(toVet, concurrency, async (f) => {
-        const r = await runCodexAsync(repo, skepticPrompt(f, commit), { label: `skeptic:${f.lens}`, model });
-        let verdict = { verdict: 'SURVIVES', reason: 'skeptic produced no parseable verdict (kept for human review)', guard_found: null };
-        if (r.ok) { const objs = extractObjects(r.text); if (objs.length) verdict = objs[objs.length - 1]; }
-        return { f, verdict };
-      });
-      for (const { f, verdict } of vetted) {
-        if (String(verdict.verdict).toUpperCase() === 'REFUTED') {
-          f.reason = verdict.reason; f.guard_found = verdict.guard_found;
-          state.refuted.push(f); roundRec.refuted.push(f);
-          console.log(`    ✗ REFUTED  ${f.cwe} ${f.file}:${f.line ?? '?'} — ${verdict.guard_found || verdict.reason?.slice(0, 60) || ''}`);
-        } else {
-          state.confirmed.push(f); roundRec.newConfirmed.push(f);
-          console.log(`    ✓ SURVIVES ${f.cwe} ${f.file}:${f.line ?? '?'} — ${f.title}`);
-        }
+    if (toVet.length) console.log(`  ⚔ skeptic refuting ${toVet.length} candidate finding(s)…`);
+    const vetted = await pool(toVet, concurrency, async (f) => {
+      const r = await runCodexAsync(repo, skepticPrompt(f, commit), { label: `skeptic:${f.lens}` });
+      let verdict = { verdict: 'SURVIVES', reason: 'skeptic produced no parseable verdict (kept for human review)', guard_found: null };
+      if (r.ok) { const objs = extractObjects(r.text); if (objs.length) verdict = objs[objs.length - 1]; }
+      return { f, verdict };
+    });
+
+    for (const { f, verdict } of vetted) {
+      if (String(verdict.verdict).toUpperCase() === 'REFUTED') {
+        f.reason = verdict.reason; f.guard_found = verdict.guard_found;
+        state.refuted.push(f); roundRec.refuted.push(f);
+        console.log(`    ✗ REFUTED  ${f.cwe} ${f.file}:${f.line ?? '?'} — ${verdict.guard_found || verdict.reason?.slice(0, 60) || ''}`);
+      } else {
+        state.confirmed.push(f); roundRec.newConfirmed.push(f);
+        console.log(`    ✓ SURVIVES ${f.cwe} ${f.file}:${f.line ?? '?'} — ${f.title}`);
       }
-    } else {
-      // no-refuter arm (the solo control): the confident findings ARE the output, unfiltered.
-      for (const f of toVet) { state.confirmed.push(f); roundRec.newConfirmed.push(f); }
-      console.log(`    ${toVet.length} confident finding(s) kept (no refuter — ${arm} arm)`);
     }
-    // merge leads (dedupe vs existing leads too) — identical across arms; leads are NEVER scored
+    // merge leads (dedupe vs existing leads too)
     for (const f of leadsOnly) { if (!titleSeen(state.leads, f)) { state.leads.push(f); roundRec.newLeads.push(f); } }
     // promote-resolved leads: drop leads that a confirmed/refuted now covers
     state.leads = state.leads.filter((l) => !titleSeen(state.confirmed, l) && !titleSeen(state.refuted, l));
@@ -362,7 +333,7 @@ async function main() {
   let triage = null;
   if (state.confirmed.length && args.triage !== 'false') {
     console.log(`\n──────── TRIAGE (${now()}) — clustering ${state.confirmed.length} survivors by root cause + classifying ────────`);
-    triage = await triagePass(repo, project, state.confirmed, commit, model);
+    triage = await triagePass(repo, project, state.confirmed, commit);
     if (triage) {
       transcript.triage = triage;
       for (const c of (triage.clusters || [])) console.log(`  [${c.classification}/${c.severity}] ${c.root_cause} (${(c.members || []).length} site(s)) — ${c.why}`);
@@ -391,14 +362,14 @@ async function main() {
   fs.writeFileSync(outPath, JSON.stringify(transcript, null, 2));
 
   console.log(`\n${'═'.repeat(72)}`);
-  console.log(`  ${arm === 'swarm' ? '🐝 SWARM' : `🔬 ${arm.toUpperCase()}`} COMPLETE — ${transcript.elapsed_min}min · ${transcript.rounds.length} round(s)`);
+  console.log(`  🐝 SWARM COMPLETE — ${transcript.elapsed_min}min · ${transcript.rounds.length} round(s)`);
   console.log(`${'═'.repeat(72)}`);
   if (degraded) {
-    console.log(`  ⛔ INVALID RUN — backend ${rateLimited ? 'RATE-LIMITED (usage limit)' : 'errored'} on ${backendFails}/${backendCalls} call(s).`);
+    console.log(`  ⛔ INVALID RUN — backend ${rateLimited ? 'RATE-LIMITED (usage limit)' : 'errored'} on ${backendFails}/${backendCalls} specialist calls.`);
     console.log(`     This is NOT a clean assessment — the hunt did not actually execute. Re-run when the backend is available (e.g. after the quota resets).`);
   } else if (state.confirmed.length === 0) {
-    console.log(`  ✅ CLEAN — ${arm === 'swarm' ? `${runList.length} specialist agent(s) across ${transcript.rounds.length} round(s)` : `the ${arm} arm`} found no ${useSkeptic ? 'surviving ' : ''}exploitable vulnerability.`);
-    console.log(`     ${arm === 'swarm' ? 'A deep, adversarially-refuted clean is a STRONG result on a hardened target.' : 'Control-arm clean (single generalist pass).'}`);
+    console.log(`  ✅ CLEAN — ${lenses.length} specialists across ${transcript.rounds.length} round(s) found no surviving exploitable vulnerability.`);
+    console.log(`     A deep, adversarially-refuted clean is a STRONG result on a hardened target.`);
   } else if (triage && triage.clusters) {
     const novel = triage.clusters.filter((c) => c.classification === 'NOVEL_REAL');
     const downgraded = triage.clusters.filter((c) => c.classification !== 'NOVEL_REAL');
@@ -436,4 +407,4 @@ function extractObjects(text) {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) main();
 
-export { LENSES, GENERALIST, specialistPrompt, skepticPrompt, triagePrompt, triagePass, renderBoard, dedupKey, extractObjects, inScope, isRateLimited };
+export { LENSES, specialistPrompt, skepticPrompt, triagePrompt, triagePass, renderBoard, dedupKey, extractObjects, inScope, isRateLimited };

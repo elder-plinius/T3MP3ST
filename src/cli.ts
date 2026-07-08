@@ -164,7 +164,7 @@ async function interactiveMode(): Promise<void> {
   showBanner();
 
   // Check for API keys
-  const providers = getConfiguredProviders().filter(p => p !== 'mock');
+  const providers = getConfiguredProviders().filter(p => p !== 'mock' && p !== 'local');
 
   if (providers.length === 0) {
     showBox(
@@ -520,14 +520,13 @@ async function openSettings(): Promise<void> {
       console.log(chalk.cyan('  Provider:'), settings.defaultProvider);
       console.log(chalk.cyan('  Model:'), settings.defaultModel);
       console.log(chalk.cyan('  OpenRouter:'), hasApiKey('openrouter') ? chalk.green('configured') : chalk.red('not set'));
-      console.log(chalk.cyan('  Venice:'), hasApiKey('venice') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  Anthropic:'), hasApiKey('anthropic') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  OpenAI:'), hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set'));
       console.log('');
       break;
 
     case 'provider':
-      const providers = getConfiguredProviders().filter(p => p !== 'mock');
+      const providers = getConfiguredProviders().filter(p => p !== 'mock' && p !== 'local');
       if (providers.length === 0) {
         showWarning('No API keys configured');
         break;
@@ -575,7 +574,7 @@ async function openSettings(): Promise<void> {
           type: 'list',
           name: 'keyProvider',
           message: 'Which provider?',
-          choices: ['openrouter', 'venice', 'anthropic', 'openai'],
+          choices: ['openrouter', 'anthropic', 'openai'],
         },
       ]);
       const { apiKey } = await inquirer.prompt([
@@ -639,7 +638,6 @@ program
       [chalk.cyan('Default Provider'), settings.defaultProvider],
       [chalk.cyan('Default Model'), settings.defaultModel],
       [chalk.cyan('OpenRouter API Key'), hasApiKey('openrouter') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
-      [chalk.cyan('Venice API Key'), hasApiKey('venice') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
       [chalk.cyan('Anthropic API Key'), hasApiKey('anthropic') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
       [chalk.cyan('OpenAI API Key'), hasApiKey('openai') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
       [chalk.cyan('Config Path'), config.getConfigPath()],

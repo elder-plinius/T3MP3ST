@@ -10,7 +10,7 @@
  *
  * const tempest = createTempest({
  *   name: 'Operation Midnight',
- *   llm: { provider: 'openrouter', model: 'anthropic/claude-opus-4-8' },
+ *   llm: { provider: 'openrouter', model: 'anthropic/claude-opus-4-6' },
  *   opsec: { level: 'covert' },
  * });
  *
@@ -64,6 +64,10 @@ export {
   PHASE_ARCHETYPES,
   KILL_CHAIN_ORDER,
   PHASE_DESCRIPTIONS,
+  FAMILY_PHASES,
+  FAMILY_ARCHETYPES,
+  getPhasesForFamily,
+  getArchetypesForFamily,
 } from './operators/index.js';
 export type { OperatorEvents, CellEvents, ArchetypeProfile } from './operators/index.js';
 
@@ -75,8 +79,14 @@ export {
   createStrictRoE,
   createReconTasks,
   createVulnScanTasks,
+  createCodeScanTasks,
+  createFindingValidationTasks,
 } from './mission/index.js';
 export type { MissionEvents, TaskQueueEvents } from './mission/index.js';
+
+// Validator
+export { FindingValidator } from './agent/validator.js';
+export type { ValidatorResult, ValidationVerdict } from './agent/validator.js';
 
 // Target
 export {
@@ -208,7 +218,6 @@ import type {
   TempestConfig,
   LLMConfig,
   RuntimeHooks,
-  LLMProvider,
   OperatorArchetype,
   CommandEvents,
   Finding,
@@ -218,26 +227,11 @@ import type {
 export { KillChainPhase } from './types/index.js';
 export type { OpsecConfig, Finding, Credential, Target, DetectionEvent } from './types/index.js';
 
-import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES, PHASE_ARCHETYPES, KILL_CHAIN_ORDER } from './operators/index.js';
-import { PackBoard } from './pack/board.js';
-import { randomUUID } from 'node:crypto';
-import { MissionControl, TaskQueue } from './mission/index.js';
+import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES, getArchetypesForFamily } from './operators/index.js';
+import { MissionControl } from './mission/index.js';
 import { TargetEnvironment } from './target/index.js';
 import { EvidenceVault } from './evidence/index.js';
-import {
-  Arsenal,
-  BUILTIN_TOOLS,
-  EXTERNAL_TOOLS,
-  stampSpicyBuiltin,
-  hostFromTargetValue,
-  scopeViolation,
-  runSubprocess,
-  isToolAvailable,
-} from './arsenal/index.js';
-import { buildAdapterTools } from './arsenal/adapter-tools.js';
-import { buildPostExTools } from './arsenal/post-ex.js';
-import { ApprovalController, type ApprovalRequest } from './arsenal/approval.js';
-import { TOOL_ADAPTERS } from './arsenal/catalog.js';
+import { Arsenal, BUILTIN_TOOLS, EXTERNAL_TOOLS } from './arsenal/index.js';
 import { OpsecController, createBalancedOpsecConfig } from './opsec/index.js';
 import { CommsChannel } from './comms/index.js';
 import { AnalysisEngine } from './analysis/index.js';
@@ -269,49 +263,39 @@ import {
 // TEMPEST COMMAND
 // =============================================================================
 
-const DEFAULT_AGENT_MAX_ITERATIONS = 15;
-const LOCAL_AGENT_MAX_ITERATIONS = Number(process.env.T3MP3ST_LOCAL_AGENT_MAX_ITERATIONS || 30);
-
 /**
  * TEMPEST Command - Main orchestration controller
  */
 export class TempestCommand extends EventEmitter<CommandEvents> {
   public readonly name: string;
+  public missionFamily: import('./types/index.js').MissionFamily | undefined;
+  public scanOptions: { spiderScope?: string; spiderDepth?: number; spiderMaxPages?: number } = {};
+  public sandboxOptions: { networkMode?: string; durationSec?: number; alias?: string } = {};
   public readonly cell: OperatorCell;
   public readonly mission: MissionControl;
   public readonly targetEnv: TargetEnvironment;
   public readonly vault: EvidenceVault;
   public readonly arsenal: Arsenal;
-  /** Capability approval + spicy-action warning gate for intrusive/dangerous tools. */
-  public readonly approval: ApprovalController;
   public readonly opsec: OpsecController;
   public readonly comms: CommsChannel;
   public readonly analysis: AnalysisEngine;
   public readonly llm: LLMBackbone;
 
-  /**
-   * Stub modules (interface-only).
-   *
-   * @stub Not implemented - interface stub, see src/stubs/index.ts. These members
-   * expose the intended surface for future modules but do NOT perform real work;
-   * their methods return honest not-implemented/failure shapes. Do not treat any
-   * of the following as a capability the framework actually has.
-   */
-  // Stub modules (interface-only) — reconnaissance/exploitation surface
+  // Advanced modules
   public readonly exploit: ExploitEngine;
   public readonly scanner: ScannerOrchestrator;
   public readonly browser: BrowserAutomation;
   public readonly benchmark: BenchmarkRunner;
   public readonly reasoning: ReasoningEngine;
 
-  // Stub modules (interface-only) — cognition/swarm/cloud surface
+  // Elite modules
   public readonly cognition: CognitionEngine;
   public readonly swarm: SwarmController;
   public readonly cloud: CloudSecurityEngine;
   public readonly persistence: PersistenceController;
   public readonly learning: LearningEngine;
 
-  // Stub modules (interface-only) — knowledge/protocol/reporting surface
+  // Foundational modules
   public readonly knowledge: KnowledgeBase;
   public readonly protocols: ProtocolHandler;
   public readonly evasion: EvasionEngine;
@@ -326,42 +310,14 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private tickInterval: NodeJS.Timeout | null = null;
   private tickCount: number = 0;
   private hooks: RuntimeHooks;
-  private readonly taskTimeoutMs: number;
-
-  /**
-   * White-box source context (security-prioritized code excerpt), set by the
-   * large-repo analysis pipeline via setWhiteboxSource(). When present it is
-   * threaded into every operator's agent loop so the model sees the source
-   * alongside its task. Empty/unset = black-box operation (unchanged behavior).
-   */
-  private whiteboxSource: string = '';
-
-  /**
-   * The swarm's shared, verifiable blackboard (Phase-2 coordination). One board per mission run:
-   * every finding posts a lead here, carrying its tool-vs-model-asserted provenance — the verifiable
-   * feedback signal that will drive the refinement loop (findings → targeted follow-up tasks).
-   */
-  private readonly packBoard = new PackBoard();
-
-  /**
-   * Swarm coordination (Phase-2), OPT-IN so the swarm-vs-single-agent bake-off can toggle it: set
-   * `T3MP3ST_SWARM_COORD=on` to enable the finding→follow-up refinement loop. Off = the legacy
-   * phase-sequenced queue (the single-agent-equivalent baseline). Default OFF until it's proven.
-   */
-  private readonly coordinationEnabled = /^(1|true|on)$/i.test(process.env.T3MP3ST_SWARM_COORD ?? '');
-  /** Findings that already spawned a follow-up (dedup — a finding chases exactly once). */
-  private readonly spawnedFollowups = new Set<string>();
-  /** Per-run cap on follow-up tasks so the refinement loop can never explode. */
-  private readonly maxFollowups = Number(process.env.T3MP3ST_SWARM_MAX_FOLLOWUPS) || 24;
-  /** Coordination telemetry — the artifact that distinguishes a coordinated run from N solo agents. */
-  private leadsPosted = 0;
-  private followupsSpawned = 0;
+  /** Mission-level abort controller — aborted on stop() to cancel all sidecar HTTP calls */
+  private missionController: AbortController = new AbortController();
 
   constructor(config: TempestConfig) {
     super();
     this.name = config.name;
+    this.missionFamily = config.missionFamily;
     this.hooks = config.hooks || {};
-    this.taskTimeoutMs = TempestCommand.resolveTaskTimeoutMs(config.llm.provider);
 
     // Initialize LLM backbone
     this.llm = new LLMBackbone(config.llm);
@@ -375,69 +331,17 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.opsec = new OpsecController(config.opsec);
     this.comms = new CommsChannel();
 
-    // Register built-in tools and external CLI wrappers. The built-in intrusive/credential probes
-    // (sqli_scan, password_spray, …) are the pre-existing honest baseline and stay UNGATED by default —
-    // zero regression: the headline benchmark and every prior run keep firing them freely. Opt in with
-    // T3MP3ST_GATE_BUILTINS=1 to stamp the spicy ones with a riskTier so the same approval gate that
-    // fences the specialist arsenal (metasploit/hydra) also fences them.
-    const gateBuiltins = /^(1|true|yes|on)$/i.test(process.env.T3MP3ST_GATE_BUILTINS ?? '');
-    this.arsenal.registerMany(gateBuiltins ? BUILTIN_TOOLS.map(stampSpicyBuiltin) : BUILTIN_TOOLS);
+    // Register built-in tools and external CLI wrappers
+    this.arsenal.registerMany(BUILTIN_TOOLS);
     this.arsenal.registerMany(EXTERNAL_TOOLS);
 
-    // Capability approval + spicy-action warning gate. An intrusive/credential/dangerous tool is
-    // INERT until it's approved. Two ways in: (1) headless — a pre-authorization allowlist up front
-    // via T3MP3ST_APPROVED_TOOLS (comma list) runs those tools free; (2) interactive — a host wires an
-    // approver so the operator approves a tool once, then it's free. No approver + not pre-approved =
-    // fail-safe DENY (an unattended run never self-fires an exploit). Every gated call is audited; the
-    // spicy ones (exploits / cred attacks) surface a loud warning. Wired onto the arsenal below so the
-    // gate runs inside Arsenal.execute() alongside the egress scope gate.
-    const preApprovedTools = (process.env.T3MP3ST_APPROVED_TOOLS ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    this.approval = new ApprovalController({
-      preApprovedTools,
-      onWarning: (req: ApprovalRequest) => {
-        // Loud, non-blocking warning so a spicy action is always SEEN. A host UI can also read
-        // this.approval.getAudit() or replace the controller for a richer surface.
-        // eslint-disable-next-line no-console
-        console.warn(`⚠️  SPICY ACTION [${req.risk}] ${req.operator ? req.operator + ' → ' : ''}${req.action}`);
-      },
-      // Bridge every gated decision to the dashboard's live approval/audit feed (connectBroadcast
-      // forwards this engine event to the SSE channel as `arsenal.approval`).
-      onDecision: (record) => this.emit('approval:decision', record),
-    });
-    this.arsenal.setApprovalController(this.approval);
-
-    // Phase-1 (OPT-IN): arm the specialist arsenal. Gated behind T3MP3ST_FULL_ARSENAL so the honest
-    // bash-only benchmark baseline (built-ins only) stays uncontaminated — a full-power / pack hunt
-    // sets it. The generic factory NEVER mints catalog_only/import_only adapters; the post-ex drivers
-    // (metasploit/hydra) are hand-written and each carries a riskTier so the approval gate above fences
-    // them. The egress scope gate in Arsenal.execute() still fences every target; the in-handler
-    // scopeOk here is a second belt-and-braces check on the resolved per-adapter target.
-    if (/^(1|true|on)$/i.test(process.env.T3MP3ST_FULL_ARSENAL ?? '')) {
-      const deps = {
-        runSubprocess,
-        isToolAvailable,
-        scopeOk: (target: string) => scopeViolation(this.arsenal.getScope(), { parameters: { target } }) === null,
-      };
-      const existing = new Set(this.arsenal.getAllTools().map((t) => t.name));
-      this.arsenal.registerMany(buildAdapterTools(TOOL_ADAPTERS, deps, existing));
-      this.arsenal.registerMany(buildPostExTools(deps)); // metasploit_module (dangerous) + hydra_bruteforce (credential)
-    }
+    // Inject LLM backbone so tools like llm_code_review and llm_validate_finding can call it
+    this.arsenal.setLLM(this.llm);
 
     // Advanced modules
     this.exploit = new ExploitEngine();
     this.scanner = new ScannerOrchestrator();
     this.browser = new BrowserAutomation();
-    // STUB by design, not an oversight: the real benchmark implementation lives in
-    // src/benchmark (class `Benchmark`) but is NOT a drop-in here — it exposes a
-    // different, scoring-oriented API (scoreRun/challengeToTasks/listChallenges,
-    // it does not run agents itself) and different Challenge/Metrics shapes than
-    // the `BenchmarkRunner` type this field is declared as. Wiring it in would
-    // require changing this field's type plus the `Tempest` interface/factory, so
-    // it is intentionally left as the stub. The real benchmark is currently
-    // CLI-only (see scripts/ + src/benchmark).
     this.benchmark = new BenchmarkRunner();
     this.reasoning = new ReasoningEngine(this.llm);
 
@@ -519,25 +423,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // Only mark "seeded" if a mission actually exists — otherwise generateTasksForTarget
     // no-ops and we'd falsely suppress the tick-loop seeding (leaving operators idle).
     this.targetEnv.on('target:added', (target) => {
-      this.syncArsenalScope();
       if (this.mission.getActiveMission()) {
-        this.mission.generateTasksForTarget(target.address);
+        this.mission.generateTasksForTarget(target.address, this.scanOptions);
         this.taskSeeded = true;
       }
     });
-  }
-
-  /**
-   * Recompute the arsenal's authorized egress scope from the mission's targets. Operators can only
-   * reach the authorized target hosts (+ loopback + lab/private ranges); every other host is refused
-   * at arsenal.execute() before the handler runs. Called whenever a target is added, so a keyless
-   * operator can never point a networked tool at an off-target host.
-   */
-  private syncArsenalScope(): void {
-    const allowedHosts = this.targetEnv.getAllTargets()
-      .map((t) => hostFromTargetValue(t.address))
-      .filter((h): h is string => !!h);
-    this.arsenal.setScope({ allowedHosts, allowLoopback: true, allowPrivate: true });
   }
 
   /**
@@ -545,67 +435,17 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    */
   private setupOperatorEvents(operator: OperatorAgent): void {
     operator.on('finding:discovered', ({ finding }) => {
+      const activeMission = this.mission.getActiveMission();
+      if (activeMission) {
+        finding.missionId = activeMission.id;
+        finding.missionName = activeMission.name;
+      }
       this.vault.addFinding(finding);
       this.emit('finding:discovered', { finding, operatorId: operator.id });
       this.hooks.onFindingDiscovered?.(finding, { id: operator.id });
 
       // Sync finding intelligence back to the target object
       this.syncFindingToTarget(finding);
-
-      // Post the finding to the shared board as a lead — the swarm's verifiable blackboard.
-      // `provenance` carries the tool-vs-model-asserted signal (the refinement loop's feedback);
-      // dedup + provenance-endorsement are the board's job. Best-effort: never break the mission.
-      // Gated on coordination so the baseline (coordination off) leaves the board fully inert.
-      if (this.coordinationEnabled) try {
-        const prov = finding.verifyGate?.provenance ?? 'none';
-        this.packBoard.postLead(operator.id, {
-          kind: 'lead',
-          title: finding.title,
-          where: { targetId: finding.id },
-          vulnClass: finding.cwe?.[0] ?? 'unclassified',
-          confidence: prov === 'tool' ? 'high' : prov === 'context' ? 'medium' : 'low',
-          provenance: prov,
-          cwe: finding.cwe?.[0],
-          severity: finding.severity,
-        });
-        this.leadsPosted++;
-      } catch { /* best-effort */ }
-
-      // [Phase-2 refinement loop] A TOOL-VERIFIED finding spawns a targeted follow-up task for the
-      // NEXT kill-chain phase's operator — chase the verifiable feedback signal (the research's
-      // load-bearing condition). Model-asserted findings spawn NO work (no chasing hallucinations).
-      // Dedup + a per-run cap keep the loop bounded. Gated by T3MP3ST_SWARM_COORD for the bake-off.
-      if (
-        this.coordinationEnabled &&
-        finding.verifyGate?.provenance === 'tool' &&
-        !this.spawnedFollowups.has(finding.id) &&
-        this.spawnedFollowups.size < this.maxFollowups
-      ) {
-        const mission = this.mission.getActiveMission();
-        const queue = this.mission.getTaskQueue();
-        const idx = KILL_CHAIN_ORDER.indexOf(finding.phase);
-        const nextPhase = idx >= 0 && idx < KILL_CHAIN_ORDER.length - 1 ? KILL_CHAIN_ORDER[idx + 1] : undefined;
-        const nextOp = nextPhase ? PHASE_ARCHETYPES[nextPhase]?.[0] : undefined;
-        if (mission && queue && nextPhase && nextOp) {
-          this.spawnedFollowups.add(finding.id);
-          const cwe = finding.cwe?.length ? `, ${finding.cwe.join('/')}` : '';
-          queue.add({
-            id: randomUUID(),
-            missionId: mission.id,
-            name: `Chase: ${finding.title}`.slice(0, 120),
-            description:
-              `A prior operator TOOL-VERIFIED this lead: "${finding.title}" (${finding.severity}${cwe}) on ${finding.targetId}. ` +
-              `${finding.description} Focus this ${nextPhase} step on THIS specific surface — confirm and advance it; do not re-scan broadly.`,
-            phase: nextPhase,
-            operatorType: nextOp,
-            status: 'pending',
-            priority: 20,
-            dependencies: [],
-            createdAt: Date.now(),
-          });
-          this.followupsSpawned++;
-        }
-      }
     });
 
     operator.on('credential:harvested', ({ credential }) => {
@@ -718,6 +558,55 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   // LIFECYCLE
   // ===========================================================================
 
+  /** Set the mission family before start() — controls phases and task factories. */
+  public setMissionFamily(family: import('./types/index.js').MissionFamily): void {
+    this.missionFamily = family;
+  }
+
+  /** Set spider/crawl options that are threaded into RECON task descriptions. */
+  public setScanOptions(opts: { spiderScope?: string; spiderDepth?: number; spiderMaxPages?: number }): void {
+    this.scanOptions = { ...this.scanOptions, ...opts };
+  }
+
+  /** Set dynamic sandbox execution options threaded into WEAPONIZE binary task descriptions. */
+  public setSandboxOptions(opts: { networkMode?: string; durationSec?: number; alias?: string }): void {
+    this.sandboxOptions = { ...this.sandboxOptions, ...opts };
+  }
+
+  /**
+   * Infer the best mission family from a raw target string.
+   * Mirrors the detectTargetFamily() logic in the frontend so API callers
+   * get the same routing without going through the UI.
+   */
+  public static detectMissionFamily(target: string): import('./types/index.js').MissionFamily {
+    if (!target) return 'web_api';
+    const h = target.trim().toLowerCase().replace(/^https?:\/\//, '');
+
+    // Code / Supply Chain
+    if (/^(www\.)?(github|gitlab|bitbucket)\.com\/[^\/\s]+\/[^\/\s]/.test(h)) return 'code_supply_chain';
+    if (/^git@/.test(target.trim()) || h.endsWith('.git')) return 'code_supply_chain';
+    if (/codeberg\.org\/[^\/]+\/[^\/]/.test(h)) return 'code_supply_chain';
+
+    // Smart Contract
+    if (/^0x[0-9a-f]{40}$/i.test(h) || h.endsWith('.eth')) return 'smart_contract';
+    if (/etherscan\.io|bscscan\.com|polygonscan\.com/.test(h)) return 'smart_contract';
+
+    // Cloud Infra
+    if (/\.amazonaws\.com|\.cloudfront\.net|\.elasticbeanstalk\.com/.test(h)) return 'cloud_infra';
+    if (/\.googleapis\.com|\.appspot\.com|\.run\.app|\.cloudfunctions\.net/.test(h)) return 'cloud_infra';
+    if (/\.azure\.com|\.azurewebsites\.net|\.windows\.net/.test(h)) return 'cloud_infra';
+
+    // AI Red Team
+    if (/api\.openai\.com|platform\.openai\.com|api\.anthropic\.com/.test(h)) return 'ai_red_team';
+    if (/\.huggingface\.co|api\.together\.xyz|api\.replicate\.com|api\.mistral\.ai|api\.groq\.com/.test(h)) return 'ai_red_team';
+
+    // Raw IPs / CIDRs / localhost → web_api (nmap-first recon handles the rest)
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\/\d{1,2})?$/.test(h)) return 'web_api';
+    if (/^[0-9a-f:]+$/.test(h) && h.includes(':')) return 'web_api';
+
+    return 'web_api';
+  }
+
   /**
    * Start command operations.
    * Automatically creates and starts a mission if none is active.
@@ -733,6 +622,10 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // (generateTasksForTarget no-ops with no active mission), which would otherwise
     // skip seeding forever and leave every operator idle.
     this.taskSeeded = false;
+
+    // Fresh abort controller for this mission — propagated to sidecar calls via arsenal
+    this.missionController = new AbortController();
+    this.arsenal.setAbortSignal(this.missionController.signal);
 
     this.running = true;
     this.paused = false;
@@ -758,6 +651,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       name: `${this.name} — Auto Mission`,
       description: `Automated mission for ${targetNames}`,
       objectives: ['Enumerate attack surface', 'Identify vulnerabilities', 'Validate findings'],
+      family: this.missionFamily,
     });
     this.mission.startMission(mission.id);
   }
@@ -774,6 +668,15 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+    // Abort all in-flight operator tasks (stops LLM fetch calls and local agent child processes)
+    for (const controller of this.activeControllers.values()) {
+      try { controller.abort(); } catch { /* noop */ }
+    }
+    this.activeControllers.clear();
+    this.activeDispatches.clear();
+    // Abort all in-flight sidecar HTTPS calls (binary/sandbox/cloud containers)
+    try { this.missionController.abort(); } catch { /* noop */ }
+    this.arsenal.setAbortSignal(null);
     this.emit('command:stopped');
   }
 
@@ -792,7 +695,6 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public resume(): void {
     if (!this.running || !this.paused) return;
     this.paused = false;
-    this.stallReason = null;
     this.emit('command:resumed');
   }
 
@@ -806,46 +708,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   /** Track in-flight task promises so we don't double-dispatch */
   private activeDispatches: Set<string> = new Set();
 
-  /**
-   * Wall-clock start time (ms epoch) for each in-flight dispatch, keyed by task id.
-   * Populated alongside activeDispatches.add and cleared everywhere activeDispatches
-   * is cleared. Drives the per-dispatch timeout backstop in checkDispatchTimeouts().
-   */
-  private dispatchStartTimes: Map<string, number> = new Map();
-
-  /** The operator each in-flight dispatch was assigned to, keyed by task id — so a
-   * timed-out dispatch can reset the exact wedged operator back to idle. */
-  private dispatchOperators: Map<string, OperatorAgent> = new Map();
-
-  /**
-   * GENEROUS per-dispatch wall-clock backstop (ms). If a single task dispatch stays
-   * in-flight longer than this, the tick loop force-resolves it as a timeout so
-   * pendingOrActive can reach 0 and the mission can advance/complete even when an
-   * operator promise wedges. Deliberately large (default 5 min for API models,
-   * 30 min for local-agent backends) so it does not kill legitimately slow local
-   * CLI work; it only fires on truly-hung dispatches. Override via
-   * T3MP3ST_TASK_TIMEOUT_MS.
-   */
-  /**
-   * Resolve the dispatch timeout from the environment, falling back to the
-   * provider-specific default. Guards against a non-numeric / non-positive override.
-   */
-  private static resolveTaskTimeoutMs(provider?: LLMProvider): number {
-    const DEFAULT_TASK_TIMEOUT_MS = 300000; // 5 minutes — generous backstop, not a deadline
-    const LOCAL_AGENT_TASK_TIMEOUT_MS = 1800000; // local CLI agents can need multiple slow turns
-    const raw = process.env.T3MP3ST_TASK_TIMEOUT_MS;
-    if (raw != null && raw.trim() !== '') {
-      const parsed = Number(raw);
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    }
-    return provider === 'local-agent' ? LOCAL_AGENT_TASK_TIMEOUT_MS : DEFAULT_TASK_TIMEOUT_MS;
-  }
+  /** AbortControllers for in-flight operator tasks — aborted on stop() */
+  private activeControllers: Map<string, AbortController> = new Map();
 
   /** Track whether we've seeded initial tasks for the current mission */
   private taskSeeded: boolean = false;
-
-  /** Human-readable reason a mission was paused because required work failed. */
-  private stallReason: string | null = null;
 
   /**
    * Main tick loop — seeds tasks, dispatches to operators, advances phases
@@ -875,22 +742,22 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       const targets = this.targetEnv.getAllTargets();
       if (targets.length > 0) {
         for (const target of targets) {
-          this.mission.generateTasksForTarget(target.address);
+          this.mission.generateTasksForTarget(target.address, this.scanOptions);
         }
         this.taskSeeded = true;
 
-        // Auto-spawn a recon operator if none exists
-        const recon = this.cell.getAvailableOperator('recon');
-        if (!recon) {
-          this.spawnOperator('Recon-Auto', 'recon');
+        // Auto-spawn the right operator for the initial RECON phase, scoped to the
+        // mission family. Families without a recon archetype (e.g. code_supply_chain
+        // uses code_scanner to clone the repo) fall back to the first family archetype.
+        const activeMission = this.mission.getActiveMission();
+        const familyArchetypes = getArchetypesForFamily(activeMission?.family);
+        const reconArchetype = familyArchetypes.includes('recon') ? 'recon' : familyArchetypes[0] ?? 'recon';
+        if (!this.cell.getAvailableOperator(reconArchetype)) {
+          const callsign = `${reconArchetype.charAt(0).toUpperCase() + reconArchetype.slice(1)}-Auto`;
+          try { this.spawnOperator(callsign, reconArchetype); } catch { /* pool full */ }
         }
       }
     }
-
-    // ── Backstop: force-resolve any wedged dispatch so the phase can advance ──
-    // Runs BEFORE the phase/completion check below so a timed-out task drops out of
-    // pendingOrActive/inFlight in the SAME tick it is reaped.
-    this.checkDispatchTimeouts(taskQueue);
 
     // ── Check for phase advancement ──
     const allMissionTasks = taskQueue.getForMission(mission.id);
@@ -899,31 +766,17 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     );
     const inFlight = allMissionTasks.filter(t => this.activeDispatches.has(t.id));
 
-    // If we have tasks, all are done, and nothing is in-flight → advance phase.
-    // Failed required tasks are terminal, but they are not successful progress.
-    // Stall instead of walking the phase bar forward with no backend/model work.
+    // If we have tasks, all are done, and nothing is in-flight → advance phase
     if (allMissionTasks.length > 0 && pendingOrActive.length === 0 && inFlight.length === 0) {
-      const failedCurrentPhase = allMissionTasks.filter(
-        t => t.phase === mission.currentPhase && t.status === 'failed'
-      );
-      if (failedCurrentPhase.length > 0) {
-        const firstError = failedCurrentPhase[0].result?.error;
-        this.stallReason = `stalled in ${mission.currentPhase}: ${failedCurrentPhase.length} required task(s) failed` +
-          (firstError ? ` — ${firstError}` : '');
-        this.paused = true;
-        this.emit('command:paused');
-        return;
-      }
-
       const phaseIndex = mission.phases.indexOf(mission.currentPhase);
       if (phaseIndex === -1) return; // Guard: phase not found (race condition)
       if (phaseIndex < mission.phases.length - 1) {
         // Advance to next phase and generate tasks
         this.mission.advancePhase(mission.id);
-        this.stallReason = null;
         const targets = this.targetEnv.getAllTargets();
+        const currentFindings = this.vault.getAllFindings();
         for (const target of targets) {
-          this.mission.generateNextPhaseTasks(target.address);
+          this.mission.generateNextPhaseTasks(target.address, currentFindings, this.sandboxOptions);
         }
 
         // Auto-spawn operators for the new phase
@@ -974,38 +827,26 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         if (!allDepsComplete) continue;
       }
 
-      // Match task to target by address in the task description.
-      // Resolve the target BEFORE assigning/marking dispatched — a missing target
-      // must leave the task pending (not permanently assigned + stuck in
-      // activeDispatches with no completion path to clear it).
-      const allTargets = this.targetEnv.getAllTargets();
-      const target = allTargets.find(t => task.description.includes(t.address)) || allTargets[0];
-      if (!target) continue; // No targets available — leave task pending, skip dispatch
-
       // Dispatch task (fire and forget — don't block the tick loop)
       this.activeDispatches.add(task.id);
-      // Record wall-clock start + owning operator so checkDispatchTimeouts() can reap
-      // this exact dispatch if its promise never settles.
-      this.dispatchStartTimes.set(task.id, Date.now());
-      this.dispatchOperators.set(task.id, operator);
       taskQueue.assign(task.id, operator.id);
 
-      // Execute asynchronously
-      operator.assignTask(task, target).then((result) => {
-        // If the backstop already reaped this dispatch, activeDispatches no longer
-        // has it — skip so we don't clobber the timed-out task's terminal state or
-        // double-fire the completion hook.
-        if (!this.activeDispatches.has(task.id)) return;
-        this.clearDispatch(task.id);
-        if (result.success === false) {
-          taskQueue.fail(task.id, result.error || result.output || 'task returned unsuccessful result');
-        } else {
-          taskQueue.complete(task.id, result);
-          this.hooks.onTaskCompleted?.(task);
-        }
+      // Match task to target by address in the task description
+      const allTargets = this.targetEnv.getAllTargets();
+      const target = allTargets.find(t => task.description.includes(t.address)) || allTargets[0];
+      if (!target) continue; // No targets available — skip dispatch
+
+      // Execute asynchronously; create an AbortController so stop() can cancel in-flight work
+      const controller = new AbortController();
+      this.activeControllers.set(task.id, controller);
+      operator.assignTask(task, target, controller.signal).then((result) => {
+        this.activeDispatches.delete(task.id);
+        this.activeControllers.delete(task.id);
+        taskQueue.complete(task.id, result);
+        this.hooks.onTaskCompleted?.(task);
       }).catch((_error) => {
-        if (!this.activeDispatches.has(task.id)) return;
-        this.clearDispatch(task.id);
+        this.activeDispatches.delete(task.id);
+        this.activeControllers.delete(task.id);
         try {
           taskQueue.fail(task.id, _error instanceof Error ? _error.message : String(_error));
         } catch (failErr) {
@@ -1016,100 +857,27 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   }
 
   /**
-   * Clear all bookkeeping for an in-flight dispatch (the single place that keeps
-   * activeDispatches, dispatchStartTimes, and dispatchOperators in lockstep).
-   */
-  private clearDispatch(taskId: string): void {
-    this.activeDispatches.delete(taskId);
-    this.dispatchStartTimes.delete(taskId);
-    this.dispatchOperators.delete(taskId);
-  }
-
-  /**
-   * BACKSTOP for wedged dispatches.
-   *
-   * The normal completion path (assignTask().then/.catch) clears a dispatch when
-   * its promise settles. But if that promise NEVER settles — a hung LLM call, a
-   * stuck subprocess, an operator pinned in `executing` with `currentTask: null`
-   * making no progress — the task stays `assigned`/`in_progress` and its id stays
-   * in activeDispatches forever. pendingOrActive/inFlight never reach 0, the phase
-   * never advances, and completeMission() is never called: the mission HANGS.
-   *
-   * On every tick we scan the in-flight dispatches and force-resolve any that have
-   * exceeded the GENEROUS wall-clock backstop (taskTimeoutMs), or that exhibit
-   * the exact wedge symptom (owning operator is `executing`/`tasked`
-   * but its currentTask is null — i.e. it has silently dropped the task). For each
-   * we: (1) mark the task failed/timed-out in the queue, (2) clear its dispatch
-   * bookkeeping, and (3) reset the owning operator back to idle so it can take new
-   * work. That lets pendingOrActive reach 0 and the phase advance / mission finish.
-   *
-   * This is a backstop, not a deadline: the timeout is large enough that a slow but
-   * genuinely-working task is never killed. Normal completion is untouched — if the
-   * wedged promise later settles, its then/catch sees the dispatch already gone and
-   * no-ops (see the guards in tick()).
-   */
-  private checkDispatchTimeouts(taskQueue: TaskQueue): void {
-    if (this.activeDispatches.size === 0) return;
-    const now = Date.now();
-
-    // Snapshot ids first — we mutate the maps inside the loop.
-    for (const taskId of [...this.activeDispatches]) {
-      const startedAt = this.dispatchStartTimes.get(taskId);
-      const operator = this.dispatchOperators.get(taskId);
-
-      const elapsed = startedAt != null ? now - startedAt : Number.POSITIVE_INFINITY;
-      const overTime = elapsed >= this.taskTimeoutMs;
-
-      // Wedge symptom: operator claims to be working (executing/tasked) but has no
-      // current task — the promise silently dropped it. Only treat this as a wedge
-      // once the backstop window has elapsed, so a normal in-between-status tick
-      // (e.g. the brief gap before currentTask is set) is never misread as hung.
-      const wedged = operator != null &&
-        (operator.status === 'executing' || operator.status === 'tasked') &&
-        operator.state.currentTask == null &&
-        overTime;
-
-      if (!overTime && !wedged) continue;
-
-      const reason = wedged
-        ? `dispatch wedged: operator ${operator?.id ?? 'unknown'} stuck in '${operator?.status}' with no current task for ${Math.round(elapsed / 1000)}s`
-        : `dispatch timed out after ${Math.round(elapsed / 1000)}s (backstop ${Math.round(this.taskTimeoutMs / 1000)}s)`;
-
-      // Clear a CLEAR event/log so a timed-out dispatch is never silent.
-      console.warn(`[T3MP3ST] task ${taskId} force-resolved as timeout — ${reason}`);
-
-      // 1) Mark the task failed/timed-out via the queue (idempotent enough: fail()
-      //    just stamps status:'failed'; if it somehow already completed, this is a
-      //    no-op-ish overwrite that still lets the phase advance).
-      try {
-        taskQueue.fail(taskId, `timeout: ${reason}`);
-      } catch {
-        // Swallow — task may already be terminal.
-      }
-
-      // 2) Drop it from in-flight bookkeeping so inFlight/activeDispatches shrink.
-      this.clearDispatch(taskId);
-
-      // 3) Reset the wedged operator back to idle so it can pick up new work.
-      operator?.abortActiveTask(reason);
-    }
-  }
-
-  /**
-   * Auto-spawn operators needed for a given kill chain phase
+   * Auto-spawn operators needed for a given kill chain phase.
+   * Intersects the phase's typical archetypes with what the mission family actually
+   * uses — so a code_supply_chain scan never spawns an exploiter or infiltrator.
    */
   private autoSpawnForPhase(phase: KillChainPhase): void {
     const phaseOperators: Record<string, OperatorArchetype[]> = {
-      [KillChainPhase.RECON]: ['recon'],
-      [KillChainPhase.WEAPONIZE]: ['scanner'],
-      [KillChainPhase.DELIVER]: ['exploiter'],
-      [KillChainPhase.EXPLOIT]: ['exploiter'],
-      [KillChainPhase.INSTALL]: ['infiltrator'],
-      [KillChainPhase.C2]: ['ghost'],
-      [KillChainPhase.ACTIONS]: ['analyst'],
+      [KillChainPhase.RECON]:     ['recon', 'code_scanner'],
+      [KillChainPhase.WEAPONIZE]: ['code_scanner', 'web_scanner', 'analyst'],
+      [KillChainPhase.DELIVER]:   ['exploiter'],
+      [KillChainPhase.EXPLOIT]:   ['exploiter'],
+      [KillChainPhase.INSTALL]:   ['infiltrator', 'ghost'],
+      [KillChainPhase.C2]:        ['ghost', 'coordinator'],
+      [KillChainPhase.ACTIONS]:   ['analyst'],
     };
 
-    const needed = phaseOperators[phase] || [];
+    const activeMission = this.mission.getActiveMission();
+    const familyArchetypes = getArchetypesForFamily(activeMission?.family);
+    const phaseNeeded = phaseOperators[phase] || [];
+    // Only spawn archetypes the family actually uses — skip everything else
+    const needed = phaseNeeded.filter(a => familyArchetypes.includes(a));
+
     for (const archetype of needed) {
       const existing = this.cell.getAvailableOperator(archetype);
       if (!existing) {
@@ -1117,7 +885,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         const hasArchetype = allOps.some(op => op.archetype === archetype);
         if (!hasArchetype) {
           const callsign = `${archetype.charAt(0).toUpperCase() + archetype.slice(1)}-Auto`;
-          this.spawnOperator(callsign, archetype);
+          try { this.spawnOperator(callsign, archetype); } catch { /* pool full */ }
         }
       }
     }
@@ -1135,10 +903,10 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.on('finding:discovered', (data) => broadcast('finding', data));
     this.on('operator:spawned', (data) => broadcast('operator:spawned', data));
     this.on('operator:burned', (data) => broadcast('operator:burned', data));
+    this.on('operator:error', (data) => broadcast('operator:error', data));
     this.on('credential:harvested', (data) => broadcast('credential', data));
     this.on('detection:triggered', (data) => broadcast('detection', data));
     this.on('mission:phase_changed', (data) => broadcast('phase_changed', data));
-    this.on('approval:decision', (data) => broadcast('arsenal.approval', data));
     this.on('tick', (count) => {
       // Broadcast status every 5 ticks to avoid flooding
       if (typeof count === 'number' && count % 5 === 0) {
@@ -1161,61 +929,41 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     const operator = this.cell.spawnOperator(callsign, archetype);
     this.setupOperatorEvents(operator);
 
-    // Attach the agent loop scoped to this archetype's SPECIALIZED role toolkit (defaultTools =
-    // the curated per-operator tool allowlist). toolCategories stays as a coarse fallback.
+    // Attach the agent loop scoped to this archetype's tool categories
     const profile = ARCHETYPE_PROFILES[archetype];
-    const maxIterations = this.llm.getProvider() === 'local-agent'
-      ? LOCAL_AGENT_MAX_ITERATIONS
-      : DEFAULT_AGENT_MAX_ITERATIONS;
     const agentLoop = new AgentLoop(this.llm, this.arsenal, {
-      maxIterations,
+      maxIterations: 25,
       maxTokens: 50000,
       toolCategories: profile.toolCategories,
-      tools: profile.defaultTools,
     });
     operator.attachArsenal(this.arsenal, agentLoop);
-    // [Phase-2] Give the operator the shared board ONLY when swarm coordination is on — so the
-    // baseline (coordination off) keeps the solo-operator prompt with zero shared context.
-    if (this.coordinationEnabled) operator.attachBoard(this.packBoard);
 
-    // If a white-box source was already set (repo ingested before this operator
-    // spawned), hand it to the new operator so it also sees the source excerpt.
-    if (this.whiteboxSource) {
-      operator.setWhiteboxSource(this.whiteboxSource);
-    }
+    // Surface LLM/tool errors to the operator so they reach the frontend via SSE.
+    // Without this, API key errors, 401s, and bad model names are silently swallowed.
+    agentLoop.on('agent:error', ({ error, step }) => {
+      this.emit('operator:error', {
+        operatorId: operator.id,
+        callsign: operator.callsign,
+        archetype: operator.archetype,
+        error: error.message,
+        step,
+      });
+    });
+
+    // Surface tool-level failures (timeout, not installed, repo not found, etc.)
+    agentLoop.on('agent:tool_result', ({ name, result }) => {
+      if (!result.success && result.error) {
+        this.emit('operator:error', {
+          operatorId: operator.id,
+          callsign: operator.callsign,
+          archetype: operator.archetype,
+          error: `[${name}] ${result.error}`,
+          step: -1,
+        });
+      }
+    });
 
     return operator;
-  }
-
-  /**
-   * Set the white-box source context for the whole command.
-   *
-   * Called by the large-repo analysis pipeline (code-ingest → context-pack)
-   * with a security-prioritized excerpt of the target's source. Stored, and
-   * propagated to every already-spawned operator; operators spawned afterward
-   * pick it up in spawnOperator(). Threaded through to each operator's agent
-   * loop so the model analyzes the target against its real source.
-   */
-  public setWhiteboxSource(sourceContext: string): void {
-    this.whiteboxSource = sourceContext;
-    for (const operator of this.cell.getAllOperators()) {
-      operator.setWhiteboxSource(sourceContext);
-    }
-  }
-
-  /**
-   * Coordination telemetry — the machine-readable artifact that distinguishes a coordinated swarm
-   * run from N independent agents: how many findings became shared leads, how many spawned targeted
-   * follow-up work, and how many distinct findings were chased. Zero across the board (with
-   * `enabled:false`) is the single-agent-equivalent baseline.
-   */
-  public getCoordinationStats(): { enabled: boolean; leadsPosted: number; followupsSpawned: number; uniqueFindingsChased: number } {
-    return {
-      enabled: this.coordinationEnabled,
-      leadsPosted: this.leadsPosted,
-      followupsSpawned: this.followupsSpawned,
-      uniqueFindingsChased: this.spawnedFollowups.size,
-    };
   }
 
   /**
@@ -1231,7 +979,6 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     vault: ReturnType<EvidenceVault['getStats']>;
     opsec: ReturnType<OpsecController['getStats']>;
     activeMission: string | null;
-    stallReason: string | null;
   } {
     const activeMission = this.mission.getActiveMission();
 
@@ -1245,7 +992,6 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       vault: this.vault.getStats(),
       opsec: this.opsec.getStats(),
       activeMission: activeMission?.id || null,
-      stallReason: this.stallReason,
     };
   }
 
@@ -1280,7 +1026,6 @@ export interface Tempest {
   targetEnv: TargetEnvironment;
   vault: EvidenceVault;
   arsenal: Arsenal;
-  approval: ApprovalController;
   opsec: OpsecController;
   comms: CommsChannel;
   analysis: AnalysisEngine;
@@ -1324,7 +1069,6 @@ export function createTempest(config: TempestConfig): Tempest {
     targetEnv: command.targetEnv,
     vault: command.vault,
     arsenal: command.arsenal,
-    approval: command.approval,
     opsec: command.opsec,
     comms: command.comms,
     analysis: command.analysis,

@@ -45,9 +45,9 @@ function selfTest() {
 
   // test: innocuous query detection
   const innocuousQueries = [
-    'Does function parse_tlv_record validate rec_len before using it in memcpy?',
-    'What is sizeof(TlvRecord) and what are the sizes of each field?',
-    'List all callers of parse_tlv_record. Does any caller check packet length?',
+    'Does function ParseStateInfo validate val_len before using it in memcpy?',
+    'What is sizeof(DirectLidarStateInfo) and what are the sizes of each field?',
+    'List all callers of ParseStateInfo. Does any caller check packet length?',
     'Trace the data flow from recvfrom to memcpy in this code path.',
   ];
   const offensiveQueries = [

@@ -24,7 +24,7 @@ export type ToolCategory =
   | 'reporting';
 
 export type ToolRisk = 'local_read' | 'passive' | 'active' | 'intrusive' | 'credential' | 'dangerous';
-export type ToolExecutionMode = 'safe_command' | 'receipt_required' | 'import_only' | 'catalog_only';
+export type ToolExecutionMode = 'safe_command' | 'receipt_required' | 'import_only' | 'catalog_only' | 'sidecar';
 
 export interface ToolAdapter {
   id: string;
@@ -34,6 +34,8 @@ export interface ToolAdapter {
   families: MissionFamily[];
   risk: ToolRisk;
   execution: ToolExecutionMode;
+  /** Which sidecar container runs this tool (required when execution === 'sidecar') */
+  sidecar?: 'cloud' | 'binary';
   networked: boolean;
   evidenceKinds: string[];
   outputFormats: string[];
@@ -51,7 +53,7 @@ const SMART_CONTRACT_FAMILIES: MissionFamily[] = ['smart_contract', 'crypto_secr
 const CRYPTO_FAMILIES: MissionFamily[] = ['crypto_secrets', 'code_supply_chain', 'reporting_remediation'];
 const REVERSE_FAMILIES: MissionFamily[] = ['reverse_binary', 'code_supply_chain', 'reporting_remediation'];
 
-export const FRONTIER_ARSENAL_MILESTONE = 104;
+export const FRONTIER_ARSENAL_MILESTONE = 113;
 
 export const TOOL_ADAPTERS: ToolAdapter[] = [
   {
@@ -1126,12 +1128,173 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     parserStatus: 'planned',
     notes: 'Local artifact classification and malware-family matching.',
   },
+
+  // ── Binary analysis sidecar tools (execution: 'sidecar', sidecar: 'binary') ──
+  {
+    id: 'strings',
+    binary: 'strings',
+    name: 'strings',
+    category: 'reverse',
+    families: REVERSE_FAMILIES,
+    risk: 'local_read',
+    execution: 'sidecar',
+    sidecar: 'binary',
+    networked: false,
+    evidenceKinds: ['string_reference', 'artifact_fingerprint'],
+    outputFormats: ['text'],
+    installHint: 'Part of binutils — included in tempest-binary sidecar.',
+    commandHint: 'strings -n 8 binary.elf | head -200',
+    parserStatus: 'text',
+    notes: 'Extracts printable strings from binaries; runs in tempest-binary sidecar.',
+  },
+  {
+    id: 'readelf',
+    binary: 'readelf',
+    name: 'readelf',
+    category: 'reverse',
+    families: REVERSE_FAMILIES,
+    risk: 'local_read',
+    execution: 'sidecar',
+    sidecar: 'binary',
+    networked: false,
+    evidenceKinds: ['binary_analysis', 'elf_header', 'dynamic_deps'],
+    outputFormats: ['text'],
+    installHint: 'Part of binutils — included in tempest-binary sidecar.',
+    commandHint: 'readelf -a binary.elf',
+    parserStatus: 'text',
+    notes: 'ELF header, section, symbol, and dynamic dependency analysis.',
+  },
+  {
+    id: 'nm',
+    binary: 'nm',
+    name: 'nm',
+    category: 'reverse',
+    families: REVERSE_FAMILIES,
+    risk: 'local_read',
+    execution: 'sidecar',
+    sidecar: 'binary',
+    networked: false,
+    evidenceKinds: ['binary_analysis', 'symbol_table'],
+    outputFormats: ['text'],
+    installHint: 'Part of binutils — included in tempest-binary sidecar.',
+    commandHint: 'nm -D binary.elf',
+    parserStatus: 'text',
+    notes: 'Symbol table extraction for dynamic and static binaries.',
+  },
+  {
+    id: 'objdump',
+    binary: 'objdump',
+    name: 'objdump',
+    category: 'reverse',
+    families: REVERSE_FAMILIES,
+    risk: 'local_read',
+    execution: 'sidecar',
+    sidecar: 'binary',
+    networked: false,
+    evidenceKinds: ['binary_analysis', 'disassembly'],
+    outputFormats: ['text'],
+    installHint: 'Part of binutils — included in tempest-binary sidecar.',
+    commandHint: 'objdump -d -M intel binary.elf | head -200',
+    parserStatus: 'text',
+    notes: 'Section disassembly and binary object inspection.',
+  },
+  {
+    id: 'xxd',
+    binary: 'xxd',
+    name: 'xxd',
+    category: 'reverse',
+    families: REVERSE_FAMILIES,
+    risk: 'local_read',
+    execution: 'sidecar',
+    sidecar: 'binary',
+    networked: false,
+    evidenceKinds: ['hex_dump'],
+    outputFormats: ['text'],
+    installHint: 'Usually preinstalled; included in tempest-binary sidecar.',
+    commandHint: 'xxd binary.elf | head -50',
+    parserStatus: 'text',
+    notes: 'Hex dump for manual binary inspection and magic byte verification.',
+  },
+
+  // ── Cloud security sidecar tools (execution: 'sidecar', sidecar: 'cloud') ──
+  {
+    id: 'awscli',
+    binary: 'aws',
+    name: 'AWS CLI',
+    category: 'cloud',
+    families: CLOUD_FAMILIES,
+    risk: 'active',
+    execution: 'sidecar',
+    sidecar: 'cloud',
+    networked: true,
+    evidenceKinds: ['cloud_resource', 'cloud_control_finding'],
+    outputFormats: ['json', 'text'],
+    installHint: 'Included in tempest-cloud sidecar (pip install awscli).',
+    commandHint: 'aws s3 ls --no-sign-request s3://bucket-name',
+    parserStatus: 'planned',
+    notes: 'AWS CLI v1 — set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in cloud credentials panel.',
+  },
+  {
+    id: 'gcloud',
+    binary: 'gcloud',
+    name: 'Google Cloud CLI',
+    category: 'cloud',
+    families: CLOUD_FAMILIES,
+    risk: 'active',
+    execution: 'catalog_only',
+    sidecar: 'cloud',
+    networked: true,
+    evidenceKinds: ['cloud_resource', 'cloud_control_finding'],
+    outputFormats: ['json', 'text'],
+    installHint: 'Uncomment google-cloud-sdk install in docker/cloud-sidecar/Dockerfile and rebuild.',
+    commandHint: 'gcloud projects list --format json',
+    parserStatus: 'planned',
+    notes: 'Disabled by default (large image). Uncomment in Dockerfile to enable.',
+  },
+  {
+    id: 'az',
+    binary: 'az',
+    name: 'Azure CLI',
+    category: 'cloud',
+    families: CLOUD_FAMILIES,
+    risk: 'active',
+    execution: 'catalog_only',
+    sidecar: 'cloud',
+    networked: true,
+    evidenceKinds: ['cloud_resource', 'cloud_control_finding'],
+    outputFormats: ['json', 'text'],
+    installHint: 'Uncomment azure-cli install in docker/cloud-sidecar/Dockerfile and rebuild.',
+    commandHint: 'az account list --output json',
+    parserStatus: 'planned',
+    notes: 'Disabled by default (large image). Uncomment in Dockerfile to enable.',
+  },
+  {
+    id: 'scoutsuite',
+    binary: 'scout',
+    name: 'ScoutSuite',
+    category: 'cloud',
+    families: CLOUD_FAMILIES,
+    risk: 'active',
+    execution: 'catalog_only',
+    sidecar: 'cloud',
+    networked: true,
+    evidenceKinds: ['cloud_control_finding', 'cloud_misconfig'],
+    outputFormats: ['json', 'html'],
+    installHint: 'pipx install scoutsuite',
+    commandHint: 'scout aws --report-dir /tmp/scout-report',
+    parserStatus: 'planned',
+    notes: 'Multi-cloud auditor (AWS/GCP/Azure). Catalog-only pending sidecar integration.',
+  },
 ];
 
 export const SAFE_COMMANDS = [
   ...new Set(
     TOOL_ADAPTERS
-      .filter(adapter => adapter.execution !== 'catalog_only' && adapter.execution !== 'import_only')
+      .filter(adapter =>
+        adapter.execution !== 'catalog_only' &&
+        adapter.execution !== 'import_only' &&
+        adapter.execution !== 'sidecar'
+      )
       .map(adapter => adapter.binary)
   ),
 ].sort();

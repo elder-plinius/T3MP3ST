@@ -1,0 +1,53 @@
+# =============================================================================
+# .dockerignore — applies to the ~/Projects/ parent build context
+# Excludes files that should never enter the Docker build daemon.
+# =============================================================================
+
+# ── Git history ───────────────────────────────────────────────────────────────
+**/.git
+**/.gitignore
+**/.gitmodules
+**/.gitattributes
+
+# ── Node.js ───────────────────────────────────────────────────────────────────
+T3MP3ST/node_modules
+T3MP3ST/dist
+
+# Secrets — NEVER bake into image; pass via --env-file at runtime
+T3MP3ST/.env
+T3MP3ST/.env.local
+T3MP3ST/.env.production
+
+# ── Python artifacts ─────────────────────────────────────────────────────────
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# ── Model/weight files (fetched at runtime to /data volume) ──────────────────
+**/*.gguf
+**/*.safetensors
+**/*.bin
+**/*.pt
+**/*.ckpt
+**/*.pth
+**/*.onnx
+**/*.pkl
+
+# ── T3MP3ST benchmark artifacts (large result sets) ──────────────────────────
+T3MP3ST/bench
+T3MP3ST/ctf
+
+# ── IDE / OS noise ───────────────────────────────────────────────────────────
+**/.DS_Store
+**/.idea
+**/.vscode
+**/Thumbs.db
+**/desktop.ini
+**/*.swp
+**/*.swo
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+**/CHANGELOG.md
+**/CONTRIBUTING.md
+**/*.log

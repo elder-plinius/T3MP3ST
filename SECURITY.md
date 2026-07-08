@@ -2,30 +2,25 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.x     | :white_check_mark: |
+| Version | Supported |
+|---------|-----------|
+| 1.x     | Yes       |
+
+---
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in T3MP3ST, please report it responsibly:
+Report security vulnerabilities **privately** via the repository's **GitHub Security Advisories** — click "Report a vulnerability" under the **Security** tab. This keeps the report confidential until a fix ships.
 
-1. **Do NOT** open a public GitHub issue for security vulnerabilities.
-2. **Primary channel — GitHub private security advisory.** Open the repository's
-   **Security** tab and click **"Report a vulnerability"**, or go directly to
-   [`/security/advisories/new`](../../security/advisories/new). This creates a
-   private advisory visible only to you and the maintainers — no email inbox is
-   required, and it works from day one on a public repo.
-3. **Fallback channel.** If the Security tab is unavailable to you, open a public
-   issue that contains **only** the sentence "Requesting a private security
-   contact" (no vulnerability details) and a maintainer will open a private
-   advisory to continue the conversation.
-4. Include detailed steps to reproduce the vulnerability in the private advisory.
-5. Allow reasonable time for the issue to be addressed before public disclosure.
+**Do not** open a public GitHub issue for a security problem.
 
-## Security Considerations
+Target response times:
+- Acknowledgement: within **3 business days**
+- Remediation plan: within **30 days** of a confirmed report
 
-### Authorized Use Only
+---
+
+## Authorized Use Only
 
 T3MP3ST is a security testing framework designed for **authorized penetration testing and red team operations only**. Before using this tool:
 
@@ -36,56 +31,80 @@ T3MP3ST is a security testing framework designed for **authorized penetration te
 
 See [docs/SCOPE_AND_AUTHORIZATION.md](docs/SCOPE_AND_AUTHORIZATION.md) for the working model used by the API and UI: human intent, scope receipts, tool gates, evidence, findings, retests, and accepted memory.
 
-### API Key Security
+---
 
-- Never commit API keys to version control
-- Use environment variables for all sensitive credentials
-- Rotate API keys regularly
-- Use separate keys for development and production
+## Built-in Security Controls
 
-### Payload Database
+The following controls are implemented in the production codebase. This is a factual record of what the code does, not aspirational.
 
-The framework includes comprehensive payload databases for educational and testing purposes:
+### Network / API Layer (`src/server.ts`)
 
-- SQL injection payloads
-- XSS payloads
-- SSTI payloads
-- Command injection payloads
-- XXE payloads
+| Control | Implementation |
+|---|---|
+| Security headers | `helmet()` applied before all routes |
+| CORS origin allowlist | Scoped to `http://127.0.0.1:PORT`, `http://localhost:PORT`, and `T3MP3ST_CORS_ORIGIN` if set. Requests from other origins are rejected. |
+| `null` origin rejection | `origin === 'null'` is explicitly rejected — blocks `file://` pages and sandboxed iframes that would otherwise bypass origin checks |
+| DNS rebinding protection | All `/api/*` routes check the `Host` header against an allowlist (`localhost:PORT`, `127.0.0.1:PORT`, `[::1]:PORT`). Mismatches return HTTP 421. |
+| Optional Bearer token auth | Set `T3MP3ST_API_TOKEN` to require `Authorization: Bearer <token>` on all `/api/*` routes. Public paths (`/api/health`, `/api/preflight`, `/api/status`) are exempt. |
+| Body size limit | `express.json({ limit: '10mb' })` |
+| Secret redaction | All SSE event payloads pass through `redactSecrets()` before broadcast — strips API keys, passwords, JWTs, URIs with credentials |
 
-These payloads are intended for:
-- Authorized security testing
-- Security research
-- Educational purposes
-- CTF competitions
+### MCP Server (`src/mcp-server.ts`)
 
-### Data Handling
+| Control | Implementation |
+|---|---|
+| Target validation | Strict regex `^[a-zA-Z0-9][a-zA-Z0-9._:-]*$` — rejects any target containing shell metacharacters |
+| Binary allowlist | Only `nmap` and `dig` may be invoked (`ALLOWED_BINARIES` map) |
+| No shell | Uses `execFile` (not `exec`) — arguments are passed as an array, never interpolated into a shell string |
 
-When using T3MP3ST:
+### Outbound Webhooks (`src/webhooks.ts`)
 
-- Do not exfiltrate real sensitive data
-- Use test/dummy data for demonstrations
-- Properly dispose of any captured credentials after testing
-- Follow data protection regulations (GDPR, CCPA, etc.)
+| Control | Implementation |
+|---|---|
+| URL validation | Registered URLs must match `^https?://` |
+| HMAC-SHA256 signing | When a `secret` is set, each delivery includes `X-Tempest-Signature: sha256=<hmac>`. Consumers should verify this before processing. |
+| Retry cap | Maximum 3 attempts per delivery (delays: 1s → 5s → 30s). Failure increments `failCount`; delivery is not retried indefinitely. |
+| Timeout | Each HTTP attempt times out at 10 seconds (`AbortSignal.timeout(10_000)`) |
 
-### Network Security
+### Deep Scanner (`src/recon/deep-scanner.ts`)
 
-- Test only against authorized targets
-- Use isolated networks when possible
-- Be aware of potential lateral impact
-- Monitor for unintended effects
+| Control | Implementation |
+|---|---|
+| Path traversal prevention | All scan directories are checked for `..` sequences before use |
+| Scan root constraint | Set `T3MP3ST_SCAN_ROOT` to restrict the scanner to a specific directory tree. Paths outside the root are rejected at startup. |
 
-## Known Limitations
+### Container Architecture
 
-### Development Dependencies
+| Control | Implementation |
+|---|---|
+| GPU isolation | GPU access is confined within the container; not accessible from the host network |
+| No host-side builds | All compilation happens inside the Docker build stage; the host never runs `npm install` or `pip install` |
 
-`npm audit` currently reports **0 vulnerabilities** (verified 2026-07-02). Development
-dependencies (build/test tooling such as the bundler) are not part of the production
-runtime regardless. Maintainers should re-run `npm audit` before each release tag.
+### Local Agent Connectors (`src/agent/local-agents.ts`)
 
-### Real Functionality
+| Control | Implementation |
+|---|---|
+| Credential non-exposure | Auth detection checks only for the **presence** of credential files — contents are never read, logged, or transmitted |
+| Provider key stripping | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` (and others) are stripped from the child process environment before spawning. The CLI uses its own native auth, never T3MP3ST's keys. |
 
-All core arsenal tools perform **real operations** (not simulations):
+---
+
+## Payload Database
+
+The framework includes payload databases for testing purposes:
+
+- SQL injection (union, blind, error-based, stacked queries)
+- XSS (HTML, attribute, JavaScript, polyglot)
+- SSTI (Jinja2, Twig, ERB)
+- LFI, SSRF, command injection, XXE
+
+These exist for authorized security testing, security research, educational use, and CTF competitions. They are never sent to any external service — they are used by the operator tools against authorized targets only.
+
+---
+
+## Real Functionality
+
+All core arsenal tools perform **real operations**, not simulations. Only use them against systems you have explicit authorization to test.
 
 | Tool | Implementation |
 |------|----------------|
@@ -100,16 +119,33 @@ All core arsenal tools perform **real operations** (not simulations):
 | WHOIS lookup | Real WHOIS queries via TCP port 43 |
 | Password spraying | Real HTTP POST requests to login endpoints |
 | Hash cracking | Real dictionary attacks using `crypto` module |
+| Network recon (MCP) | Real `nmap` and `dig` execution via allowlisted `execFile` |
 
-**Note:** Only use these tools against systems you have explicit authorization to test.
+---
+
+## Data Handling
+
+When using T3MP3ST:
+
+- Do not exfiltrate real sensitive data
+- Use test/dummy data for demonstrations
+- Properly dispose of any captured credentials after testing
+- Follow applicable data protection regulations (GDPR, CCPA, etc.)
+
+Mission state (findings, evidence, credentials) is persisted to `/data/missions/` in the container volume. Protect this volume accordingly.
+
+---
 
 ## Security Best Practices
 
-1. **Run in isolated environments** - Use VMs or containers
-2. **Network segmentation** - Test networks should be isolated
-3. **Logging** - Maintain detailed logs of all testing activities
-4. **Authorization documentation** - Keep copies of all authorizations
-5. **Scope adherence** - Never exceed authorized scope
+1. **Run in isolated environments** — use Docker on an isolated network
+2. **Set `T3MP3ST_API_TOKEN`** — enable bearer auth if the API is accessible beyond loopback
+3. **Sign webhooks** — always set a `secret` when registering webhooks; verify `X-Tempest-Signature` on the receiving end
+4. **Restrict the scan root** — set `T3MP3ST_SCAN_ROOT` before using the deep-scanner
+5. **Scope adherence** — the approval gate exists for a reason; never approve actions outside the authorized scope
+6. **Authorization documentation** — keep copies of all signed rules of engagement
+
+---
 
 ## Compliance
 
@@ -120,12 +156,3 @@ T3MP3ST usage should comply with:
 - PCI DSS (for payment card environments)
 - HIPAA (for healthcare environments)
 - Local and international cybersecurity laws
-
-## Contact
-
-Report vulnerabilities **privately** via the repository's **GitHub Security Advisories**
-("Report a vulnerability" under the **Security** tab) — this keeps the report confidential
-until a fix ships. Please do **not** open a public issue for a security problem.
-
-Target response: acknowledgement within **3 business days**, and a remediation plan within
-**30 days** of a confirmed report.

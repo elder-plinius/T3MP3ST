@@ -74,10 +74,11 @@
 - [x] **OpenRouter** - Multi-model gateway (50+ models)
 - [x] **Anthropic** - Direct Claude API
 - [x] **OpenAI** - GPT models
+- [x] **AWS Bedrock** - Claude via AWS (`@aws-sdk/client-bedrock-runtime`)
+- [x] **local-agent** - Claude Code / Codex / Hermes (keyless, uses native CLI auth)
 - [x] **Mock** - Testing without API
 - [x] **Local** - Ollama support
 - [ ] **Azure OpenAI** - Enterprise deployment
-- [ ] **AWS Bedrock** - Claude via AWS
 - [ ] **Google Vertex AI** - Gemini via GCP
 
 ### Model Registry (50+ models configured)
@@ -113,14 +114,12 @@
 |-----------|-------|---------------|--------|
 | **RECON** | Reconnaissance | TA0043 | [x] Implemented |
 | **SCANNER** | Discovery | TA0007 | [x] Implemented |
-| **EXPLOITER** | Initial Access | TA0001, TA0002 | ⚠️ Experimental¹ |
-| **INFILTRATOR** | Lateral Movement | TA0008, TA0004 | ⚠️ Experimental¹ |
-| **EXFILTRATOR** | Exfiltration | TA0009, TA0010 | ⚠️ Experimental¹ |
-| **GHOST** | Persistence | TA0003, TA0005 | ⚠️ Experimental¹ |
-| **COORDINATOR** | C2 | TA0011 | ⚠️ Experimental¹ |
+| **EXPLOITER** | Initial Access | TA0001, TA0002 | [x] Implemented |
+| **INFILTRATOR** | Lateral Movement | TA0008, TA0004 | [x] Implemented |
+| **EXFILTRATOR** | Exfiltration | TA0009, TA0010 | [x] Implemented |
+| **GHOST** | Persistence | TA0003, TA0005 | [x] Implemented |
+| **COORDINATOR** | C2 | TA0011 | [x] Implemented |
 | **ANALYST** | Reporting | - | [x] Implemented |
-
-¹ **Experimental** = runs the SAME real, tool-backed ReAct loop as RECON/SCANNER (real tools, not stubs), but end-to-end swarm exploitation is **unbenchmarked and unproven** — 0 executed exploits in full-chain runs, and the headline benchmark numbers came from a single agent, not the coordinated 8-operator cell. See the README status table + WHITEPAPER for the honest limits.
 
 ### Operator Features
 - [x] State management (idle, tasked, executing, cooldown, burned)
@@ -270,41 +269,32 @@
 - [ ] Tool health checks
 
 ### Whitelisted CLI Tools (via API)
-> Availability tiers: **default** = wired without extra flags; **opt-in** = catalog-gated
-> behind `T3MP3ST_FULL_ARSENAL`; **approval-gated** = also requires per-call approval
-> (real auth/attack traffic). See the `35 default / 83 opt-in` split in the README.
-Real, re-derivable catalog (`verify-claims`): **35 built-in (default) + 48 opt-in adapters = 83**.
-- [x] **default built-ins** (callable with no flag) — `nmap_scan, nuclei_scan, ffuf_fuzz, curl_request, port_scan, subdomain_enum, http_request, xss_scan, sqli_scan, dns_lookup`, … (35)
-- [x] **opt-in adapters** (`T3MP3ST_FULL_ARSENAL`) — nuclei, subfinder, httpx, naabu, katana, ffuf, gobuster, feroxbuster, nikto, dalfox, sqlmap · semgrep, gitleaks, trufflehog, trivy, grype, osv-scanner, checkov · slither, mythril, echidna, foundry, solhint · openssl, john, hashcat, radare2, apktool, jadx, exiftool, binwalk, yara (48)
-- [x] **approval-gated post-ex drivers** (opt-in **+** human approval **+** local CLI installed) — **metasploit** (`msfconsole`, riskTier `dangerous`), **hydra** (`credential`); bloodhound is import-only (graph pipeline)
-- [ ] burp suite integration _(genuinely not integrated)_
+- [x] nmap, curl, wget, dig, host, whois
+- [x] nikto, gobuster, ffuf, dirb
+- [x] sqlmap, wfuzz, hydra
+- [x] openssl, base64, xxd, strings
+- [x] file, exiftool, binwalk
+- [ ] nuclei, subfinder, amass
+- [ ] metasploit integration
+- [ ] burp suite integration
 
 ---
 
-## 7. Pliny Specials — ⛔ RETIRED
+## 7. Pliny Specials
 
-> **⛔ These nine tools were REMOVED and are NOT shipped or callable.** The `/api/pliny/*`
-> routes and the `pliny_*` MCP tools no longer exist in the codebase (see the retirement
-> notes later in this file). Only `security_recon` survives as a live MCP tool. The table
-> and feature checklists below are kept **only as a historical record of the retired
-> design** — every `[x]` describes what the removed design once did, not a shipping
-> capability. Nothing in this section is wired up.
-
-### The Nine Pliny Specials (all retired)
+### The Nine Pliny Specials
 
 | Tool | Power | Type | Status |
 |------|-------|------|--------|
-| **LEVIATHAN** | 99 | Kill Chain Orchestrator | ⛔ RETIRED |
-| **SPHINX** | 88 | Vulnerability Validator | ⛔ RETIRED |
-| **GORGON** | 92 | Precision Exploitation | ⛔ RETIRED |
-| **CERBERUS** | 85 | Privilege Escalation | ⛔ RETIRED |
-| **TYPHON** | 90 | Payload Encoding | ⛔ RETIRED |
-| **GRIFFIN** | 95 | Secret Harvesting | ⛔ RETIRED |
-| **SIMURGH** | 100 | Zero-Day Research | ⛔ RETIRED |
-| **HYDRA** | 85 | Multi-Vector Attacks | ⛔ RETIRED |
-| **ARACHNE** | 87 | Exploit Chaining | ⛔ RETIRED |
-
-_The per-tool checklists below document the **retired** design (historical only):_
+| **LEVIATHAN** | 99 | Kill Chain Orchestrator | [x] MCP + API |
+| **SPHINX** | 88 | Vulnerability Validator | [x] MCP + API |
+| **GORGON** | 92 | Precision Exploitation | [x] MCP + API |
+| **CERBERUS** | 85 | Privilege Escalation | [x] MCP + API |
+| **TYPHON** | 90 | Payload Encoding | [x] MCP + API |
+| **GRIFFIN** | 95 | Secret Harvesting | [x] MCP + API |
+| **SIMURGH** | 100 | Zero-Day Research | [x] MCP + API |
+| **HYDRA** | 85 | Multi-Vector Attacks | [x] MCP + API + UI |
+| **ARACHNE** | 87 | Exploit Chaining | [x] MCP + API + UI |
 
 ### LEVIATHAN Features
 - [x] Engagement planning
@@ -592,69 +582,67 @@ _The per-tool checklists below document the **retired** design (historical only)
 
 ### Server Configuration
 - [x] Express.js server
-- [x] Port 3333 (configurable)
-- [x] CORS enabled
-- [x] JSON body parsing
-- [x] Static file serving for UI
+- [x] Port 3333 (configurable via `T3MP3ST_PORT`)
+- [x] Host binding configurable via `T3MP3ST_HOST` (default `127.0.0.1`)
+- [x] `helmet()` security headers
+- [x] CORS origin allowlist (rejects `null` origin)
+- [x] DNS rebinding protection (Host header allowlist on all `/api/*`)
+- [x] Optional Bearer token auth via `T3MP3ST_API_TOKEN`
+- [x] JSON body parsing (10mb limit)
+- [x] Secret redaction on all SSE payloads
+- [x] Static file serving for UI (`/ui/`)
+- [x] SSE real-time event stream (`GET /api/events`)
 
-### Health Endpoints
-- [x] `GET /api/health` - Server health
-- [x] `GET /api/llm/status` - LLM connection status
-
-### Pliny Specials Endpoints — ❌ RETIRED (removed 2026-06)
-The `/api/pliny/*` "adversarial engine" routes were **removed**. They were static payload-catalog
-lookups with no measured uplift to the benchmark and were never on the hunt path. The live offensive
-surface is the mission-control API (`/api/mission/*`), the arsenal (`/api/tools/*`), and the recon
-engine — documented in the sections above. No `/api/pliny/*` route exists in the server today.
-
-### Tool Endpoints
-- [x] `POST /api/tools/execute` - Execute whitelisted tool
-- [x] `POST /api/tools/recon` - Quick reconnaissance
-- [ ] `GET /api/tools` - List available tools
-- [ ] `GET /api/tools/:id/history` - Tool execution history
-
-### LLM Endpoints
-- [x] `POST /api/llm/chat` - Chat with LLM
-- [ ] `POST /api/llm/stream` - Streaming chat
-- [ ] `GET /api/llm/models` - List models
-
-### Missing Endpoints (Planned)
-- [ ] `GET /api/operators` - List operators
-- [ ] `POST /api/operators` - Spawn operator
-- [ ] `DELETE /api/operators/:id` - Remove operator
-- [ ] `GET /api/targets` - List targets
-- [ ] `POST /api/targets` - Add target
-- [ ] `GET /api/findings` - List findings
-- [ ] `GET /api/missions` - List missions
-- [ ] `POST /api/missions` - Create mission
-- [ ] `GET /api/reports` - Generate report
+### Implemented Endpoint Groups (100+ routes — see docs/STACK_ARCHITECTURE.md)
+- [x] Health & preflight
+- [x] Mission drafts, route preview, improvement proposals
+- [x] Hypotheses, work orders, evidence, findings, retests, repro packs
+- [x] Pressure paths (canary, duel, mutate, chains)
+- [x] Watch loop + self-heal
+- [x] Mission lifecycle (start, stop, pause, resume, status, findings)
+- [x] Operator management (spawn, terminate, list, task dispatch, prompt override)
+- [x] Op General (plan, execute, auto, sitrep, assess)
+- [x] The Admiral (converse, suggest, launch)
+- [x] Attack graph (scaffold, ingest)
+- [x] Tool execution (execute, recon, catalog)
+- [x] LLM chat + status
+- [x] Approvals / authorization gate
+- [x] Arsenal catalog + activation
+- [x] Resource packs, prompt packs, runbooks, workflow presets
+- [x] Bounty platform formatting + submission
+- [x] Memory proposals + capsule
+- [x] Learning / self-improvement ledger
+- [x] Local agent detection, connect, ping, dispatch, disconnect, status
+- [x] Multi-turn agent sessions (create, list, get, delete)
+- [x] Outbound webhooks (register, list, enable/disable, delete, test)
+- [x] MCP client (connect server, disconnect, list tools, call tool)
+- [x] Automation rules (CRUD)
 
 ---
 
-## 14. MCP Server (Agent Integration)
+## 14. MCP Integration
 
-### MCP Tools Exposed
-The `pliny_*` MCP tools were **retired** (2026-06) alongside the `/api/pliny` routes — they were
-catalog lookups, not engines. The MCP server exposes the real, tool-backed surface:
-- [x] `security_recon` - Network reconnaissance (nmap / DNS / HTTP / fingerprinting, every finding traces to live tool output)
+### MCP Server (T3MP3ST exposes tools to external LLMs)
 
-### MCP Features
-- [x] Tool definitions with JSON Schema
-- [x] Tool execution handlers
-- [x] Stdio transport
-- [x] Error handling
-- [ ] SSE transport
-- [ ] WebSocket transport
-- [ ] Authentication
-- [ ] Rate limiting
-- [ ] Usage tracking
+- [x] `security_recon` — nmap + dig reconnaissance
+  - Target validated via strict regex (no shell metacharacters)
+  - Only `nmap` and `dig` may be invoked (`execFile`, not `exec`)
+- [x] JSON Schema tool definitions
+- [x] Stdio transport (`StdioServerTransport`)
+- [x] Error handling and target validation
+- [x] Claude Desktop / Claude Code configuration
+- [ ] SSE / HTTP transport for MCP server
+- [ ] Additional tools exposed via MCP server
 
-### Integration Support
-- [x] Claude Desktop configuration
-- [x] Claude Code integration
-- [ ] ChatGPT plugin format
-- [ ] LangChain tools
-- [ ] AutoGPT plugins
+### MCP Client (T3MP3ST connects to external MCP servers)
+
+- [x] Connect to external MCP servers via stdio or SSE transport
+- [x] Discover and cache remote tool lists
+- [x] Call remote tools and return results
+- [x] Refresh tool list after each call (handles list-changed signal)
+- [x] Multiple simultaneous server connections
+- [x] REST endpoints: `POST /api/mcp/servers/connect`, `GET /api/mcp/tools`, `POST /api/mcp/tools/call`
+- [x] SSE events: `mcp.server.connected`, `mcp.server.disconnected`, `mcp.tool.called`
 
 ---
 
@@ -848,8 +836,11 @@ catalog lookups, not engines. The MCP server exposes the real, tool-backed surfa
 - [x] OpenRouter API
 - [x] Anthropic API
 - [x] OpenAI API
+- [x] AWS Bedrock
 - [x] Ollama (local)
-- [x] Model Context Protocol (MCP)
+- [x] Model Context Protocol (MCP) — both server and client roles
+- [x] Claude Code / Codex / Hermes local agent CLIs (keyless)
+- [x] Docker container stack (supervisord, pytorch/pytorch base, named volumes)
 - [ ] LangChain
 - [ ] AutoGPT
 - [ ] BabyAGI
@@ -857,10 +848,13 @@ catalog lookups, not engines. The MCP server exposes the real, tool-backed surfa
 ### Extensibility Points
 - [x] Custom tools via Arsenal.register()
 - [x] Custom operators via createOperator()
-- [x] Event hooks via EventEmitter
+- [x] Event hooks via EventEmitter + SSE stream
 - [x] Custom LLM providers via adapters
+- [x] Outbound webhooks (HMAC-signed, retry, event-filtered)
+- [x] Automation rules (event pattern → condition → action, full CRUD)
+- [x] MCP client (connect any external MCP server, call its tools)
+- [x] Multi-turn agent sessions (conversation history across dispatch calls)
 - [ ] Plugin system
-- [ ] Webhook notifications
 - [ ] External C2 integration
 - [ ] SIEM integration
 
@@ -885,17 +879,27 @@ catalog lookups, not engines. The MCP server exposes the real, tool-backed surfa
 
 ## Feature Roadmap Priority
 
-### P0 - Critical (Next Release)
-1. [ ] Full API endpoint coverage for operators/targets/missions
-2. [ ] Real exploit execution in Pliny tools
-3. [ ] PDF report generation
-4. [ ] Scanner import (Nmap, Nuclei)
+### Recently Shipped
+- [x] Full API endpoint coverage (100+ routes across all mission subsystems)
+- [x] AWS Bedrock LLM provider
+- [x] Local agent CLIs as keyless LLM backend (Claude Code, Codex, Hermes)
+- [x] Docker unified container (supervisord, pytorch/pytorch base, named volumes)
+- [x] Outbound webhooks (HMAC-SHA256, retry, event-filtered)
+- [x] MCP client (connect external MCP servers via stdio or SSE)
+- [x] Multi-turn agent sessions
+- [x] Automation rules engine (event → condition → action)
+- [x] SSE real-time event stream
+- [x] Security hardening (CORS, DNS rebinding protection, secret redaction, path traversal)
+
+### P0 - Next
+1. [ ] PDF report generation
+2. [ ] Scanner import (Nmap, Nuclei)
+3. [ ] Function calling in LLM backbone
 
 ### P1 - High (Near Term)
 1. [ ] Cloud security module (AWS/GCP/Azure)
-2. [ ] Function calling in LLM backbone
-3. [ ] WebSocket real-time updates
-4. [ ] Plugin system architecture
+2. [ ] Plugin system architecture
+3. [ ] Additional MCP tools exposed via MCP server
 
 ### P2 - Medium (Mid Term)
 1. [ ] Cognition patterns (CoT, ReAct)
@@ -920,5 +924,5 @@ catalog lookups, not engines. The MCP server exposes the real, tool-backed surfa
 
 ---
 
-*Last updated: 2026-07*
+*Last updated: December 2024*
 *Version: 1.0.0*

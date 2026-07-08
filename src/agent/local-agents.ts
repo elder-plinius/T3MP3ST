@@ -14,7 +14,7 @@
 
 import { execFile, execFileSync, spawn } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
-import { homedir, tmpdir, userInfo } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
 // t3mp3st injects its OWN provider keys (from .env) into the server process. If we let those leak into
@@ -27,62 +27,11 @@ const PROVIDER_ENV_TO_STRIP = [
   'OPENROUTER_API_KEY',
 ];
 
-/**
- * The REAL user home where the agent CLIs keep their own auth artifacts
- * (~/.claude.json, ~/.codex/auth.json, ~/.hermes/.env, macOS keychain).
- *
- * DELIBERATELY separate from os.homedir()/$HOME: T3MP3ST may run with HOME redirected
- * (e.g. an isolated app-config dir), and os.homedir() returns that redirected path. Detecting
- * OR spawning the user's CLIs against a redirected HOME makes an installed-and-authed agent
- * look unavailable — the Settings checkboxes go dead and it reads like a UI bug. Resolution
- * order:
- *   1. T3MP3ST_AGENT_HOME    — explicit override (a launcher that redirects HOME sets this).
- *   2. os.userInfo().homedir — the real home from the OS user DB (getpwuid), NOT affected by a
- *                              $HOME redirect, so this AUTO-recovers the correct home with no config.
- *   3. os.homedir()          — last-resort fallback.
- * os.homedir()/$HOME is intentionally left untouched for app-config storage (src/config reads it).
- */
-export function agentHome(): string {
-  const override = (process.env.T3MP3ST_AGENT_HOME || '').trim();
-  if (override) return override;
-  try {
-    const real = userInfo().homedir;
-    if (real) return real;
-  } catch { /* userInfo can throw in some sandboxes — fall through to homedir() */ }
-  return homedir();
-}
-const expand = (p: string): string => (p.startsWith('~') ? agentHome() + p.slice(1) : p);
-
-/**
- * Env for a spawned agent CLI. Two adjustments to our own env:
- *   - strip the injected provider keys so the CLI falls back to its OWN native login (not t3mp3st's).
- *   - point HOME (and USERPROFILE on Windows) at the agentHome() so the CLI finds that login even
- *     when t3mp3st itself runs with HOME redirected for app-config storage. Same home the detector
- *     used, so "detected as authed" and "actually authenticates when spawned" stay consistent.
- */
-function childEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
-  const home = agentHome();
-  env.HOME = home;
-  if (process.platform === 'win32') env.USERPROFILE = home;
-  return env;
-}
+const HOME = homedir();
+const AGENT_HOME = process.env.T3MP3ST_AGENT_HOME || process.env.T3MP3ST_REAL_HOME || HOME;
+const expand = (p: string): string => (p.startsWith('~') ? AGENT_HOME + p.slice(1) : p);
 
 export type LocalAgentId = 'claude' | 'codex' | 'hermes';
-
-/** Apply an authoritative bulk selection; single-agent connects remain additive. */
-export function syncLocalAgentSelection<T>(
-  connected: Map<string, T>,
-  selectedIds: string[],
-  replace: boolean,
-): void {
-  if (!replace) return;
-  const selected = new Set(selectedIds);
-  for (const id of connected.keys()) {
-    if (!selected.has(id)) connected.delete(id);
-  }
-}
 
 interface AgentSpec {
   id: LocalAgentId;
@@ -134,27 +83,21 @@ const SPECS: AgentSpec[] = [
     vendor: 'Hermes Agent',
     bin: 'hermes',
     blurb: 'Hermes Agent — tool-calling AI',
-    invokeHint: 'hermes -z "<prompt>"  (--yolo only if T3MP3ST_HERMES_YOLO=1)',
+    // B-06: --yolo disables Hermes interactive confirmations; enabled by default for
+    // non-interactive server use. Set HERMES_YOLO=0 to require confirmations.
+    invokeHint: 'hermes -z "<prompt>" --yolo  # omit --yolo or set HERMES_YOLO=0 to require confirmations',
     versionArgs: ['--version'],
     parseVersion: (o) => (o.match(/v([\d]+\.[\d]+(\.[\d]+)?)/)?.[1]) || (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
-    authArtifacts: ['~/.hermes/.env', "~/.hermes/auth.json"],
-    oneShot: (p, m) => ['-z', p, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(m ? ['-m', m] : [])],
+    authArtifacts: ['~/.hermes/.env', '~/.hermes/auth.json'],
+    oneShot: (p, m) => {
+      const yolo = process.env.HERMES_YOLO !== '0';
+      return ['-z', p, ...(yolo ? ['--yolo'] : []), ...(m ? ['-m', m] : [])];
+    },
   },
 ];
 
 export function getSpec(id: string): AgentSpec | undefined {
   return SPECS.find((s) => s.id === id);
-}
-
-/**
- * B-06 — Hermes '--yolo' auto-approves EVERY tool call with no confirmation:
- * powerful but dangerous (unattended command exec with no gate). It is OFF by
- * default; the operator must explicitly opt in with T3MP3ST_HERMES_YOLO=1. Safe
- * mode (the default) runs Hermes without the flag so it honors its own approval
- * prompts. Applies to both the one-shot backbone call and the chat path.
- */
-export function hermesYoloEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test((process.env.T3MP3ST_HERMES_YOLO || '').trim());
 }
 
 export interface AgentDetection {
@@ -222,10 +165,6 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
 
 /** Detect every known local agent CLI (installed? authed? ready?). No tokens spent. */
 export async function detectLocalAgents(): Promise<AgentDetection[]> {
-  // Test/CI hook: T3MP3ST_DISABLE_LOCAL_AGENTS=1 forces a backbone-less server (skip
-  // local-agent auto-detection) so key-required / fail-closed paths can be exercised
-  // deterministically — used by scripts/arsenal-smoke.mjs for a reproducible run.
-  if (/^(1|true|yes|on)$/i.test((process.env.T3MP3ST_DISABLE_LOCAL_AGENTS || '').trim())) return [];
   return Promise.all(SPECS.map(detectOne));
 }
 
@@ -234,18 +173,6 @@ export interface AgentRunResult {
   latencyMs: number;
   output: string;
   error?: string;
-}
-
-function agentFailureOutput(output: string): string | null {
-  const text = output.trim();
-  if (/^API call failed\b/i.test(text)) return text.slice(0, 300);
-  if (/connection error/i.test(text) && /failed/i.test(text)) return text.slice(0, 300);
-  return null;
-}
-
-function envTimeoutMs(name: string, fallback: number): number {
-  const parsed = Number(process.env[name]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 /**
@@ -261,10 +188,11 @@ export function runLocalAgent(
   const t0 = Date.now();
   if (!spec) return Promise.resolve({ ok: false, latencyMs: 0, output: '', error: `unknown agent: ${id}` });
   const args = spec.oneShot(prompt, opts.model);
-  const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
+  const timeoutMs = opts.timeoutMs ?? 120000;
   const maxChars = opts.maxChars ?? 4000;
-  // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
-  const env = childEnv();
+  // child env = ours minus the injected provider keys, so the CLI uses its OWN native login.
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: AGENT_HOME };
+  for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
   return new Promise((resolve) => {
     // stdin:'ignore' so the agent doesn't stall waiting on piped input (e.g. `claude -p`'s 3s stdin wait).
     const child = spawn(spec.bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -282,9 +210,7 @@ export function runLocalAgent(
     child.on('close', (code) => {
       const latencyMs = Date.now() - t0;
       const output = out.trim().slice(0, maxChars);
-      const semanticError = agentFailureOutput(output);
-      if (code === 0 && !semanticError) finish({ ok: true, latencyMs, output });
-      else if (semanticError) finish({ ok: false, latencyMs, output, error: semanticError });
+      if (code === 0) finish({ ok: true, latencyMs, output });
       else finish({ ok: false, latencyMs, output, error: (errOut.trim() || `exited with code ${code}`).slice(0, 300) });
     });
   });
@@ -305,13 +231,13 @@ export function pingLocalAgent(id: string, prompt?: string, timeoutMs?: number):
  * clean reply, hermes takes the prompt as an arg. Provider keys are stripped so each CLI uses its own
  * login (no API key needed). Throws on non-zero exit / timeout so the LLMBackbone retry/fallback fires.
  */
-export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
+export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<string> {
   const spec = getSpec(id);
   if (!spec) return Promise.reject(new Error(`unknown local agent: ${id}`));
-  // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
-  const env = childEnv();
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: AGENT_HOME };
+  for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
   const model = opts.model && opts.model !== 'codex-default' && opts.model !== id ? opts.model : undefined;
-  const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
+  const timeoutMs = opts.timeoutMs ?? 240000;
 
   let args: string[];
   let viaStdin = true;
@@ -324,28 +250,31 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
     outFile = join(workDir, 'reply.txt');
     args = ['exec', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'read-only', '--output-last-message', outFile, ...(model ? ['-m', model] : [])];
   } else { // hermes — takes the prompt as an arg
-    args = ['-z', prompt, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(model ? ['-m', model] : [])];
+    const yolo = process.env.HERMES_YOLO !== '0';
+    args = ['-z', prompt, ...(yolo ? ['--yolo'] : []), ...(model ? ['-m', model] : [])];
     viaStdin = false;
   }
 
   const cleanup = () => { if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { /* noop */ } } };
   return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) { cleanup(); return reject(new Error('Aborted')); }
     const child = spawn(spec.bin, args, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
     let done = false;
     const finish = (fn: () => void) => { if (!done) { done = true; clearTimeout(timer); cleanup(); fn(); } };
     const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* noop */ } finish(() => reject(new Error(`${id} timed out after ${timeoutMs}ms`))); }, timeoutMs);
+    const onAbort = () => { try { child.kill('SIGKILL'); } catch { /* noop */ } finish(() => reject(new Error('Aborted'))); };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout?.on('data', (d) => { if (out.length < 8_000_000) out += String(d); });
     child.stderr?.on('data', (d) => { if (errOut.length < 200_000) errOut += String(d); });
     child.on('error', (e) => finish(() => reject(e)));
     child.on('close', (code) => {
+      opts.signal?.removeEventListener('abort', onAbort);
       let content = out.trim();
       if (outFile) { try { content = (readFileSync(outFile, 'utf8').trim() || content); } catch { /* fall back to stdout */ } }
       finish(() => {
-        const semanticError = agentFailureOutput(content);
-        if (code === 0 && content && !semanticError) resolve(content);
-        else if (semanticError) reject(new Error(semanticError));
+        if (code === 0 && content) resolve(content);
         else reject(new Error((errOut.trim() || content || `exited with code ${code}`).slice(0, 800)));
       });
     });

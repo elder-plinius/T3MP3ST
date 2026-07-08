@@ -192,7 +192,7 @@ function main() {
 
   if (args.verify) {
     console.log(`\n  → adversarial refute pass (refute-finding.mjs)…`);
-    const r = spawnSync('node', ['scripts/refute-finding.mjs', '--finding', path.relative(REPO_ROOT, outPath), '--repo', repo], { cwd: REPO_ROOT, stdio: 'inherit' });
+    const r = spawnSync('node', ['scripts/refute-finding.mjs', '--finding', path.relative(REPO_ROOT, outPath)], { cwd: REPO_ROOT, stdio: 'inherit' });
     process.exit(r.status === 0 ? 0 : 3); // 0=SURVIVED, 3=REFUTED/needs-review
   }
   console.log(`\n  next: node scripts/refute-finding.mjs --finding ${path.relative(REPO_ROOT, outPath)}   (adversarial reachability)`);
