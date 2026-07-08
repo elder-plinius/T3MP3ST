@@ -75,7 +75,8 @@
     "smoke:live": "node scripts/smoke.mjs --live",
     "capability": "node scripts/capability-smoke.mjs",
     "gauntlet": "node scripts/capability-smoke.mjs --gauntlet",
-    "test:gate": "npm run build --silent && node scripts/test-gate.mjs"
+    "test:gate": "npm run build --silent && node scripts/test-gate.mjs",
+    "ops:preflight": "node scripts/ops-preflight.mjs"
   },
   "bin": {
     "tempest": "./dist/cli.js",
