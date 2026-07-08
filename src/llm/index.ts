@@ -113,7 +113,11 @@ interface AnthropicResponse {
 }
 
 interface OllamaResponse {
-  message?: { content?: string };
+  message?: {
+    content?: string;
+    /** Native function calls returned by the model (Ollama /api/chat with tools). */
+    tool_calls?: Array<{ function: { name: string; arguments: string } }>;
+  };
   model?: string;
   prompt_eval_count?: number;
   eval_count?: number;
@@ -748,6 +752,85 @@ class LocalAdapter implements LLMProviderAdapter {
     return { valid: true };
   }
 
+  /** Per-model probe cache: true = native tools supported, false = not. */
+  private static modelToolSupport = new Map<string, boolean>();
+
+  /** @internal Reset the probe cache — used by tests. */
+  static __resetProbeCache(): void {
+    LocalAdapter.modelToolSupport.clear();
+  }
+
+  private getModelName(): string {
+    return this.config.model || 'default';
+  }
+
+  /** Whether to try native function-calling on the current request. */
+  private shouldTryNativeTools(): boolean {
+    if (this.config.nativeTools === false) return false;
+    if (this.config.nativeTools === true) return true;
+    const name = this.getModelName();
+    if (LocalAdapter.modelToolSupport.has(name)) {
+      return LocalAdapter.modelToolSupport.get(name)!;
+    }
+    // Unknown — optimistic: try native on the first call and cache the result.
+    return true;
+  }
+
+  private cacheProbeResult(supported: boolean): void {
+    const name = this.getModelName();
+    if (!LocalAdapter.modelToolSupport.has(name)) {
+      LocalAdapter.modelToolSupport.set(name, supported);
+    }
+  }
+
+  /** Format tools for the Ollama /api/chat wire. */
+  private formatOllamaTools(tools: LLMToolDefinition[]): Record<string, unknown>[] {
+    return tools.map(t => ({
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
+  }
+
+  /** Format tools for the OpenAI-compatible /v1/chat/completions wire. */
+  private formatOpenAITools(tools: LLMToolDefinition[]): Record<string, unknown>[] {
+    return tools.map(t => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+  }
+
+  /** Parse native tool_calls from an Ollama /api/chat response. */
+  private parseOllamaNativeToolCalls(data: OllamaResponse): LLMToolCall[] | undefined {
+    const raw = data.message?.tool_calls;
+    if (!raw?.length) return undefined;
+    return raw.map((tc, i) => {
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* keep empty */ }
+      return {
+        id: `ollama_${Date.now()}_${i}`,
+        name: tc.function.name,
+        arguments: args,
+      };
+    });
+  }
+
+  /** Parse native tool_calls from an OpenAI-compatible /v1/chat/completions response. */
+  private parseOpenAINativeToolCalls(data: {
+    choices?: Array<{ message?: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
+  }): LLMToolCall[] | undefined {
+    const raw = data.choices?.[0]?.message?.tool_calls;
+    if (!raw?.length) return undefined;
+    return raw.map(tc => {
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* keep empty */ }
+      return { id: tc.id, name: tc.function.name, arguments: args };
+    });
+  }
+
   // A versioned base URL (/v1, /v2, /v4, …) means an OpenAI-compatible server
   // (/chat/completions, choices[]). Many OpenAI-compatible providers version their
   // API at paths other than /v1 (e.g. Zhipu/z.ai exposes /api/paas/v4), so match any
@@ -791,9 +874,23 @@ class LocalAdapter implements LLMProviderAdapter {
     const maxTokens = options?.maxTokens || this.config.maxTokens || 4096;
     const temperature = options?.temperature ?? this.config.temperature ?? 0.7;
 
-    const requestBody = openaiWire
+    // ── Native function-calling support ──────────────────────────────────
+    // The text contract is ALWAYS injected (via buildMessages) so the text
+    // fallback is always available. On top of that we PROBE native tools:
+    // if the model supports them the response carries message.tool_calls,
+    // and we parse those instead of the text; the probe result is cached
+    // per-model so subsequent calls skip the probe overhead.
+    const tryNative = this.shouldTryNativeTools() && !!options?.tools?.length;
+
+    const requestBody: Record<string, unknown> = openaiWire
       ? { model: this.config.model, messages: wireMessages, max_tokens: maxTokens, temperature, stream: false }
       : { model: this.config.model, messages: wireMessages, stream: false, options: { num_predict: maxTokens, temperature } };
+
+    if (tryNative && options?.tools) {
+      requestBody.tools = openaiWire
+        ? this.formatOpenAITools(options.tools)
+        : this.formatOllamaTools(options.tools);
+    }
 
     try {
       const response = await fetch(url, {
@@ -813,14 +910,31 @@ class LocalAdapter implements LLMProviderAdapter {
       }
 
       const data = await response.json() as OllamaResponse & {
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
         usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
       };
       const content = openaiWire ? (data.choices?.[0]?.message?.content || '') : (data.message?.content || '');
 
+      // ── Native tool-call parsing (if we probed) ────────────────────────
+      let nativeToolCalls: LLMToolCall[] | undefined;
+      if (tryNative) {
+        nativeToolCalls = openaiWire
+          ? this.parseOpenAINativeToolCalls(data)
+          : this.parseOllamaNativeToolCalls(data);
+
+        // Cache the probe result so subsequent calls don't re-probe.
+        // Only cache when we haven't already determined support for this model.
+        this.cacheProbeResult(!!nativeToolCalls);
+      }
+
       // Tool-calling over text: if the Arsenal was offered, parse the model's tool
       // requests so the ReAct loop EXECUTES them instead of abstaining on turn 0.
-      const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
+      // This is the fallback — only used when native didn't yield tool_calls.
+      const textToolCalls = !nativeToolCalls && options?.tools?.length
+        ? parseTextToolCalls(content)
+        : undefined;
+
+      const toolCalls = nativeToolCalls ?? textToolCalls;
 
       const usage = openaiWire
         ? (data.usage
@@ -1578,3 +1692,8 @@ export function createBestAvailableBackbone(): LLMBackbone {
 
 // Re-export types for convenience
 export type { LLMMessage, LLMResponse, LLMConfig, LLMToolDefinition, LLMToolCall } from '../types/index.js';
+
+/** @internal Reset the LocalAdapter native-tool-support probe cache (test helper). */
+export function __resetLocalAdapterCache(): void {
+  LocalAdapter.__resetProbeCache();
+}
