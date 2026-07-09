@@ -91,6 +91,13 @@ WORKDIR /app
 COPY package.json .
 COPY server.js .
 
+# Run as a non-root user so a container escape from a malicious sample lands in
+# an unprivileged account. SYS_PTRACE/NET_RAW/NET_ADMIN caps are still available
+# (granted at compose level) but are not owned by root inside the container.
+RUN useradd -r -u 1001 -s /sbin/nologin sandbox \
+    && chown -R sandbox:sandbox /app /scripts /data /usr/local/lib/antidebug.so
+USER sandbox
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=3 \

@@ -98,6 +98,7 @@ async function _deliverOnce(
     headers: { 'Content-Type': 'application/json', ...headers },
     body,
     signal: AbortSignal.timeout(10_000),
+    redirect: 'error',   // never follow redirects — prevents redirect-based SSRF
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }

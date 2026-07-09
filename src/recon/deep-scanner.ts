@@ -17,7 +17,8 @@
  *   Phase 5: Adversarial verification — try to REFUTE each finding
  *   Phase 6: Synthesis — final report with confidence scores
  */
-import { resolve } from 'path';
+import { realpathSync } from 'fs';
+import { resolve, relative, sep, isAbsolute } from 'path';
 import { EventEmitter } from 'eventemitter3';
 import { LLMBackbone } from '../llm/index.js';
 import {
@@ -231,10 +232,21 @@ export class DeepScanner extends EventEmitter<DeepScanEvents> {
   private validateScanDirs(): void {
     const scanRoot = process.env.T3MP3ST_SCAN_ROOT ? resolve(process.env.T3MP3ST_SCAN_ROOT) : null;
     for (const dir of this.config.scanDirs) {
-      if (dir.includes('..')) throw new Error(`scanDir "${dir}" contains path traversal`);
-      const abs = resolve(dir);
-      if (scanRoot && abs !== scanRoot && !abs.startsWith(scanRoot + '/')) {
-        throw new Error(`scanDir "${abs}" is outside T3MP3ST_SCAN_ROOT (${scanRoot})`);
+      // Use realpathSync to resolve symlinks before containment check — a plain
+      // `includes('..')` check cannot detect a symlink planted inside the root
+      // that points outside it (e.g., repo/escape -> /etc).
+      let real: string;
+      try {
+        real = realpathSync(resolve(dir));
+      } catch {
+        throw new Error(`scanDir "${dir}" does not exist or is not accessible`);
+      }
+      if (scanRoot) {
+        const rootReal = realpathSync(scanRoot);
+        const rel = relative(rootReal, real);
+        if (rel !== '' && (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel))) {
+          throw new Error(`scanDir "${real}" is outside T3MP3ST_SCAN_ROOT (${rootReal})`);
+        }
       }
     }
   }

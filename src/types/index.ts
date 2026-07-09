@@ -472,6 +472,11 @@ export interface Message {
 // TOOL TYPES
 // =============================================================================
 
+/** A tool's risk tier — the catalog's `risk` vocabulary. Drives the approval + spicy-warning gate
+ *  (see src/arsenal/approval.ts): intrusive/credential/dangerous require approval; credential/dangerous
+ *  additionally fire a loud warning. Absent/safe/active tools are ungated. */
+export type RiskTier = 'local_read' | 'passive' | 'active' | 'intrusive' | 'credential' | 'dangerous';
+
 export interface CustomTool {
   name: string;
   description: string;
@@ -480,7 +485,7 @@ export interface CustomTool {
   parameters?: ToolParameter[];
   requiredPermissions?: string[];
   /** Risk tier carried from the catalog adapter (passive/active/intrusive/credential/dangerous). */
-  riskTier?: string;
+  riskTier?: RiskTier;
 }
 
 export interface ToolParameter {

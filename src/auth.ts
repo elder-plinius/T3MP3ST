@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import express from 'express';
 import type { Express, Request, Response } from 'express';
 
@@ -98,7 +98,9 @@ export function initAuth(app: Express): void {
         express.urlencoded({ extended: false }),
         (req: Request, res: Response) => {
             const body = req.body as { username?: string; password?: string };
-            if (body.username === USERNAME && body.password === _password) {
+            const pwdMatch = body.password !== undefined &&
+              timingSafeEqual(Buffer.from(String(body.password)), Buffer.from(_password));
+            if (body.username === USERNAME && pwdMatch) {
                 const token = randomBytes(32).toString('hex');
                 sessions.add(token);
                 // Secure flag works through nginx HTTPS termination

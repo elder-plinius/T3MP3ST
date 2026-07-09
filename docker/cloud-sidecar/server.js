@@ -6,7 +6,7 @@ const https   = require('https');
 const fs      = require('fs');
 const os      = require('os');
 const path    = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const PORT  = process.env.PORT || 8080;
 const TOKEN = process.env.SIDECAR_TOKEN || '';
@@ -191,7 +191,7 @@ function azureLogin(loginArgs, env) {
 const server = https.createServer(tlsOptions, async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     const available = [...ALLOWED].filter(cmd => {
-      try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true; }
+      try { execFileSync('which', [cmd], { stdio: 'ignore' }); return true; }
       catch { return false; }
     });
     return respondJson(res, 200, { status: 'ok', sidecar: 'cloud', tools: available });
@@ -234,7 +234,7 @@ const server = https.createServer(tlsOptions, async (req, res) => {
       // Set subscription if provided
       if (preparedEnv['AZURE_SUBSCRIPTION_ID']) {
         try {
-          execSync(`az account set --subscription ${preparedEnv['AZURE_SUBSCRIPTION_ID']}`, {
+          execFileSync('az', ['account', 'set', '--subscription', preparedEnv['AZURE_SUBSCRIPTION_ID']], {
             env: preparedEnv, stdio: 'pipe',
           });
         } catch {}

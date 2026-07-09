@@ -168,6 +168,7 @@ const SECRET_PATTERNS: Record<string, { pattern: RegExp; severity: string; provi
   slack_token: { pattern: /xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*/g, severity: 'high', provider: 'Slack' },
   postgres_uri: { pattern: /postgres(ql)?:\/\/[^:]+:[^@]+@[^/]+\/\w+/gi, severity: 'critical', provider: 'PostgreSQL' },
   mongodb_uri: { pattern: /mongodb(\+srv)?:\/\/[^:]+:[^@]+@[^/]+/gi, severity: 'critical', provider: 'MongoDB' },
+  pem_private_key: { pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, severity: 'critical', provider: 'PEM' },
   rsa_private: { pattern: new RegExp('-----BEGIN RSA ' + 'PRIVATE KEY-----', 'g'), severity: 'critical', provider: 'RSA' },
   openssh_private: { pattern: new RegExp('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', 'g'), severity: 'critical', provider: 'OpenSSH' },
   password_field: { pattern: /password["\s]*[:=]["\s]*[^"'\s]{4,}/gi, severity: 'high', provider: 'Generic' },
@@ -196,6 +197,22 @@ const app = express();
 
 // Security headers
 app.use(helmet({ contentSecurityPolicy: false }));
+
+// Loopback origin helpers — shared by CORS middleware and the /api/events SSE gate.
+// Match 127.0.0.0/8 exactly (full dotted-quad) to avoid prefix-match bypass via
+// attacker-registered names like `127.0.0.1.evil.com`.
+function isLoopbackHostname(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+function isLoopbackOrigin(originHeader: string | undefined): boolean {
+  if (!originHeader) return false;
+  try {
+    const host = new URL(originHeader).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return isLoopbackHostname(host);
+  } catch {
+    return false;
+  }
+}
 
 // Scoped CORS — browser cross-origin requests only allowed from the app's own origin.
 // Curl/server-to-server (no Origin header) passes through unaffected.
@@ -365,6 +382,31 @@ function inferCommandTarget(parsed: ParsedCommand): string {
   return positional[positional.length - 1] || 'unknown-network-target';
 }
 
+function resolveCommandExecutionTarget(
+  body: Record<string, unknown>,
+  parsed: ParsedCommand,
+): { target: string } | { error: string } {
+  const inferredTarget = normalizeTargetValue(inferCommandTarget(parsed));
+  // Local commands can carry a UI target for bookkeeping but don't need network approval.
+  if (!NETWORK_COMMANDS.has(parsed.bin)) {
+    return { target: normalizeTargetValue(body.target || inferredTarget) };
+  }
+  if (!inferredTarget || inferredTarget === 'unknown-network-target') {
+    return { error: `Could not infer network target for ${parsed.bin}; include the target as a direct command argument.` };
+  }
+  // A caller-supplied body.target is NOT authoritative — it must mirror the parsed command
+  // target. This prevents approving one host and executing a network command against another.
+  if (body.target !== undefined) {
+    const suppliedTarget = normalizeTargetValue(body.target);
+    if (hostFromTarget(suppliedTarget) !== hostFromTarget(inferredTarget)) {
+      return {
+        error: `Command target mismatch: requested approval target "${suppliedTarget}" does not match parsed command target "${inferredTarget}".`,
+      };
+    }
+  }
+  return { target: inferredTarget };
+}
+
 async function executeCommand(command: string, timeout = 30000): Promise<ToolResult> {
   const startTime = Date.now();
   const parsed = parseCommand(command);
@@ -389,7 +431,8 @@ function redactString(value: string): string {
   }
   return redacted
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [redacted]')
-    .replace(/(api[_-]?key|token|secret|password)=([^&\s]+)/gi, '$1=[redacted]');
+    .replace(/(api[_-]?key|token|secret|password)=([^&\s]+)/gi, '$1=[redacted]')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)(?:[^/\s@]+@)+/gi, '$1[redacted]@');
 }
 
 function redactLedgerText(value: string, limit = 4000): string {
@@ -4579,14 +4622,24 @@ export function broadcastEvent(event: string, data: Record<string, unknown>): vo
   }
 }
 
-app.get('/api/events', (_req: Request, res: Response) => {
-  // SSE headers
-  res.writeHead(200, {
+app.get('/api/events', (req: Request, res: Response) => {
+  const origin = req.get('origin');
+  if (origin && !isLoopbackOrigin(origin)) {
+    res.status(403).json({
+      error: 'Cross-origin event stream rejected',
+      detail: 'The SSE feed may contain live mission/task/finding metadata and is only available to the localhost UI.',
+    });
+    return;
+  }
+  // SSE headers — do not use wildcard ACAO; the event feed carries live operational metadata.
+  // Reflect only a trusted loopback Origin; same-origin/no-Origin clients need no CORS header.
+  const sseHeaders: Record<string, string> = {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-  });
+  };
+  if (origin) sseHeaders['Access-Control-Allow-Origin'] = origin;
+  res.writeHead(200, sseHeaders);
 
   // Send initial heartbeat
   res.write('event: connected\ndata: {"status":"connected"}\n\n');
@@ -4605,7 +4658,7 @@ app.get('/api/events', (_req: Request, res: Response) => {
   }, 30000);
 
   // Cleanup on client disconnect
-  _req.on('close', () => {
+  req.on('close', () => {
     clearInterval(heartbeat);
     sseClients.delete(res);
   });
@@ -5774,8 +5827,9 @@ app.post('/api/tools/execute', async (req: Request, res: Response): Promise<void
   if (!command) { res.status(400).json({ error: 'Command required' }); return; }
   const parsed = parseCommand(command);
   if ('error' in parsed) { res.status(400).json({ error: parsed.error }); return; }
-  const target = normalizeTargetValue(body.target || inferCommandTarget(parsed));
-  const guard = guardAction(body, 'command_execution', target, `Run ${parsed.bin} against ${target}`);
+  const targetResolution = resolveCommandExecutionTarget(body, parsed);
+  if ('error' in targetResolution) { res.status(400).json({ error: targetResolution.error }); return; }
+  const guard = guardAction(body, 'command_execution', targetResolution.target, `Run ${parsed.bin} against ${targetResolution.target}`);
   if (!guard.allowed) { blockForApproval(res, guard); return; }
   const result = await executeCommand(command, timeout);
   res.json(result);
@@ -7504,12 +7558,35 @@ app.delete('/api/agents/local/sessions/:id', (req: Request, res: Response): void
 });
 
 // =============================================================================
+// SSRF GUARD — shared by webhook delivery and MCP SSE connections
+// Blocks private, loopback, and link-local destinations; redirect-following is
+// disabled in webhooks.ts via `redirect: 'error'` so a redirect cannot bypass this.
+// =============================================================================
+
+function _isDeniedSsrfUrl(raw: string): boolean {
+  let host: string;
+  try { host = new URL(raw).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return true; }
+  if (host === 'localhost') return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [, a, b] = v4.map(Number);
+    if (a === 127 || a === 10 || a === 0) return true;           // loopback + RFC1918 + 0.x
+    if (a === 172 && b >= 16 && b <= 31) return true;            // 172.16-31.x.x RFC1918
+    if (a === 192 && b === 168) return true;                      // 192.168.x.x RFC1918
+    if (a === 169 && b === 254) return true;                      // link-local
+    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT / shared
+  }
+  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+  return false;
+}
+
+// =============================================================================
 // OUTBOUND WEBHOOKS
 // =============================================================================
 
-// GET /api/webhooks — list registered webhooks
+// GET /api/webhooks — list registered webhooks (secret is never returned)
 app.get('/api/webhooks', (_req: Request, res: Response): void => {
-  res.json({ webhooks: listWebhooks() });
+  res.json({ webhooks: listWebhooks().map(({ secret: _s, ...wh }) => ({ ...wh, secretSet: Boolean(_s) })) });
 });
 
 // POST /api/webhooks — register a new webhook
@@ -7521,8 +7598,13 @@ app.post('/api/webhooks', (req: Request, res: Response): void => {
     res.status(400).json({ error: 'url must be an http:// or https:// URL' });
     return;
   }
+  if (_isDeniedSsrfUrl(url)) {
+    res.status(400).json({ error: 'Webhook URL must not target private, loopback, or link-local addresses.' });
+    return;
+  }
   const wh = registerWebhook(url, Array.isArray(events) ? events : ['*'], secret);
-  res.status(201).json(wh);
+  const { secret: _s, ...whSafe } = wh;
+  res.status(201).json({ ...whSafe, secretSet: Boolean(_s) });
 });
 
 // PATCH /api/webhooks/:id — enable/disable a webhook
@@ -7569,6 +7651,28 @@ app.post('/api/mcp/servers/connect', async (req: Request, res: Response): Promis
   if (!config?.id || !config?.label || !config?.transport) {
     res.status(400).json({ error: 'id, label, and transport are required' });
     return;
+  }
+  if (config.transport === 'stdio') {
+    // stdio spawns an arbitrary process — require an explicit operator allowlist
+    const allowlist = (process.env.T3MP3ST_MCP_ALLOWED_COMMANDS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (!allowlist.length) {
+      res.status(403).json({
+        error: 'stdio MCP connections are disabled. Set T3MP3ST_MCP_ALLOWED_COMMANDS to a comma-separated list of permitted binary paths.',
+      });
+      return;
+    }
+    if (!config.command || !allowlist.includes(config.command)) {
+      res.status(403).json({ error: `MCP stdio command not in T3MP3ST_MCP_ALLOWED_COMMANDS: ${config.command ?? '(none)'}` });
+      return;
+    }
+  }
+  if (config.transport === 'sse') {
+    if (!config.url) { res.status(400).json({ error: 'url required for sse transport' }); return; }
+    if (_isDeniedSsrfUrl(config.url)) {
+      res.status(400).json({ error: 'MCP SSE URL must not target private, loopback, or link-local addresses.' });
+      return;
+    }
   }
   try {
     const tools = await connectMcpServer(config);

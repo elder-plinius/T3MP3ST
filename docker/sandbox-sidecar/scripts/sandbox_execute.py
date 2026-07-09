@@ -43,7 +43,11 @@ def random_alias(fmt: str) -> str:
 
 def stage_binary(src: str, alias: str) -> str:
     """Copy binary to /tmp/<alias> so process appears under that name."""
-    dest = f'/tmp/{alias}'
+    # Strip all path separators — alias must not traverse outside /tmp.
+    safe_alias = os.path.basename(alias).replace('\x00', '')
+    if not safe_alias or safe_alias in ('.', '..'):
+        raise ValueError(f'Invalid alias: {alias!r}')
+    dest = os.path.join('/tmp', safe_alias)
     shutil.copy2(src, dest)
     os.chmod(dest, 0o755)
     return dest

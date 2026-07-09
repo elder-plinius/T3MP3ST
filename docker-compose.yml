@@ -74,8 +74,10 @@ services:
       - .env
 
     environment:
-      # These are defaults — values in .env override them
-      - T3MP3ST_HOST=0.0.0.0
+      # These are defaults — values in .env override them.
+      # Default to loopback. Set T3MP3ST_HOST=0.0.0.0 in .env only when
+      # running behind a trusted reverse proxy (nginx) that enforces auth.
+      - T3MP3ST_HOST=127.0.0.1
       # Sidecar URLs — tokens come from .env (set by scripts/generate-certs.sh)
       - CLOUD_SIDECAR_URL=https://tempest-cloud:8080
       - BINARY_SIDECAR_URL=https://tempest-binary:8080
@@ -229,21 +231,23 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      # Sandbox needs rw access — copies binary to /tmp/<alias> before execution
+      # Sandbox reads binaries from uploads; writes land in /tmp inside the container only.
       - type: bind
         source: ${TEMPEST_UPLOADS_DIR:-./scan-targets}
         target: /data/uploads
-        read_only: false
+        read_only: true
         bind:
           create_host_path: true
 
-    env_file:
-      - .env
-
+    # Sandbox receives ONLY the tokens it needs — NOT the full .env.
+    # A malicious sample reading /proc/self/environ must not see platform credentials.
     environment:
       - SIDECAR_TOKEN=${SANDBOX_SIDECAR_TOKEN}
       - UPLOADS_DIR=/data/uploads
       - WINEPREFIX=/opt/wine-env
+
+    networks:
+      - sandbox_egress_deny
 
     expose:
       - "8080"
@@ -258,3 +262,12 @@ services:
 volumes:
   tempest_missions:
     driver: local
+
+networks:
+  sandbox_egress_deny:
+    # internal: true creates an isolated network with no external routing —
+    # a sample cannot phone home, reach cloud metadata endpoints (169.254.169.254),
+    # or exfiltrate data even if it escapes /tmp. tempest-stack still reaches the
+    # sandbox via the shared Docker bridge on the sidecar HTTPS port.
+    internal: true
+    driver: bridge

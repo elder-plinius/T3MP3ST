@@ -139,6 +139,11 @@ export async function evaluateEvent(
   payload: Record<string, unknown>,
   ctx: AutomationContext,
 ): Promise<void> {
+  // Automation events must not re-trigger rules — a rule action that emits
+  // 'automation.triggered' (or 'automation.error') would otherwise recurse
+  // indefinitely if any rule pattern matches 'automation.*'.
+  if (event.startsWith('automation.')) return;
+
   for (const rule of _rules.values()) {
     if (!rule.enabled) continue;
     if (!_eventMatches(rule.trigger.event, event)) continue;
