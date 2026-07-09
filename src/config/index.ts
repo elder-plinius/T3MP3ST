@@ -750,6 +750,9 @@ class ConfigManager {
       case 'codex':
         this.config.set('defaultModel', this.config.get('codex').defaultModel);
         break;
+      case 'local':
+        this.config.set('defaultModel', process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3');
+        break;
     }
   }
 

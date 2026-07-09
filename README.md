@@ -87,7 +87,8 @@ Or run it **fully offline** on your own model — no key, no cloud. Defaults to 
 ollama serve && ollama pull llama3                          # or an OpenAI-compatible server
 export TEMPEST_LOCAL_BASE_URL=http://localhost:11434/api    # LM Studio: http://localhost:1234/v1
 export TEMPEST_LOCAL_MODEL=llama3
-npx tempest config                                          # → "Change default provider" → local
+npm run build                                               # only needed from a git clone
+npx t3mp3st                                                 # → "Change default provider" → local
 ```
 
 Tool-calling works on any local model (it's driven over text), so the Arsenal runs even on models without native function-calling.
