@@ -62,6 +62,35 @@ async function checkPort(host: string, port: number, timeout: number = 2000): Pr
 }
 
 // =============================================================================
+// TARGET HEADER INJECTION
+// =============================================================================
+
+/**
+ * Parse TEMPEST_TARGET_HEADERS — a JSON object of header name → value pairs
+ * injected into every outbound HTTP request made by arsenal tools.
+ * Set it in ~/.t3mp3st/.env; silently returns {} when unset or invalid JSON.
+ *
+ * Examples:
+ *   TEMPEST_TARGET_HEADERS={"Authorization":"Bearer eyJ..."}
+ *   TEMPEST_TARGET_HEADERS={"Cookie":"session=abc123"}
+ *   TEMPEST_TARGET_HEADERS={"X-API-Key":"secret","X-Tenant":"acme"}
+ *
+ * Per-request headers (the tool's own `headers` parameter) always override
+ * these values for the same key.
+ */
+function parseTargetHeaders(): Record<string, string> {
+  const raw = process.env.TEMPEST_TARGET_HEADERS?.trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch { /* invalid JSON — ignore */ }
+  return {};
+}
+
+// =============================================================================
 // EVENTS
 // =============================================================================
 
@@ -748,7 +777,12 @@ export const BUILTIN_TOOLS: CustomTool[] = [
     handler: async (context) => {
       const url = context.parameters.url as string;
       const method = (context.parameters.method as string) || 'GET';
-      const headers = (context.parameters.headers as Record<string, string>) || {};
+      // TEMPEST_TARGET_HEADERS (JSON object) injects global headers for authenticated
+      // scans. Per-request headers always override these for the same key.
+      const headers: Record<string, string> = {
+        ...parseTargetHeaders(),
+        ...(context.parameters.headers as Record<string, string> || {}),
+      };
       const body = context.parameters.body as string | undefined;
 
       try {
@@ -787,7 +821,12 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         'Permissions-Policy', 'Cross-Origin-Opener-Policy', 'Cross-Origin-Resource-Policy',
       ];
       try {
-        const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+        const targetHeaders = parseTargetHeaders();
+        const response = await fetch(url, {
+          method: 'HEAD',
+          headers: Object.keys(targetHeaders).length > 0 ? targetHeaders : undefined,
+          signal: AbortSignal.timeout(10000),
+        });
         const analysis = securityHeaders.map(h => {
           const value = response.headers.get(h);
           return `${h}: ${value ? `✓ ${value}` : '✗ Missing'}`;
@@ -3249,6 +3288,11 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const flags = context.parameters.flags as string | undefined;
 
       const args = ['-s', '-i', '-X', method];
+      // Global headers from TEMPEST_TARGET_HEADERS; per-request headers appended
+      // below will override any same-named key (curl uses last-wins for -H).
+      for (const [name, value] of Object.entries(parseTargetHeaders())) {
+        args.push('-H', `${name}: ${value}`);
+      }
       if (data) {
         // A body starting with @ (read local file) or < (read stdin) turns curl into a local-file
         // disclosure primitive. --data-raw sends it verbatim and disables @/< interpretation.
