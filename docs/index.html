@@ -7591,6 +7591,26 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
         // (each already paired with an addIntel into System Events) stay harmless.
         function addMissionLog(_type, _message) { /* no-op: Mission Log panel retired */ }
 
+        // Return the War Room to an idle, ready-to-engage state. Every mission-terminal path
+        // (complete, fail, approval-declined, abort) MUST call this: it restores the ENGAGE button
+        // (a declined hunt otherwise leaves it stuck on the "ENGAGING…" spinner) and clears the
+        // LIVE/SIM fidelity banner + the "what it's doing now" narration rail, so the UI can never
+        // keep advertising an active probe after the hunt has stopped.
+        function resetEngageUI() {
+            const cmdStart = document.getElementById('cmdStartBtn');
+            if (cmdStart) {
+                cmdStart.style.display = 'block';
+                cmdStart.disabled = false;
+                cmdStart.style.opacity = '1';
+                cmdStart.innerHTML = '▶ ENGAGE';
+            }
+            const cmdPause = document.getElementById('cmdPauseBtn');
+            if (cmdPause) cmdPause.style.display = 'none';
+            if (typeof setFidelity === 'function') setFidelity('off');
+            const narrRail = document.getElementById('narrationRail');
+            if (narrRail) narrRail.style.display = 'none';
+        }
+
         function completeMission(errorMsg) {
             missionRunning = false;
             if (missionTimer) { clearInterval(missionTimer); missionTimer = null; }
@@ -7601,15 +7621,13 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
             // Update War Room command header
             const cmdName = document.getElementById('cmdMissionName');
             const cmdStatus = document.getElementById('cmdMissionStatus');
-            const cmdStart = document.getElementById('cmdStartBtn');
-            const cmdPause = document.getElementById('cmdPauseBtn');
             if (cmdName) cmdName.textContent = isError ? 'MISSION FAILED' : 'MISSION COMPLETE';
             if (cmdStatus) {
                 cmdStatus.textContent = isError ? errorMsg : 'All phases executed';
                 cmdStatus.style.color = isError ? '#ff4444' : '#00ff88';
             }
-            if (cmdStart) cmdStart.style.display = 'block';
-            if (cmdPause) cmdPause.style.display = 'none';
+            // Restore ENGAGE button + clear LIVE/SIM banner + narration rail (see resetEngageUI).
+            resetEngageUI();
 
             // Update mission log
             if (isError) {
@@ -18448,7 +18466,13 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
         // Abort mission
         function abortMission(skipConfirm) {
-            if (!missionRunning) return;
+            // Even when nothing is actively running (e.g. an approval was just declined), the red X
+            // must still clear any leftover "ENGAGING…/LIVE probing" UI instead of being a no-op.
+            if (!missionRunning) {
+                const n = document.getElementById('cmdMissionName'); if (n) n.textContent = 'STANDBY';
+                resetEngageUI();
+                return;
+            }
             if (!skipConfirm && !confirm('Abort the current mission? All operator progress will be lost.')) return;
             missionRunning = false;
             if (missionTimer) { clearInterval(missionTimer); missionTimer = null; }
@@ -18456,8 +18480,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             document.getElementById('cmdMissionName').textContent = 'STANDBY';
             document.getElementById('cmdMissionStatus').textContent = 'Mission aborted';
             document.getElementById('cmdMissionStatus').style.color = '#ff4444';
-            document.getElementById('cmdStartBtn').style.display = 'block';
-            document.getElementById('cmdPauseBtn').style.display = 'none';
+            resetEngageUI();
 
             addIntel('COMMAND', 'Mission aborted. All operators standing down.', 'danger');
             addMissionLog('error', 'MISSION ABORTED BY OPERATOR');
