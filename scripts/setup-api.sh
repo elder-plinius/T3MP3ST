@@ -8,6 +8,7 @@ echo "╚═══════════════════════�
 echo ""
 
 ENV_FILE="$HOME/.t3mp3st/.env"
+umask 077
 mkdir -p "$(dirname "$ENV_FILE")"
 
 if [ -f "$ENV_FILE" ]; then
@@ -27,21 +28,24 @@ case $choice in
     1)
         echo ""
         echo "Get your OpenRouter API key at: https://openrouter.ai/keys"
-        read -p "Enter your OpenRouter API key: " api_key
+        read -rsp "Enter your OpenRouter API key: " api_key
+        echo ""
         echo "OPENROUTER_API_KEY=$api_key" > "$ENV_FILE"
         echo "LLM_PROVIDER=openrouter" >> "$ENV_FILE"
         ;;
     2)
         echo ""
         echo "Get your Anthropic API key at: https://console.anthropic.com/"
-        read -p "Enter your Anthropic API key: " api_key
+        read -rsp "Enter your Anthropic API key: " api_key
+        echo ""
         echo "ANTHROPIC_API_KEY=$api_key" > "$ENV_FILE"
         echo "LLM_PROVIDER=anthropic" >> "$ENV_FILE"
         ;;
     3)
         echo ""
         echo "Get your OpenAI API key at: https://platform.openai.com/api-keys"
-        read -p "Enter your OpenAI API key: " api_key
+        read -rsp "Enter your OpenAI API key: " api_key
+        echo ""
         echo "OPENAI_API_KEY=$api_key" > "$ENV_FILE"
         echo "LLM_PROVIDER=openai" >> "$ENV_FILE"
         ;;

@@ -22,7 +22,9 @@ import type {
   ToolResult,
   Target,
   LLMToolDefinition,
+  RiskTier,
 } from '../types/index.js';
+import { ApprovalController, isGatedRisk } from './approval.js';
 import type { LLMBackbone } from '../llm/index.js';
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -94,9 +96,14 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
   private tools: Map<string, CustomTool> = new Map();
   private executions: ToolExecution[] = [];
   private llmBackbone?: LLMBackbone;
+  private approvalCtrl: ApprovalController | null = null;
 
   setLLM(llm: LLMBackbone): void {
     this.llmBackbone = llm;
+  }
+
+  setApprovalController(ctrl: ApprovalController): void {
+    this.approvalCtrl = ctrl;
   }
 
   setAbortSignal(signal: AbortSignal | null): void {
@@ -151,6 +158,17 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     const tool = this.tools.get(toolName.trim());
     if (!tool) {
       throw new Error(`Tool "${toolName}" not found`);
+    }
+
+    if (this.approvalCtrl && isGatedRisk(tool.riskTier)) {
+      const decision = await this.approvalCtrl.gate({
+        tool: toolName,
+        risk: tool.riskTier,
+        action: `${toolName}(${JSON.stringify(context.parameters)})`,
+      });
+      if (!decision.allowed) {
+        return { success: false, error: `APPROVAL REQUIRED: ${decision.reason}` };
+      }
     }
 
     const execution: ToolExecution = {
@@ -3367,6 +3385,27 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 ];
 
 // =============================================================================
+// SPICY BUILT-IN TIERS — opt-in gating via T3MP3ST_GATE_BUILTINS
+//
+// By default the built-in probes (sqli_scan, password_spray, …) are UNGATED for
+// backward-compatibility. When an operator launches with T3MP3ST_GATE_BUILTINS=1
+// they call stampSpicyBuiltin() on each tool to produce a gated copy — the
+// original BUILTIN_TOOLS entry is never mutated, preserving the zero-regression
+// guarantee. Only tools listed here receive a riskTier stamp.
+// =============================================================================
+
+export const SPICY_BUILTIN_TIERS: Record<string, RiskTier> = {
+  'password_spray':  'credential',
+  'hash_crack':      'credential',
+};
+
+export function stampSpicyBuiltin(tool: CustomTool): CustomTool {
+  const tier = SPICY_BUILTIN_TIERS[tool.name];
+  if (!tier) return tool;
+  return { ...tool, riskTier: tier };
+}
+
+// =============================================================================
 // SUBPROCESS TOOL EXECUTION
 // =============================================================================
 
@@ -4337,14 +4376,14 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const trivyCmd = `trivy fs --format json --scanners vuln,secret --quiet ${clonePath}`;
       const vulnFindings = allVulns.slice(0, 25).map(({ target, vuln }) => {
         const cvssScore = vuln.CVSS
-          ? Object.values(vuln.CVSS).map(s => s.V3Score ?? s.V2Score).filter(s => s != null)[0]
+          ? Object.values(vuln.CVSS).map(s => s.V3Score ?? s.V2Score).filter((s): s is number => s !== null && s !== undefined)[0]
           : undefined;
         return {
           title: `${vuln.VulnerabilityID}: ${vuln.PkgName}`,
           severity: sevMap[vuln.Severity?.toUpperCase()] ?? 'medium' as const,
           details: [
             `${vuln.VulnerabilityID} in ${vuln.PkgName} (${target})`,
-            `Severity: ${vuln.Severity}${cvssScore != null ? ` (CVSS ${cvssScore})` : ''}`,
+            `Severity: ${vuln.Severity}${cvssScore !== null && cvssScore !== undefined ? ` (CVSS ${cvssScore})` : ''}`,
             vuln.InstalledVersion ? `Installed: ${vuln.InstalledVersion}` : '',
             vuln.FixedVersion ? `Fixed in: ${vuln.FixedVersion}` : 'No fix available',
             '',
@@ -4381,12 +4420,12 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
         severity: sevMap[secret.Severity?.toUpperCase()] ?? 'high' as const,
         details: [
           `Rule: ${secret.RuleID}${secret.Category ? ` (${secret.Category})` : ''}`,
-          `File: ${target}${secret.StartLine != null ? ` line ${secret.StartLine}` : ''}`,
+          `File: ${target}${secret.StartLine !== null && secret.StartLine !== undefined ? ` line ${secret.StartLine}` : ''}`,
           secret.Title || '',
         ].filter(Boolean).join('\n'),
         provenance: 'tool' as const,
         toolName: 'trivy_scan',
-        toolOutput: `${secret.RuleID} in ${target}${secret.StartLine != null ? `:${secret.StartLine}` : ''}`,
+        toolOutput: `${secret.RuleID} in ${target}${secret.StartLine !== null && secret.StartLine !== undefined ? `:${secret.StartLine}` : ''}`,
         scanCommand: trivyCmd,
         scanOutput: JSON.stringify({ RuleID: secret.RuleID, Category: secret.Category, Severity: secret.Severity, Title: secret.Title, File: target, StartLine: secret.StartLine }, null, 2),
       }));
@@ -8115,7 +8154,7 @@ finally:
     ],
     handler: async (context) => {
       const rawPath  = String(context.parameters.binary_path ?? '').trim();
-      const knownKey = context.parameters.key != null ? Number(context.parameters.key) : null;
+      const knownKey = context.parameters.key !== null && context.parameters.key !== undefined ? Number(context.parameters.key) : null;
       if (!rawPath) return { success: false, error: 'binary_path is required' };
 
       const fname    = rawPath.startsWith('local://') ? rawPath.slice(8) : rawPath;
@@ -8123,7 +8162,7 @@ finally:
 
       // Full behavioral analysis — runs entirely inside the sidecar via Python calling r2.
       // No reliance on function names: finds XOR loops by opcode pattern + loop structure.
-      const knownKeyArg = knownKey != null ? String(knownKey) : '';
+      const knownKeyArg = knownKey !== null ? String(knownKey) : '';
       const pyScript = `
 import subprocess, re, sys, json
 
@@ -9070,11 +9109,11 @@ finally:
       // Security mitigations summary line
       const s = security ?? {};
       const secSummary = [
-        s.canary  != null ? `Canary:${s.canary}`   : null,
-        s.nx      != null ? `NX:${s.nx}`           : null,
-        s.pic     != null ? `PIE:${s.pic}`         : null,
-        s.relro   != null ? `RELRO:${s.relro}`     : null,
-        s.rpath   != null ? `RPATH:${s.rpath}`     : null,
+        s.canary  !== null && s.canary  !== undefined ? `Canary:${s.canary}`   : null,
+        s.nx      !== null && s.nx      !== undefined ? `NX:${s.nx}`           : null,
+        s.pic     !== null && s.pic     !== undefined ? `PIE:${s.pic}`         : null,
+        s.relro   !== null && s.relro   !== undefined ? `RELRO:${s.relro}`     : null,
+        s.rpath   !== null && s.rpath   !== undefined ? `RPATH:${s.rpath}`     : null,
       ].filter(Boolean).join('  ');
 
       // Parse DOT call graph edges into human-readable list

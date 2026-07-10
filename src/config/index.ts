@@ -546,9 +546,8 @@ class ConfigManager {
   private loadEnvVariables(): void {
     if (this.envLoaded) return;
 
-    // Try to load from .env file in current directory or home
+    // Try to load from .env file in T3MP3ST-owned location or home
     const envPaths = [
-      join(process.cwd(), '.env'),
       join(homedir(), '.t3mp3st', '.env'),
       join(homedir(), '.env'),
     ];
@@ -572,22 +571,8 @@ class ConfigManager {
       }
     }
 
-    // Check environment variables for API keys
-    const envKeys = {
-      openrouter: process.env.OPENROUTER_API_KEY,
-      anthropic: process.env.ANTHROPIC_API_KEY,
-      openai: process.env.OPENAI_API_KEY,
-    };
-
-    // Only set from env if not already set in config
-    const currentKeys = this.config.get('apiKeys');
-
-    for (const [provider, envKey] of Object.entries(envKeys)) {
-      if (envKey && !currentKeys[provider as keyof typeof currentKeys]) {
-        this.setApiKey(provider as 'openrouter' | 'anthropic' | 'openai', envKey);
-      }
-    }
-
+    // env vars are now live in process.env — getApiKey() reads them directly (highest priority).
+    // Keys from the .env file are not persisted to the config store so they remain session-only.
     this.envLoaded = true;
   }
 

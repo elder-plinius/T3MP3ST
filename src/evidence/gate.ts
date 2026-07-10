@@ -47,12 +47,12 @@ export function gateLiveFinding(f: Finding): LiveGateResult {
   }
 
   // Web probe phases: require both sides of the HTTP exchange.
-  // Exception: code-scan tools (semgrep, trivy, gitleaks) run in the weaponization phase
-  // but produce command evidence instead of HTTP evidence — allow command+output to satisfy
-  // the gate without requiring a request/response pair.
+  // Exception: code-scan and other tool-output types (command, output) run in these phases
+  // but produce non-HTTP evidence — allow command or output evidence to satisfy the gate
+  // without requiring a request/response pair. Only pure HTTP probes need both sides.
   if (WEB_PROBE_PHASES.has(f.phase)) {
-    const hasCommandEv = evidence.some(e => e.type === 'command' && String(e.content || '').trim().length > 0);
-    if (!hasCommandEv) {
+    const hasCommandOrOutputEv = evidence.some(e => (e.type === 'command' || e.type === 'output') && String(e.content || '').trim().length > 0);
+    if (!hasCommandOrOutputEv) {
       const hasRequest = evidence.some(e => e.type === 'request' && String(e.content || '').trim().length > 0);
       const hasResponse = evidence.some(e => e.type === 'response' && String(e.content || '').trim().length > 0);
       if (!hasRequest) {
