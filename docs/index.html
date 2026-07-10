@@ -24805,7 +24805,14 @@ Be specific and actionable. Format as structured JSON.`;
     list.innerHTML = agents.map(function(a){ return rowHtml(a); }).join('');
     const ready = agents.filter(function(a){return a.ready;}).length;
     const installed = agents.filter(function(a){return a.installed;}).length;
-    const live = Object.keys(pingStatus).filter(function(k){return pingStatus[k].ok;}).length;
+    // Live = client-side successful pings OR agents the SERVER already reports live. Agents connected
+    // server-side (autoReconnect, or a status?check=1 re-ping) are live even though THIS client never
+    // pinged them; counting only client pings here clobbered window.__t3mpLiveAgents back to 0 on every
+    // re-render, which broke the War Room backbone gate (t3mpHasBackend) for a genuinely-usable agent.
+    const clientLive = Object.keys(pingStatus).filter(function(k){return pingStatus[k].ok;}).length;
+    const serverLive = Array.isArray(window.__t3mpServerAgents)
+      ? window.__t3mpServerAgents.filter(function(a){ return a.lastPing && a.lastPing.ok; }).length : 0;
+    const live = Math.max(clientLive, serverLive);
     const sum = document.getElementById('localAgentsSummary');
     if (sum) sum.innerHTML = connectedIds.length+' active'+(live?' · '+live+' live':'')+' · '+ready+' ready · '+installed+'/'+agents.length+' installed';
     // expose live/connected counts separately. A plain connect is just a registration; only a
