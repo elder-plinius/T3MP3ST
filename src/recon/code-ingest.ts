@@ -37,7 +37,8 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'fs';
-import { join, sep } from 'path';
+import { join, sep, extname } from 'path';
+import { parseFileMultiLang } from './ts-parse.js';
 import {
   estimateTokens,
   type SourceFile,
@@ -169,14 +170,16 @@ const ENTRY_NAME_RES: RegExp[] = [
 const SECURITY_CONTROL_NAME_RE =
   /valid|verif|auth|authoriz|authentic|permission|sanitiz|escap|csrf|check_|require_|is_allowed/i;
 
-// Dangerous sinks that make a block part of the attack surface.
-const DANGEROUS_SINK_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(/;
+// Dangerous sinks that make a block part of the attack surface. Python patterns
+// plus cross-language sinks (Java/Go/C/JS) for the multi-language ingest.
+export const DANGEROUS_SINK_RE =
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(|exec\.Command|Runtime\.getRuntime|ProcessBuilder|\bsystem\(|\bpopen\(|http\.(Get|Post)|\bfetch\(|axios\./;
 
 // Outbound-request sinks specifically (subset of the above) — used for the
-// SSRF/IDOR "identifier param + outbound request" signal.
-const OUTBOUND_REQUEST_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\./;
+// SSRF/IDOR "identifier param + outbound request" signal. Cross-language: Go
+// net/http, JS fetch/axios.
+export const OUTBOUND_REQUEST_RE =
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|http\.(Get|Post|get|post)|\bfetch\(|axios\./;
 
 // URL/identifier-shaped param names.
 const RISKY_PARAM_RE = /url|uri|endpoint|host|addr|id$|_id|path|file|name/i;
@@ -764,7 +767,10 @@ export function ingestRepository(config: IngestConfig): IngestResult {
     }
     processedFiles += 1;
     totalBytes += content.length;
-    allBlocks.push(...parseFile(path, content));
+    // Multi-language dispatch: .py + unsupported/unloaded exts fall back to the
+    // regex parseFile; other languages use tree-sitter (grammars loaded at
+    // bootstrap). Stays sync — parseFileMultiLang does not await.
+    allBlocks.push(...parseFileMultiLang(path, content, extname(path).toLowerCase()));
     if (maxTotalBytes !== undefined && totalBytes >= maxTotalBytes) {
       truncated = true;
       console.warn(`[code-ingest] ingest reached maxTotalBytes ceiling (${maxTotalBytes}) after ${totalBytes} bytes; remaining files skipped — raise IngestConfig.maxTotalBytes to analyze more.`);
@@ -838,6 +844,22 @@ export function createPythonIngestConfig(repoRoot: string): IngestConfig {
     maxFileBytes: 1_000_000,
     maxFiles: 50_000,             // generous ceiling — a normal repo is far below this
     maxTotalBytes: 1_000_000_000, // 1 GB cumulative — bounds ingest memory on a runaway repo
+  };
+}
+
+/**
+ * Multi-language ingest config: same ceilings as the Python config, but crawls
+ * the languages the tree-sitter extractor supports. Non-source files are
+ * excluded by `includeExts`. Used by the white-box analysis entrypoints.
+ */
+export function createMultiLangIngestConfig(repoRoot: string): IngestConfig {
+  return {
+    repoRoot,
+    includeExts: ['.py', '.js', '.ts', '.tsx', '.go', '.java', '.c', '.cpp'],
+    excludeGlobs: [...DEFAULT_EXCLUDES],
+    maxFileBytes: 1_000_000,
+    maxFiles: 50_000,
+    maxTotalBytes: 1_000_000_000,
   };
 }
 
