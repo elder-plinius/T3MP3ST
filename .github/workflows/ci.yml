@@ -19,6 +19,9 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # Enforce the 100% coverage gate on the new multi-language ingest files
+      # (vitest exits non-zero if a per-file threshold is missed).
+      - run: npm run test:coverage
       - run: npm run doctor
       # Honesty gates: prove the headline numbers re-derive and that no
       # challenge-fitting has crept in. Public contributors / CI can verify.

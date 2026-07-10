@@ -1,20 +1,27 @@
 /**
  * Adversarial hardening — ingest parses UNTRUSTED target source. A crafted file
- * must never throw, hang, or crash a mission; worst case is fail-open to the
- * Python regex parser. Drives the full wired path (parseFileMultiLang +
- * ingestRepository/crawl).
+ * must never throw, hang, or crash a mission; worst case is honest absence ([])
+ * — a non-.py file is NEVER routed to the Python regex. Drives the full wired
+ * path (parseFileMultiLang + ingestRepository/crawl).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from 'fs';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { Tree } from 'web-tree-sitter';
 import { initGrammars, __resetGrammarsForTest } from '../recon/ts-grammars.js';
 import { parseFileMultiLang } from '../recon/ts-parse.js';
 import { ingestRepository, createMultiLangIngestConfig, type CodeBlock } from '../recon/code-ingest.js';
 
+const tmpRoots: string[] = [];
+
 beforeAll(async () => {
   __resetGrammarsForTest();
   await initGrammars();
+});
+
+afterAll(() => {
+  for (const r of tmpRoots) rmSync(r, { recursive: true, force: true });
 });
 
 const invariants = (blocks: CodeBlock[]) => {
@@ -38,8 +45,10 @@ describe('adversarial parseFileMultiLang', () => {
     }
   });
 
-  it('wrong-language content (Python in a .go file) does not throw', () => {
-    expect(() => parseFileMultiLang('x.go', 'def fetch(url):\n    return get(url)\n', '.go')).not.toThrow();
+  it('wrong-language content (Python in a .go file) yields structurally valid output', () => {
+    expect(() =>
+      invariants(parseFileMultiLang('x.go', 'def fetch(url):\n    return get(url)\n', '.go')),
+    ).not.toThrow();
   });
 
   it('binary / non-UTF8 bytes do not throw', () => {
@@ -51,12 +60,14 @@ describe('adversarial parseFileMultiLang', () => {
     expect(parseFileMultiLang('e.go', '', '.go')).toEqual([]);
   });
 
-  it('unicode identifiers are handled', () => {
+  it('unicode identifiers are extracted correctly', () => {
     const blocks = parseFileMultiLang('u.go', 'package m\nfunc Ünïçødé(x int) int { return x }\n', '.go');
-    expect(() => invariants(blocks)).not.toThrow();
+    const fn = blocks.find((b) => b.name === 'Ünïçødé');
+    expect(fn, 'unicode function name captured').toBeDefined();
+    expect(fn!.params).toEqual(['x']);
   });
 
-  it('large file parses within the wall-clock budget (progress callback fires)', () => {
+  it('large file parses within the wall-clock budget and still extracts', () => {
     let src = 'package m\n';
     for (let i = 0; i < 20000; i++) src += `func F${i}(url string) error { return http.Get(url) }\n`;
     const t0 = Date.now();
@@ -65,40 +76,57 @@ describe('adversarial parseFileMultiLang', () => {
     expect(blocks.length).toBeGreaterThan(0);
   });
 
-  it('deeply nested input does not blow the stack or hang', () => {
-    const deep = 'package m\nfunc F() { ' + '{'.repeat(2000) + '}'.repeat(2000) + ' }\n';
-    expect(() => parseFileMultiLang('d.go', deep, '.go')).not.toThrow();
+  it('a real parse tripping the wall-clock budget fails open to [] (not mocked)', () => {
+    // Drive the REAL tree-sitter progressCallback path with a 0ms budget: the
+    // callback returns true on its first invocation, tree-sitter cancels, parse
+    // returns null, and the fail-open returns []. Proves the actual cancellation
+    // wiring — not a mock that hard-returns null.
+    let src = 'package m\n';
+    for (let i = 0; i < 5000; i++) src += `func F${i}(a int) int { return a }\n`;
+    const t0 = Date.now();
+    const blocks = parseFileMultiLang('slow.go', src, '.go', undefined, 0);
+    expect(blocks).toEqual([]); // cancellation path taken
+    expect(Date.now() - t0).toBeLessThan(5000); // cancelled early, not run to completion
   });
 
-  it('repeated large parses do not leak the WASM heap or wedge the shared parser', () => {
-    // Regression for the native Tree/Parser leak: web-tree-sitter has no GC
-    // finalizer, so without tree.delete() the shared WASM heap grows unbounded
-    // and — after a few MB of parsing — every subsequent parse aborts, is
-    // swallowed by the fail-open catch, and returns [] for the rest of the
-    // process. Push ~8MB total (12 × ~700KB) of function-dense JS through the
-    // REAL shared parser; pre-fix this wedges and the canary vanishes, post-fix
-    // it stays stable. Function-dense (not semicolon-dense) so the tree is large
-    // but each parse is fast (~300ms).
-    let src = '';
-    for (let i = 0; i < 24000; i++) src += `function f${i}(a){ return a; }\n`;
-    src += 'function canary(x){ return x * 2; }\n';
-    for (let i = 0; i < 12; i++) {
-      const blocks = parseFileMultiLang('leak.js', src, '.js');
-      expect(blocks.some((b) => b.name === 'canary'), `iteration ${i} still extracts`).toBe(true);
+  it('deeply nested input does not blow the stack, hang, or corrupt output', () => {
+    const deep = 'package m\nfunc F() { ' + '{'.repeat(2000) + '}'.repeat(2000) + ' }\n';
+    const t0 = Date.now();
+    expect(() => invariants(parseFileMultiLang('d.go', deep, '.go'))).not.toThrow();
+    expect(Date.now() - t0).toBeLessThan(10000);
+  });
+
+  it('frees the parsed tree exactly once per parse that produced one (leak-fix mechanism)', () => {
+    // Deterministic, machine-independent guard for the WASM Tree/Parser leak:
+    // assert tree.delete() is actually invoked. (A resource-exhaustion repro is
+    // hardware/heap-ceiling dependent and green-only on machines with headroom.)
+    const del = vi.spyOn(Tree.prototype, 'delete');
+    try {
+      del.mockClear();
+      parseFileMultiLang('ok.go', 'package m\nfunc F(){ return }\n', '.go'); // success path
+      expect(del, 'success path frees its tree').toHaveBeenCalledTimes(1);
+
+      del.mockClear();
+      parseFileMultiLang('bad.ts', 'class C { m( { { {', '.ts'); // error-recovery still yields a tree
+      expect(del, 'error-recovery path frees its tree').toHaveBeenCalledTimes(1);
+    } finally {
+      del.mockRestore();
     }
-  }, 30000);
+  });
 });
 
 describe('adversarial crawl / ingest', () => {
   it('symlink loop under the repo root terminates (crawl does not follow symlink dirs)', () => {
     const root = mkdtempSync(join(tmpdir(), 'advcrawl-'));
+    tmpRoots.push(root);
     const sub = join(root, 'sub');
     mkdirSync(sub);
     writeFileSync(join(sub, 'a.go'), 'package m\nfunc A() {}\n');
     try {
       symlinkSync(root, join(sub, 'loop'), 'dir'); // self-referential loop
     } catch {
-      return; // symlinks unavailable (e.g. restricted env) — skip
+      console.warn('[skip] symlinks unavailable in this environment — loop guard unverified');
+      return;
     }
     const t0 = Date.now();
     const result = ingestRepository(createMultiLangIngestConfig(root));

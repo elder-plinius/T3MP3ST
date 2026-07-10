@@ -4,13 +4,18 @@
  * security-ranking pipeline (classify/prioritize/reachability) is reused
  * verbatim.
  *
- * Fail-open on every path: unsupported/unloaded ext, parse timeout, or any
- * parser error routes the file to the Python-regex `parseFile`. A hostile input
- * cannot crash or hang a mission — the parse is time-bounded.
+ * Fail-open on every path: `.py` uses the Python regex parser; any other
+ * language with a missing grammar, parse timeout, or parser error yields `[]`
+ * (honest absence) — never the Python regex, which would mis-parse brace/`class`
+ * syntax into corrupt blocks. A hostile input cannot crash or hang a mission —
+ * the parse is wall-clock time-bounded and every error is caught.
  */
 import { Parser, type Node } from 'web-tree-sitter';
 import { getGrammar } from './ts-grammars.js';
 import { splitParamList } from './param-split.js';
+// Deliberate circular import with code-ingest.ts (it imports parseFileMultiLang).
+// Safe because both cross-references are used only inside function bodies, never
+// at module-evaluation time — do NOT hoist parseFile/CodeBlock to top-level use.
 import { parseFile, type CodeBlock } from './code-ingest.js';
 
 /** Hard per-file parse bound (wall-clock ms). A pathological input hits this and fail-opens. */
@@ -26,8 +31,9 @@ function getParser(): Parser {
  * free the native (WASM-backed) parser first: web-tree-sitter has no GC-based
  * finalizer, so a dropped-but-not-deleted parser leaks its linear-memory
  * allocation. Left unfreed, repeated failures exhaust the shared WASM heap and
- * permanently wedge every subsequent parse (they abort, get caught here, and
- * fall back to the Python regex forever).
+ * permanently wedge every subsequent parse (they abort, get caught, and yield
+ * [] forever). Frees the module singleton, which is correct because production
+ * always uses the default `getParser` (`makeParser` is a test-only seam).
  */
 function resetParser(): void {
   sharedParser?.delete();
@@ -72,9 +78,11 @@ export function nodeToCodeBlock(
  * never the Python regex, which would mis-parse brace/`class` syntax and emit
  * corrupt blocks (wrong line spans, lost methods) rather than honest absence.
  *
- * Time-bounding note: only the `parse()` call is wall-clock bounded. The match/
- * conversion loop below is not, but is near-linear and fed at most `maxFileBytes`
- * (1 MB) of already-parsed tree, so it cannot spin on a hostile input.
+ * Time-bounding note: only the `parse()` call is wall-clock bounded (via the
+ * `budgetMs` arg, injectable so a test can drive the real cancellation path).
+ * When called through `ingestRepository` the content is capped at `maxFileBytes`
+ * (1 MB) upstream, which also bounds the near-linear match/conversion loop and
+ * the WASM peak-memory demand (see createMultiLangIngestConfig).
  *
  * ponytail: unify Python onto tree-sitter only if CVE-Zero is re-baselined.
  */
@@ -83,6 +91,7 @@ export function parseFileMultiLang(
   content: string,
   ext: string,
   makeParser: () => Parser = getParser,
+  budgetMs: number = PARSE_BUDGET_MS,
 ): CodeBlock[] {
   if (ext === '.py') return parseFile(path, content);
   const g = getGrammar(ext);
@@ -95,7 +104,7 @@ export function parseFileMultiLang(
     // (→ parse returns null). setTimeoutMicros is deprecated/broken in 0.25.
     const start = Date.now();
     tree = p.parse(content, undefined, {
-      progressCallback: () => Date.now() - start > PARSE_BUDGET_MS,
+      progressCallback: () => Date.now() - start > budgetMs,
     });
     if (!tree) {
       resetParser(); // parse cancelled (budget exceeded)
@@ -109,6 +118,9 @@ export function parseFileMultiLang(
     }
     return blocks;
   } catch {
+    // Fail-open. A native WASM OOM abort (huge/dense input near the 2GB heap
+    // ceiling) surfaces here too; it is caught, not fatal, but leaves the shared
+    // heap pinned high — the maxFileBytes cap keeps that unreachable in prod.
     resetParser();
     return []; // any parser error → fail-open (empty, not Python-regex garbage)
   } finally {

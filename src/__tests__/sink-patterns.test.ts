@@ -35,7 +35,7 @@ describe('cross-language sinks', () => {
 
   it('recall: idiomatic outbound/exec forms missed by the first-pass patterns', () => {
     // Go http.NewRequest+client.Do, Go client.Get, Node http(s).request, axios(config),
-    // C exec-family — all real attack-surface idioms that must not rank as neutral.
+    // C exec-family, and receiver-qualified fetch — all real attack-surface idioms.
     for (const s of [
       'req, _ := http.NewRequest("GET", u, nil)',
       'resp, _ := client.Do(req)',
@@ -44,19 +44,26 @@ describe('cross-language sinks', () => {
       'execvp(cmd, args)',
       'https.request(options, cb)',
       'axios({ url: u })',
+      'return window.fetch(url)', // qualified fetch must still match (JS SSRF idiom)
+      'this.fetch(userUrl)',
     ]) {
       expect(DANGEROUS_SINK_RE.test(s), s).toBe(true);
     }
-    for (const s of ['client.Get(u)', 'client.Do(req)', 'http.request(u, cb)', 'axios({url:u})']) {
+    for (const s of ['client.Get(u)', 'client.Do(req)', 'http.request(u, cb)', 'axios({url:u})', 'window.fetch(u)']) {
       expect(OUTBOUND_REQUEST_RE.test(s), s).toBe(true);
     }
   });
 
-  it('precision: a method call on a receiver named system/popen is not a bare-call sink', () => {
+  it('precision: bare-call sinks and generic .Get/.Do methods on unrelated receivers are not flagged', () => {
     // `.system(`/`.popen(` on an unrelated object must not be flagged as the
     // C/OS bare call. (os.system / os.popen keep matching via their own patterns.)
     expect(DANGEROUS_SINK_RE.test('solarSystem.system(planets)'), 'receiver .system(').toBe(false);
     expect(DANGEROUS_SINK_RE.test('os.system(cmd)'), 'os.system still').toBe(true);
-    expect(OUTBOUND_REQUEST_RE.test('config.get(key)'), 'lowercase .get not outbound').toBe(false);
+    // Generic keyed-store methods must NOT be mistaken for outbound HTTP — the
+    // .Get/.Post/.Do alternatives are receiver-qualified to `client`.
+    for (const s of ['return db.Get(id)', 'cache.Get(userID)', 'queue.Do(task)', 'session.Post(data)', 'config.get(key)']) {
+      expect(OUTBOUND_REQUEST_RE.test(s), s).toBe(false);
+      expect(DANGEROUS_SINK_RE.test(s), s).toBe(false);
+    }
   });
 });

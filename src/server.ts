@@ -7792,7 +7792,8 @@ async function startServer() {
 
   // Load multi-language grammars once, before any white-box ingest request.
   // initGrammars is internally fail-open (never rejects): on failure the
-  // registry stays empty and ingest falls back to the Python regex parser.
+  // registry stays empty, Python still ingests via the regex parser, and other
+  // languages yield no blocks (it logs a warning).
   await initGrammars();
 
   // Graceful-shutdown flush: on SIGTERM/SIGINT (Ctrl-C, docker stop, systemctl restart) write

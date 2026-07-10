@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { initGrammars, __resetGrammarsForTest } from '../recon/ts-grammars.js';
-import { ingestRepoToSourceContext } from '../recon/whitebox.js';
+import { ingestRepoToSourceContext, runWhiteboxAnalysis } from '../recon/whitebox.js';
+import { DecompositionOrchestrator } from '../orchestration/index.js';
 
 let base: string;
 let repo: string;
@@ -36,5 +37,23 @@ describe('ingestRepoToSourceContext (production white-box entry) — multi-langu
     expect(sourceContext).toContain('runCmd');
     // Python still ingested alongside.
     expect(sourceContext).toContain('load');
+  });
+
+  it('runWhiteboxAnalysis (2nd production caller) also feeds multilang source to the orchestrator', async () => {
+    // Guards the second createMultiLangIngestConfig swap site — a one-token
+    // revert to createPythonIngestConfig would drop non-.py content silently.
+    // Stub orch.run so no real LLM calls fire; capture the sourceContext it gets.
+    const runSpy = vi
+      .spyOn(DecompositionOrchestrator.prototype, 'run')
+      .mockResolvedValue({} as never);
+    try {
+      await runWhiteboxAnalysis({ repoPath: repo, objective: 'x' });
+      expect(runSpy).toHaveBeenCalledTimes(1);
+      const sourceContext = runSpy.mock.calls[0][1] as string;
+      expect(sourceContext).toContain('Fetch'); // Go reached the orchestrator
+      expect(sourceContext).toContain('runCmd'); // TS reached the orchestrator
+    } finally {
+      runSpy.mockRestore();
+    }
   });
 });

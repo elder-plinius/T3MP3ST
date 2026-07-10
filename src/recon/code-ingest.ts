@@ -177,14 +177,16 @@ const SECURITY_CONTROL_NAME_RE =
 // receiver `foo.system(x)` — that keeps the existing Python corpus's rankings
 // stable (its `os.system`/`os.popen` are matched by the qualified patterns).
 export const DANGEROUS_SINK_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(|exec\.Command(?:Context)?|Runtime\.getRuntime|ProcessBuilder|(?<![\w.])system\(|(?<![\w.])popen\(|(?<![\w.])exec(?:l|v)[pe]?\(|http\.(Get|Post|NewRequest)|https?\.request\(|\.Do\(|(?<![\w.])fetch\(|axios[.(]/;
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(|exec\.Command(?:Context)?|Runtime\.getRuntime|ProcessBuilder|(?<![\w.])system\(|(?<![\w.])popen\(|(?<![\w.])exec(?:l|v)[pe]?\(|http\.(Get|Post|NewRequest)|https?\.request\(|[Cc]lient\.(Do|Get|Post)\(|\bfetch\(|axios[.(]/;
 
 // Outbound-request sinks specifically (subset of the above) — used for the
 // SSRF/IDOR "identifier param + outbound request" signal. Cross-language: Go
-// net/http (http.Get/Post/NewRequest, client.Do/Get/Post), Node http(s).request,
-// JS fetch/axios.
+// net/http (http.Get/Post/NewRequest and *client*.Do/Get/Post), Node http(s).request,
+// JS fetch/axios. `fetch` uses \b (matches window.fetch/this.fetch too); the Go
+// client methods are receiver-qualified to `client` so a mundane db.Get/cache.Get
+// is NOT mistaken for an outbound request.
 export const OUTBOUND_REQUEST_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|http\.(Get|Post|get|post|NewRequest)|https?\.request\(|\.Do\(|\.Get\(|\.Post\(|(?<![\w.])fetch\(|axios[.(]/;
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|http\.(Get|Post|get|post|NewRequest)|https?\.request\(|[Cc]lient\.(Do|Get|Post)\(|\bfetch\(|axios[.(]/;
 
 // URL/identifier-shaped param names.
 const RISKY_PARAM_RE = /url|uri|endpoint|host|addr|id$|_id|path|file|name/i;
@@ -856,6 +858,14 @@ export function createPythonIngestConfig(repoRoot: string): IngestConfig {
  * Multi-language ingest config: same ceilings as the Python config, but crawls
  * the languages the tree-sitter extractor supports. Non-source files are
  * excluded by `includeExts`. Used by the white-box analysis entrypoints.
+ *
+ * SECURITY: `maxFileBytes` (1 MB) is a security control here, not just a perf
+ * knob — it caps the peak WASM linear-memory a single tree-sitter parse can
+ * demand. A dense/obfuscated file large enough to approach web-tree-sitter's
+ * 2 GB heap ceiling makes the native allocator abort() (caught + fail-open, but
+ * the WASM high-water-mark cannot be reclaimed for the process's life). The 1 MB
+ * cap keeps that unreachable (worst measured blow-up ~370x → ~5-6x margin). Do
+ * NOT raise it without re-testing that margin.
  */
 export function createMultiLangIngestConfig(repoRoot: string): IngestConfig {
   return {

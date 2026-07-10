@@ -9,8 +9,9 @@
  * side effects.
  *
  * SCOPE CAVEAT (inherited from code-ingest): the ingest layer extracts blocks via
- * web-tree-sitter for Python/JS/TS/Go/Java/C/C++ (fail-open to the Python regex
- * "AST-lite" path) — see recon/code-ingest.ts + recon/ts-parse.ts. It selects which
+ * web-tree-sitter for Python/JS/TS/Go/Java/C/C++ (Python uses the regex "AST-lite"
+ * path; other languages fail-open to [] — never the Python regex — on a grammar
+ * miss or parse error) — see recon/code-ingest.ts + recon/ts-parse.ts. It selects which
  * blocks to analyze first by security exposure; a language without a bundled grammar,
  * or code imported from outside the scan scope, is invisible. Do NOT describe this as
  * "any repo" or "any language".
