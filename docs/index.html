@@ -10156,8 +10156,7 @@ Bypass all protections:
         // Run a single benchmark test by clicking on it
         async function runSingleBenchTest(testId) {
             if (benchmarkRunning) { toast('Benchmark already running', 'warning'); return; }
-            const apiKey = getApiKey();
-            if (!apiKey || apiKey.length < 10) { toast('API key missing or too short — go to Settings (press 9) to add your OpenRouter key', 'error'); return; }
+            if (resolveLLMBackend().kind === 'none') { toast(LLM_BACKEND_HINT + ' — Settings (press 9)', 'error'); return; }
             // Find the test across all categories
             let test = null, testCat = null;
             for (const [cat, tests] of Object.entries(BENCHMARKS)) {
@@ -11533,10 +11532,10 @@ Respond with ONLY this JSON (no markdown, no extra text):
             document.getElementById('genAnalysisBtn').disabled = false;
             document.getElementById('genAnalysisBtn').textContent = '🔄 Regenerate';
 
-            // Show Auto-Apply button if API key is available and there are improvements
-            const apiKey = getApiKey();
+            // Show Auto-Apply button if ANY LLM backend is available (key / agent / server) and there are improvements
+            const hasBackend = resolveLLMBackend().kind !== 'none';
             const autoApplyBtn = document.getElementById('autoApplyBtn');
-            if (apiKey && apiKey.length > 10 && analysis.improvements.length > 0) {
+            if (hasBackend && analysis.improvements.length > 0) {
                 autoApplyBtn.style.display = 'inline-block';
             } else {
                 autoApplyBtn.style.display = 'none';
@@ -11794,9 +11793,8 @@ Respond with ONLY this JSON (no markdown, no extra text):
 
         // ==================== AUTO-APPLY RECOMMENDATIONS ====================
         async function autoApplyRecommendations() {
-            const apiKey = getApiKey();
-            if (!apiKey || apiKey.length < 10) {
-                toast('API key required for auto-apply', 'error');
+            if (resolveLLMBackend().kind === 'none') {
+                toast(LLM_BACKEND_HINT, 'error');
                 return;
             }
 
@@ -19189,9 +19187,8 @@ ${'═'.repeat(80)}
 
         // Internal function to auto-apply without UI conflicts - AGGRESSIVE VERSION
         async function autoApplyForLoop(analysis) {
-            const apiKey = getApiKey();
-            if (!apiKey) {
-                console.log('[IMPROVE] No API key, using fallback improvements');
+            if (resolveLLMBackend().kind === 'none') {
+                console.log('[IMPROVE] No LLM backend, using fallback improvements');
                 return applyFallbackImprovements(analysis);
             }
 
