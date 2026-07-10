@@ -120,7 +120,9 @@
     "gradient-string": "^2.0.2",
     "inquirer": "^9.2.15",
     "ora": "^8.0.1",
-    "tsx": "^4.7.0"
+    "tree-sitter-wasms": "0.1.13",
+    "tsx": "^4.7.0",
+    "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
