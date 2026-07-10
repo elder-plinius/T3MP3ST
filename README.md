@@ -112,6 +112,18 @@ npm run update:hard     # hard reset to upstream/main (still restores protected 
 
 Works on Windows (PowerShell), macOS, Linux, and WSL. Requires **git** and **npm** on your PATH.
 
+### Safety modes
+
+The updater is destructive **only when explicitly requested**:
+
+| Command | What it does | Local changes |
+|---|---|---|
+| `npm run update` | Default interactive sync | `git merge upstream/main`; protected paths backed up and restored |
+| `npm run update:dry` | Read-only preview | No git init, fetch, merge, reset, or `npm install`; safe on tarball installs |
+| `npm run update:hard` | Opt-in hard reset | `git reset --hard upstream/main`; protected paths still restored |
+
+All non-dry-run modes ask **y/N** before changing anything. Pass `--force` only in trusted automation. On the first-time path (no commits yet), the updater replaces the working tree with the upstream snapshot, but protected paths are backed up first and restored afterward.
+
 ### Protected paths (inside the repo)
 
 Before replacing files, the updater backs up anything on disk that matches [`scripts/update-protected.txt`](scripts/update-protected.txt), then restores it after sync. **Only paths that exist locally are affected** — if you never created them, nothing happens.
