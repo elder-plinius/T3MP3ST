@@ -32,6 +32,7 @@ import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
 import type { OperatorArchetype, LLMProvider } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveRepoSourceForAnalysis, RepoCloneError, RepoPathError } from './recon/whitebox.js';
+import { initGrammars } from './recon/ts-grammars.js';
 import { redactCredential } from './evidence/index.js';
 
 const execFileAsync = promisify(execFile);
@@ -7788,6 +7789,11 @@ async function startServer() {
 
   await loadPersistedState();
   llm = await initLLM();
+
+  // Load multi-language grammars once, before any white-box ingest request.
+  // initGrammars is internally fail-open (never rejects): on failure the
+  // registry stays empty and ingest falls back to the Python regex parser.
+  await initGrammars();
 
   // Graceful-shutdown flush: on SIGTERM/SIGINT (Ctrl-C, docker stop, systemctl restart) write
   // any pending debounced snapshot before exiting, so the persistState debounce can't lose the
