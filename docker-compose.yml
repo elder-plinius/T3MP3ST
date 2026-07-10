@@ -83,6 +83,10 @@ services:
       - BINARY_SIDECAR_URL=https://tempest-binary:8080
       - SANDBOX_SIDECAR_URL=https://tempest-sandbox:8080
 
+    networks:
+      - default
+      - sidecar_internal
+
     depends_on:
       tempest-cloud:
         condition: service_healthy
@@ -212,11 +216,15 @@ services:
 
     cap_add:
       - SYS_PTRACE     # required for strace, gdb, ltrace inside container
-      - NET_RAW        # required for tcpdump packet capture
-      - NET_ADMIN      # required for iptables network mode switching
+      # NET_RAW (tcpdump) and NET_ADMIN (iptables) are intentionally omitted.
+      # Enable them only via a separate sandbox-netmon compose override when
+      # packet-capture mode is explicitly requested.
 
     security_opt:
-      - seccomp:unconfined   # Docker default seccomp blocks ptrace — must disable
+      # Targeted profile: allows ptrace/process_vm_* for strace/gdb/ltrace while
+      # blocking container-escape syscalls (kexec, mount, open_by_handle_at, bpf, …).
+      # Better than seccomp:unconfined — does not expose kernel-module or reboot paths.
+      - seccomp:./docker/seccomp/sandbox-ptrace.json
 
     volumes:
       - type: bind
@@ -247,7 +255,7 @@ services:
       - WINEPREFIX=/opt/wine-env
 
     networks:
-      - sandbox_egress_deny
+      - sidecar_internal
 
     expose:
       - "8080"
@@ -259,15 +267,28 @@ services:
       start_period: 30s
       retries: 3
 
+  # ── Sandbox network-monitor variant ─────────────────────────────────────────
+  # Optional only when packet capture / network mutation is explicitly enabled.
+  # Start with: docker compose --profile sandbox-netmon up -d
+  tempest-sandbox-netmon:
+    extends:
+      service: tempest-sandbox
+    profiles: ["sandbox-netmon"]
+    cap_add:
+      - SYS_PTRACE
+      - NET_RAW
+      # Avoid NET_ADMIN unless a mode truly needs iptables changes.
+
 volumes:
   tempest_missions:
     driver: local
 
 networks:
-  sandbox_egress_deny:
+  sidecar_internal:
     # internal: true creates an isolated network with no external routing —
     # a sample cannot phone home, reach cloud metadata endpoints (169.254.169.254),
-    # or exfiltrate data even if it escapes /tmp. tempest-stack still reaches the
-    # sandbox via the shared Docker bridge on the sidecar HTTPS port.
+    # or exfiltrate data even if it escapes /tmp.
+    # tempest-stack is also attached to this network so it can reach the sandbox
+    # health/API port, while the sandbox itself has no default-network (internet) access.
     internal: true
     driver: bridge

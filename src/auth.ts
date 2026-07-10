@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import express from 'express';
 import type { Express, Request, Response } from 'express';
 
@@ -98,8 +98,9 @@ export function initAuth(app: Express): void {
         express.urlencoded({ extended: false }),
         (req: Request, res: Response) => {
             const body = req.body as { username?: string; password?: string };
-            const pwdMatch = body.password !== undefined &&
-              timingSafeEqual(Buffer.from(String(body.password)), Buffer.from(_password));
+            const sha256 = (s: string): Buffer => createHash('sha256').update(s).digest();
+            const pwdMatch = typeof body.password === 'string' &&
+              timingSafeEqual(sha256(body.password), sha256(_password));
             if (body.username === USERNAME && pwdMatch) {
                 const token = randomBytes(32).toString('hex');
                 sessions.add(token);

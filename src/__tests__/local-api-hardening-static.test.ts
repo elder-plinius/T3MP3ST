@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
+const authSource = readFileSync(join(process.cwd(), 'src/auth.ts'), 'utf8');
 
 function routeBlock(startMarker: string, endMarker: string): string {
   const start = serverSource.indexOf(startMarker);
@@ -28,6 +29,15 @@ describe('local API authorization hardening invariants', () => {
     expect(route).not.toMatch(/body\.target\s*\|\|\s*inferCommandTarget\(parsed\)/);
     expect(route).toMatch(/resolveCommandExecutionTarget\(body, parsed\)/);
     expect(route).toMatch(/guardAction\(body,\s*['"]command_execution['"],\s*targetResolution\.target/);
+  });
+
+  it('auth: password comparison uses constant-time SHA-256 digest so length difference cannot throw or leak timing', () => {
+    // The old code used Buffer.from(password) directly; different-length buffers cause
+    // timingSafeEqual to throw a RangeError, returning 500 instead of 401 on a short password.
+    expect(authSource).toMatch(/createHash\s*\(\s*['"]sha256['"]\s*\)/);
+    expect(authSource).toMatch(/timingSafeEqual\(/);
+    // Must not compare raw Buffer.from(body.password) directly (length-sensitive)
+    expect(authSource).not.toMatch(/timingSafeEqual\s*\(\s*Buffer\.from\s*\(\s*String\s*\(/);
   });
 
   it('Admiral live launch re-checks every General-produced execution target before mission bring-up', () => {

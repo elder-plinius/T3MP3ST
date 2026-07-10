@@ -1282,7 +1282,10 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
 
     const review = this.reviewPlan(p);
 
-    // Flatten operator allocation while preserving useful multiplicity.
+    // Flatten operator allocation while preserving explicit multiplicity from the plan.
+    // Explicitly-planned operators are kept as-is; hunt-lane additions are gated to
+    // archetypes valid for the mission family (prevents web/net operators from being
+    // spawned on code-only families like local_code_scan).
     const operators: OperatorArchetype[] = [];
     const operatorAssignments: Array<{
       archetype: OperatorArchetype;
@@ -1304,8 +1307,11 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
       }
     }
 
+    const allowedArchetypes = getArchetypesForFamily(p.missionFamily);
     for (const lane of p.huntLanes) {
       for (const archetype of lane.specialistArchetypes) {
+        // Only add hunt-lane archetypes that are valid for this family and not already present
+        if (!allowedArchetypes.includes(archetype)) continue;
         if (!operators.includes(archetype)) operators.push(archetype);
         if (!operatorAssignments.some(assignment => assignment.archetype === archetype && assignment.lane === lane.family)) {
           operatorAssignments.push({
@@ -1320,12 +1326,7 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
       }
     }
 
-    // Gate operators: only archetypes valid for this mission's family are spawned.
-    // This prevents web/net operators (recon, scanner, web_scanner) from being spawned
-    // on code-only families like local_code_scan and code_supply_chain.
-    const allowedArchetypes = getArchetypesForFamily(p.missionFamily);
-    const gatedOperators = operators.filter(a => allowedArchetypes.includes(a));
-    const finalOperators = gatedOperators.length > 0 ? gatedOperators : operators;
+    const finalOperators = operators;
 
     return {
       missionName: `${p.codename} — ${p.summary.substring(0, 60)}`,

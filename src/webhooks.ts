@@ -8,6 +8,7 @@
 // =============================================================================
 
 import { createHmac, randomUUID } from 'crypto';
+import { assertPublicHttpUrl } from './net/ssrf.js';
 
 export interface WebhookRegistration {
   id: string;
@@ -108,6 +109,17 @@ async function _deliverWithRetry(
   event: string,
   data: Record<string, unknown>,
 ): Promise<void> {
+  // Re-validate at delivery time — DNS may have changed since registration
+  try {
+    await assertPublicHttpUrl(wh.url, 'webhook URL');
+  } catch (err) {
+    wh.failCount++;
+    console.warn(
+      `[webhooks] delivery blocked (${wh.id} → ${wh.url}): ${(err as Error).message}`,
+    );
+    return;
+  }
+
   const deliveryId = randomUUID();
   const body = JSON.stringify({ event, data, deliveryId, ts: Date.now() });
   const headers: Record<string, string> = {

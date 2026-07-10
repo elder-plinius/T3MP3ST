@@ -309,11 +309,14 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
   private running: boolean = false;
   private paused: boolean = false;
+  private stallReason: string | null = null;
   private tickInterval: NodeJS.Timeout | null = null;
   private tickCount: number = 0;
   private hooks: RuntimeHooks;
   /** Mission-level abort controller — aborted on stop() to cancel all sidecar HTTP calls */
   private missionController: AbortController = new AbortController();
+  /** Tracks when each task dispatch started, for backstop timeout detection */
+  private dispatchStartTime: Map<string, number> = new Map();
 
   constructor(config: TempestConfig) {
     super();
@@ -631,6 +634,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
     this.running = true;
     this.paused = false;
+    this.stallReason = null;
     this.emit('command:started');
 
     // Start tick loop (1 second interval). Catch any tick error so a single bad tick
@@ -676,6 +680,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     }
     this.activeControllers.clear();
     this.activeDispatches.clear();
+    this.dispatchStartTime.clear();
     // Abort all in-flight sidecar HTTPS calls (binary/sandbox/cloud containers)
     try { this.missionController.abort(); } catch { /* noop */ }
     this.arsenal.setAbortSignal(null);
@@ -683,11 +688,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   }
 
   /**
-   * Pause operations
+   * Pause operations, optionally recording the reason for the stall.
    */
-  public pause(): void {
+  public pause(reason?: string): void {
     if (!this.running || this.paused) return;
     this.paused = true;
+    if (reason) this.stallReason = reason;
     this.emit('command:paused');
   }
 
@@ -715,6 +721,16 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
   /** Track whether we've seeded initial tasks for the current mission */
   private taskSeeded: boolean = false;
+
+  /** Returns the task-dispatch timeout in ms, configurable via T3MP3ST_TASK_TIMEOUT_MS. */
+  private resolveTaskTimeoutMs(): number {
+    const envVal = process.env.T3MP3ST_TASK_TIMEOUT_MS;
+    if (envVal) {
+      const parsed = parseInt(envVal, 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return 5 * 60 * 1000; // 5 minutes default
+  }
 
   /**
    * Main tick loop — seeds tasks, dispatches to operators, advances phases
@@ -758,6 +774,30 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
           const callsign = `${reconArchetype.charAt(0).toUpperCase() + reconArchetype.slice(1)}-Auto`;
           try { this.spawnOperator(callsign, reconArchetype); } catch { /* pool full */ }
         }
+      }
+    }
+
+    // ── Backstop: abort dispatches that have been in-flight past the task timeout ──
+    const timeoutMs = this.resolveTaskTimeoutMs();
+    for (const taskId of [...this.activeDispatches]) {
+      const startTime = this.dispatchStartTime.get(taskId);
+      if (!startTime || Date.now() - startTime <= timeoutMs) continue;
+
+      const task = taskQueue.getTask(taskId);
+      const operator = this.cell.getAllOperators().find((op) => op.state.currentTask === taskId);
+
+      this.activeDispatches.delete(taskId);
+      this.dispatchStartTime.delete(taskId);
+      const controller = this.activeControllers.get(taskId);
+      if (controller) { controller.abort(); this.activeControllers.delete(taskId); }
+      if (operator) operator.abortActiveTask(`dispatch timeout after ${timeoutMs}ms`);
+
+      try { taskQueue.fail(taskId, `dispatch timed out after ${timeoutMs}ms`); } catch { /* already terminal */ }
+
+      // Required recon work timing out → stall the mission rather than silently advancing
+      if (task?.phase === KillChainPhase.RECON && mission.currentPhase === KillChainPhase.RECON) {
+        this.pause(`stalled in reconnaissance: required dispatch timed out for task ${taskId}`);
+        return;
       }
     }
 
@@ -831,6 +871,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
       // Dispatch task (fire and forget — don't block the tick loop)
       this.activeDispatches.add(task.id);
+      this.dispatchStartTime.set(task.id, Date.now());
       taskQueue.assign(task.id, operator.id);
 
       // Match task to target by address in the task description
@@ -843,11 +884,13 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.activeControllers.set(task.id, controller);
       operator.assignTask(task, target, controller.signal).then((result) => {
         this.activeDispatches.delete(task.id);
+        this.dispatchStartTime.delete(task.id);
         this.activeControllers.delete(task.id);
         taskQueue.complete(task.id, result);
         this.hooks.onTaskCompleted?.(task);
       }).catch((_error) => {
         this.activeDispatches.delete(task.id);
+        this.dispatchStartTime.delete(task.id);
         this.activeControllers.delete(task.id);
         try {
           taskQueue.fail(task.id, _error instanceof Error ? _error.message : String(_error));
@@ -976,6 +1019,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     name: string;
     running: boolean;
     paused: boolean;
+    stallReason: string | null;
     tickCount: number;
     operators: ReturnType<OperatorCell['getStatus']>;
     targets: ReturnType<TargetEnvironment['getStats']>;
@@ -989,6 +1033,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       name: this.name,
       running: this.running,
       paused: this.paused,
+      stallReason: this.stallReason,
       tickCount: this.tickCount,
       operators: this.cell.getStatus(),
       targets: this.targetEnv.getStats(),

@@ -34,6 +34,7 @@ import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
 import type { OperatorArchetype } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, getArchetypesForFamily, type OperatorOverride } from './operators/index.js';
 import { fireWebhooks, registerWebhook, removeWebhook, listWebhooks, setWebhookEnabled } from './webhooks.js';
+import { assertPublicHttpUrl } from './net/ssrf.js';
 import {
   connectMcpServer,
   disconnectMcpServer,
@@ -7043,6 +7044,21 @@ app.post('/api/attack-graph/ingest', (req: Request, res: Response): void => {
 import { Admiral, briefToDirective, type ChatMsg, type MissionBrief } from './admiral/index.js';
 
 /**
+ * Returns the subset of execTargets whose host does not match (or is not a
+ * subdomain of) the approvedTarget.  An empty return means all targets are in scope.
+ */
+function ensureExecTargetsWithinApprovedTarget(
+  execTargets: string[],
+  approvedTarget: string,
+): string[] {
+  const approvedHost = hostFromTarget(approvedTarget);
+  return execTargets.filter((t) => {
+    const h = hostFromTarget(t);
+    return h !== approvedHost && !h.endsWith(`.${approvedHost}`);
+  });
+}
+
+/**
  * POST /api/admiral/converse — one conversational turn with the Admiral.
  * Body: { messages: [{role:'user'|'assistant', content}], provider?, model?, apiKey? }
  * Returns: { reply, brief, missing, ready }  (no execution — intake only)
@@ -7171,6 +7187,17 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
     const execConfig = activeGeneral.executePlan();
     if (execConfig.review.status === 'hold') {
       res.status(409).json({ error: 'General plan gate is HOLD', mode: 'live', plan, review: execConfig.review });
+      return;
+    }
+    const outOfScopeTargets = ensureExecTargetsWithinApprovedTarget(execConfig.targets, brief.target);
+    if (outOfScopeTargets.length) {
+      res.status(409).json({
+        error: 'General produced execution targets outside approved live target',
+        mode: 'live',
+        approvedTarget: brief.target,
+        outOfScopeTargets,
+        review: execConfig.review,
+      });
       return;
     }
     const broughtUp = bringUpMissionFromPlan(execConfig, generalConfig);
@@ -7558,29 +7585,6 @@ app.delete('/api/agents/local/sessions/:id', (req: Request, res: Response): void
 });
 
 // =============================================================================
-// SSRF GUARD — shared by webhook delivery and MCP SSE connections
-// Blocks private, loopback, and link-local destinations; redirect-following is
-// disabled in webhooks.ts via `redirect: 'error'` so a redirect cannot bypass this.
-// =============================================================================
-
-function _isDeniedSsrfUrl(raw: string): boolean {
-  let host: string;
-  try { host = new URL(raw).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return true; }
-  if (host === 'localhost') return true;
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const [, a, b] = v4.map(Number);
-    if (a === 127 || a === 10 || a === 0) return true;           // loopback + RFC1918 + 0.x
-    if (a === 172 && b >= 16 && b <= 31) return true;            // 172.16-31.x.x RFC1918
-    if (a === 192 && b === 168) return true;                      // 192.168.x.x RFC1918
-    if (a === 169 && b === 254) return true;                      // link-local
-    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT / shared
-  }
-  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
-  return false;
-}
-
-// =============================================================================
 // OUTBOUND WEBHOOKS
 // =============================================================================
 
@@ -7591,15 +7595,17 @@ app.get('/api/webhooks', (_req: Request, res: Response): void => {
 
 // POST /api/webhooks — register a new webhook
 // body: { url, events?: string[], secret?: string }
-app.post('/api/webhooks', (req: Request, res: Response): void => {
+app.post('/api/webhooks', async (req: Request, res: Response): Promise<void> => {
   const { url, events, secret } = req.body || {};
   if (!url) { res.status(400).json({ error: 'url required' }); return; }
-  if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
-    res.status(400).json({ error: 'url must be an http:// or https:// URL' });
+  if (typeof url !== 'string') {
+    res.status(400).json({ error: 'url must be a string' });
     return;
   }
-  if (_isDeniedSsrfUrl(url)) {
-    res.status(400).json({ error: 'Webhook URL must not target private, loopback, or link-local addresses.' });
+  try {
+    await assertPublicHttpUrl(url, 'Webhook URL');
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
     return;
   }
   const wh = registerWebhook(url, Array.isArray(events) ? events : ['*'], secret);
@@ -7627,6 +7633,13 @@ app.post('/api/webhooks/:id/test', async (req: Request, res: Response): Promise<
   const all = listWebhooks();
   const wh = all.find((w) => w.id === req.params.id);
   if (!wh) { res.status(404).json({ error: 'Webhook not found' }); return; }
+  // Re-check URL at test time — DNS may have changed since registration
+  try {
+    await assertPublicHttpUrl(wh.url, 'Webhook URL');
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
   try {
     await fireWebhooks('webhook.test', { message: 'T3MP3ST webhook test ping', webhookId: wh.id });
     res.json({ ok: true });
@@ -7669,8 +7682,10 @@ app.post('/api/mcp/servers/connect', async (req: Request, res: Response): Promis
   }
   if (config.transport === 'sse') {
     if (!config.url) { res.status(400).json({ error: 'url required for sse transport' }); return; }
-    if (_isDeniedSsrfUrl(config.url)) {
-      res.status(400).json({ error: 'MCP SSE URL must not target private, loopback, or link-local addresses.' });
+    try {
+      await assertPublicHttpUrl(config.url, 'MCP SSE URL');
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
       return;
     }
   }

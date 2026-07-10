@@ -1,0 +1,88 @@
+{
+  "comment": "Seccomp profile for tempest-sandbox — permissive base with explicit deny of container-escape and kernel-modification syscalls. Keeps ptrace/process_vm_readv/process_vm_writev available for strace, gdb, and ltrace without requiring seccomp:unconfined.",
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]
+    },
+    {
+      "architecture": "SCMP_ARCH_AARCH64",
+      "subArchitectures": ["SCMP_ARCH_ARM"]
+    }
+  ],
+  "syscalls": [
+    {
+      "comment": "Kernel module loading — not needed; blocks rootkit installation",
+      "names": ["create_module", "delete_module", "finit_module", "init_module", "query_module"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Kernel replace — kexec loads a new kernel, a complete container escape",
+      "names": ["kexec_file_load", "kexec_load"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Filesystem mount operations — containers should not mount filesystems",
+      "names": ["mount", "move_mount", "open_tree", "pivot_root", "umount2"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "open_by_handle_at / name_to_handle_at — classic container-escape via file handle to host FS",
+      "names": ["name_to_handle_at", "open_by_handle_at"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Reboot syscalls — should never be called inside a sandbox container",
+      "names": ["reboot"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Swap management — not needed in a container",
+      "names": ["swapon", "swapoff"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Quota control — not needed in a container",
+      "names": ["quotactl", "quotactl_fd"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "BPF — blocks BPF-based privilege escalation paths",
+      "names": ["bpf"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Kernel keyring — not needed; can leak credentials between containers",
+      "names": ["add_key", "keyctl", "request_key"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "setns / unshare — could be used to escape the current namespace set",
+      "names": ["setns", "unshare"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "Clock modification — containers should use the host clock read-only",
+      "names": ["adjtimex", "clock_adjtime", "clock_adjtime64", "clock_settime", "clock_settime64", "settimeofday", "stime"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "comment": "NFS server control — not needed",
+      "names": ["nfsservctl"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    }
+  ]
+}
