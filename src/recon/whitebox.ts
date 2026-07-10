@@ -17,7 +17,7 @@
 import { config } from '../config/index.js';
 import {
   ingestRepository,
-  createPythonIngestConfig,
+  createMultiLangIngestConfig,
   packAnalysisUnits,
 } from './code-ingest.js';
 import { DecompositionOrchestrator } from '../orchestration/index.js';
@@ -218,7 +218,7 @@ export function ingestRepoToSourceContext(
 ): RepoSourceContext {
   const source = resolveRepoSourceForAnalysis(repoPath);
   try {
-    const result = ingestRepository(createPythonIngestConfig(source.repoPath));
+    const result = ingestRepository(createMultiLangIngestConfig(source.repoPath));
     const packed = packAnalysisUnits(result.analysisUnits, tokenBudget);
     return {
       sourceContext: packed.text,
@@ -302,7 +302,7 @@ export async function runWhiteboxAnalysis(
 
   // 1) ingest source, security-rank the blocks
   try {
-    const result = ingestRepository(createPythonIngestConfig(source.repoPath));
+    const result = ingestRepository(createMultiLangIngestConfig(source.repoPath));
 
     // 2) pack into a generous source view (orchestrator re-packs per-worker itself)
     const packed = packAnalysisUnits(result.analysisUnits, DEFAULT_ANALYSIS_SOURCE_BUDGET);
