@@ -100,9 +100,9 @@ export function supportedExts(): string[] {
 
 /**
  * Load grammars once. Idempotent. Fail-open: any error leaves the (possibly
- * partial) registry in place and marks init done — callers fall back to
- * `parseFile` for exts that never loaded. `wasmDirOverride` lets a test force a
- * bad path to exercise the failure branch.
+ * partial) registry in place and marks init done — callers extract nothing for
+ * exts that never loaded (non-.py fail-open is empty, not the Python regex).
+ * `wasmResolve` lets a test force a bad path to exercise the failure branch.
  */
 export async function initGrammars(
   exts: string[] = supportedExts(),
@@ -124,7 +124,13 @@ export async function initGrammars(
       }
     }
   } catch {
-    // global fail-open: registry stays empty → Python fallback everywhere
+    // global fail-open: registry stays empty → non-.py ingest extracts nothing.
+    // Log once so an operator scanning a non-Python repo sees the degradation
+    // (the `initialized` guard means this never retries for the process).
+    console.warn(
+      '[ts-grammars] grammar init failed; multi-language ingest disabled for this process ' +
+        '(non-Python files will yield no blocks). Python ingest is unaffected.',
+    );
   } finally {
     initialized = true;
   }

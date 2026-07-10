@@ -42,29 +42,26 @@ describe('parseFileMultiLang', () => {
     expect(parseFileMultiLang('a.py', src, '.py')).toEqual(parseFile('a.py', src));
   });
 
-  it('unsupported ext fail-opens to parseFile (no throw)', () => {
-    const src = 'func F(){}';
-    expect(parseFileMultiLang('a.zzz', src, '.zzz')).toEqual(parseFile('a.zzz', src));
+  it('unsupported ext returns [] (no throw, no Python-regex on non-.py)', () => {
+    expect(parseFileMultiLang('a.zzz', 'func F(){}', '.zzz')).toEqual([]);
   });
 
-  it('fail-open on parse timeout (parse returns null)', () => {
-    const src = 'package m\nfunc F(){}\n';
+  it('fail-open on parse timeout (parse returns null) → []', () => {
     const nullParser = () =>
-      ({ setLanguage() {}, setTimeoutMicros() {}, parse: () => null }) as unknown as Parser;
-    expect(parseFileMultiLang('a.go', src, '.go', nullParser)).toEqual(parseFile('a.go', src));
+      ({ setLanguage() {}, parse: () => null, delete() {} }) as unknown as Parser;
+    expect(parseFileMultiLang('a.go', 'package m\nfunc F(){}\n', '.go', nullParser)).toEqual([]);
   });
 
-  it('fail-open on parser error (parse throws)', () => {
-    const src = 'package m\nfunc F(){}\n';
+  it('fail-open on parser error (parse throws) → []', () => {
     const throwParser = () =>
       ({
         setLanguage() {},
-        setTimeoutMicros() {},
         parse() {
           throw new Error('boom');
         },
+        delete() {},
       }) as unknown as Parser;
-    expect(parseFileMultiLang('a.go', src, '.go', throwParser)).toEqual(parseFile('a.go', src));
+    expect(parseFileMultiLang('a.go', 'package m\nfunc F(){}\n', '.go', throwParser)).toEqual([]);
   });
 });
 

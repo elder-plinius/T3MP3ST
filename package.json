@@ -55,6 +55,7 @@
     "mcp": "tsx src/mcp-server.ts",
     "mcp:prod": "node dist/mcp-server.js",
     "test": "vitest run src && node scripts/test-ops-preflight.mjs",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest src",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",

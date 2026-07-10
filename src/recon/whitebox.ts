@@ -14,6 +14,23 @@
  * blocks to analyze first by security exposure; a language without a bundled grammar,
  * or code imported from outside the scan scope, is invisible. Do NOT describe this as
  * "any repo" or "any language".
+ *
+ * KNOWN v1 EXTRACTION LIMITS (fail-safe — these shapes are silently NOT extracted or
+ * under-linked, never mis-extracted; all strictly better than the prior Python-only
+ * ingest, and tracked as follow-ups):
+ *   - JS/TS: only `function`/`method`/`class` declarations are captured. Arrow-function
+ *     and function-expression definitions (`const f = () => …`) are not — idiomatic in
+ *     modern TS, so their sinks may go unranked.
+ *   - C++: only free functions are captured. In-class and out-of-line (`Class::method`)
+ *     member methods are not — a materially narrower C++ story than "full support".
+ *   - Entry-point elevation for non-Python code relies on name heuristics only; no
+ *     language emits `decorators`, so annotation-based routes (Spring `@GetMapping`,
+ *     TS `@Get()`, Express `app.get(...)`) are not elevated to `exposed_externally`.
+ *   - Call-graph/reachability: buildCallGraph strips a block's signature line before
+ *     scanning for callees (kept unchanged for Python-benchmark stability), so a
+ *     SINGLE-LINE non-Python definition (`func F(u) { return G(u) }`) misses the call
+ *     on that line — the block is still extracted and sink-classified, only the edge
+ *     is lost.
  */
 
 import { config } from '../config/index.js';

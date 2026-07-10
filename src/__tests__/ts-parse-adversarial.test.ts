@@ -69,6 +69,24 @@ describe('adversarial parseFileMultiLang', () => {
     const deep = 'package m\nfunc F() { ' + '{'.repeat(2000) + '}'.repeat(2000) + ' }\n';
     expect(() => parseFileMultiLang('d.go', deep, '.go')).not.toThrow();
   });
+
+  it('repeated large parses do not leak the WASM heap or wedge the shared parser', () => {
+    // Regression for the native Tree/Parser leak: web-tree-sitter has no GC
+    // finalizer, so without tree.delete() the shared WASM heap grows unbounded
+    // and — after a few MB of parsing — every subsequent parse aborts, is
+    // swallowed by the fail-open catch, and returns [] for the rest of the
+    // process. Push ~8MB total (12 × ~700KB) of function-dense JS through the
+    // REAL shared parser; pre-fix this wedges and the canary vanishes, post-fix
+    // it stays stable. Function-dense (not semicolon-dense) so the tree is large
+    // but each parse is fast (~300ms).
+    let src = '';
+    for (let i = 0; i < 24000; i++) src += `function f${i}(a){ return a; }\n`;
+    src += 'function canary(x){ return x * 2; }\n';
+    for (let i = 0; i < 12; i++) {
+      const blocks = parseFileMultiLang('leak.js', src, '.js');
+      expect(blocks.some((b) => b.name === 'canary'), `iteration ${i} still extracts`).toBe(true);
+    }
+  }, 30000);
 });
 
 describe('adversarial crawl / ingest', () => {

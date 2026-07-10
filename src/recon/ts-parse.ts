@@ -21,8 +21,16 @@ function getParser(): Parser {
   if (!sharedParser) sharedParser = new Parser();
   return sharedParser;
 }
-/** Drop the parser after a timeout/error so the next parse starts clean. */
+/**
+ * Drop the parser after a timeout/error so the next parse starts clean. MUST
+ * free the native (WASM-backed) parser first: web-tree-sitter has no GC-based
+ * finalizer, so a dropped-but-not-deleted parser leaks its linear-memory
+ * allocation. Left unfreed, repeated failures exhaust the shared WASM heap and
+ * permanently wedge every subsequent parse (they abort, get caught here, and
+ * fall back to the Python regex forever).
+ */
 function resetParser(): void {
+  sharedParser?.delete();
   sharedParser = null;
 }
 
@@ -58,7 +66,16 @@ export function nodeToCodeBlock(
 
 /**
  * Extract CodeBlocks from one file. `.py` keeps the regex parser (benchmark
- * stability); other languages use tree-sitter; everything else fail-opens.
+ * stability); other languages use tree-sitter. Fail-open is language-scoped: the
+ * Python regex parser only ever runs on `.py`. For any other language a missing
+ * grammar, parse timeout, or parser error returns `[]` (nothing extracted) —
+ * never the Python regex, which would mis-parse brace/`class` syntax and emit
+ * corrupt blocks (wrong line spans, lost methods) rather than honest absence.
+ *
+ * Time-bounding note: only the `parse()` call is wall-clock bounded. The match/
+ * conversion loop below is not, but is near-linear and fed at most `maxFileBytes`
+ * (1 MB) of already-parsed tree, so it cannot spin on a hostile input.
+ *
  * ponytail: unify Python onto tree-sitter only if CVE-Zero is re-baselined.
  */
 export function parseFileMultiLang(
@@ -69,19 +86,20 @@ export function parseFileMultiLang(
 ): CodeBlock[] {
   if (ext === '.py') return parseFile(path, content);
   const g = getGrammar(ext);
-  if (!g) return parseFile(path, content); // unsupported / grammars not loaded
+  if (!g) return []; // unsupported / grammar not loaded — honest absence, not Python-regex garbage
+  let tree: ReturnType<Parser['parse']> | undefined;
   try {
     const p = makeParser();
     p.setLanguage(g.language);
     // Bound parse wall-time: progressCallback returning true cancels the parse
     // (→ parse returns null). setTimeoutMicros is deprecated/broken in 0.25.
     const start = Date.now();
-    const tree = p.parse(content, undefined, {
+    tree = p.parse(content, undefined, {
       progressCallback: () => Date.now() - start > PARSE_BUDGET_MS,
     });
     if (!tree) {
       resetParser(); // parse cancelled (budget exceeded)
-      return parseFile(path, content);
+      return [];
     }
     const blocks: CodeBlock[] = [];
     for (const match of g.query.matches(tree.rootNode)) {
@@ -92,6 +110,12 @@ export function parseFileMultiLang(
     return blocks;
   } catch {
     resetParser();
-    return parseFile(path, content); // any parser error → fail-open
+    return []; // any parser error → fail-open (empty, not Python-regex garbage)
+  } finally {
+    // Free the native WASM-backed tree. nodeToCodeBlock already copied every
+    // field out as a plain JS string, so nothing dangles after delete().
+    // Without this the linear-memory heap grows unbounded and eventually
+    // poisons the shared parser for the rest of the process.
+    tree?.delete();
   }
 }

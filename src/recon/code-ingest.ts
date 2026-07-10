@@ -172,14 +172,19 @@ const SECURITY_CONTROL_NAME_RE =
 
 // Dangerous sinks that make a block part of the attack surface. Python patterns
 // plus cross-language sinks (Java/Go/C/JS) for the multi-language ingest.
+// Bare-call patterns (system/popen/exec-family/fetch) use a `(?<![\w.])` guard so
+// they match a C/JS free call `system(x)` but NOT a Python/JS method call on a
+// receiver `foo.system(x)` — that keeps the existing Python corpus's rankings
+// stable (its `os.system`/`os.popen` are matched by the qualified patterns).
 export const DANGEROUS_SINK_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(|exec\.Command|Runtime\.getRuntime|ProcessBuilder|\bsystem\(|\bpopen\(|http\.(Get|Post)|\bfetch\(|axios\./;
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|subprocess|os\.system|\beval\(|\bexec\(|pickle\.loads|yaml\.load|cursor\.execute|\.raw\(|open\(|exec\.Command(?:Context)?|Runtime\.getRuntime|ProcessBuilder|(?<![\w.])system\(|(?<![\w.])popen\(|(?<![\w.])exec(?:l|v)[pe]?\(|http\.(Get|Post|NewRequest)|https?\.request\(|\.Do\(|(?<![\w.])fetch\(|axios[.(]/;
 
 // Outbound-request sinks specifically (subset of the above) — used for the
 // SSRF/IDOR "identifier param + outbound request" signal. Cross-language: Go
-// net/http, JS fetch/axios.
+// net/http (http.Get/Post/NewRequest, client.Do/Get/Post), Node http(s).request,
+// JS fetch/axios.
 export const OUTBOUND_REQUEST_RE =
-  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|http\.(Get|Post|get|post)|\bfetch\(|axios\./;
+  /requests\.(get|post|put)|urllib|urlopen|httpx|socket\.|http\.(Get|Post|get|post|NewRequest)|https?\.request\(|\.Do\(|\.Get\(|\.Post\(|(?<![\w.])fetch\(|axios[.(]/;
 
 // URL/identifier-shaped param names.
 const RISKY_PARAM_RE = /url|uri|endpoint|host|addr|id$|_id|path|file|name/i;
