@@ -45,11 +45,23 @@ http_request(url="https://api.target.com/users", headers={"Authorization":"Beare
 #   X-Tenant: acme                       ← from env (not overridden)
 ```
 
+## Redirect Safety
+
+Injected credentials are protected against redirect-based leakage by default:
+
+- **`http_request` / `header_analysis`** use Node.js `fetch` (undici), which follows the Fetch specification: `Authorization` and `Cookie` headers are stripped automatically on cross-origin redirects (a different host or scheme). A target that 302s to an external host will not receive your token.
+- **`curl_request`** does not pass `--location-trusted`, so curl will not resend `Authorization` on redirect either. (curl only follows redirects at all if `-L` is explicitly supplied, which the tool does not add by default.)
+
+Neither tool sets `redirect: 'manual'` or `--location-trusted`, so the safe default behaviors are preserved. A future enhancement could further scope env headers to only the operator-authorized origin, providing an explicit binding between the token and the egress scope gate's allowed hosts.
+
+## Secret Handling
+
+Injected request headers are never echoed in tool output. `http_request` builds its output from the **response** headers returned by the server (`Object.fromEntries(response.headers.entries())`), not the request headers — so a bearer token or session cookie sent to the target is not written to the evidence store.
+
 ## Security Notes
 
 - `~/.t3mp3st/.env` is created with mode `0600` by `scripts/setup-api.sh` — readable only by your user.
 - Never commit `.env` to source control. The repo's `.gitignore` already excludes it.
-- Header values are injected at the tool handler level and are never logged or written to evidence stores.
 - The env variable name `TEMPEST_TARGET_HEADERS` is intentionally namespaced to avoid accidental collision with generic shell variables.
 
 ## Reference

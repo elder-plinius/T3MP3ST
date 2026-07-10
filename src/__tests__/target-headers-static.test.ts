@@ -245,3 +245,85 @@ describe('TEMPEST_TARGET_HEADERS runtime behaviour — header_analysis', () => {
     expect(result.output).toContain('Strict-Transport-Security');
   });
 });
+
+// =============================================================================
+// SECRET REDACTION — injected request headers must not appear in output
+// =============================================================================
+
+describe('TEMPEST_TARGET_HEADERS secret redaction', () => {
+  let prevHeaders: string | undefined;
+
+  beforeEach(() => {
+    prevHeaders = process.env.TEMPEST_TARGET_HEADERS;
+  });
+
+  afterEach(() => {
+    if (prevHeaders === undefined) {
+      delete process.env.TEMPEST_TARGET_HEADERS;
+    } else {
+      process.env.TEMPEST_TARGET_HEADERS = prevHeaders;
+    }
+    vi.unstubAllGlobals();
+  });
+
+  it('http_request does not echo the injected bearer token in tool output', async () => {
+    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Authorization: 'Bearer ultra-secret-token' });
+    // Response headers contain something benign — only these should appear in output.
+    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, { 'Content-Type': 'application/json' }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await httpTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
+
+    expect(result.success).toBe(true);
+    // Response headers are echoed (expected).
+    expect(result.output).toContain('Content-Type');
+    // Request auth headers must NOT appear in output.
+    expect(result.output).not.toContain('ultra-secret-token');
+    expect(result.output).not.toContain('Authorization');
+  });
+
+  it('header_analysis does not echo the injected cookie in tool output', async () => {
+    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Cookie: 'session=ultra-secret-session' });
+    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, {}));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await headersTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
+
+    expect(result.success).toBe(true);
+    expect(result.output).not.toContain('ultra-secret-session');
+    expect(result.output).not.toContain('Cookie');
+  });
+
+  it('http_request output is built from response headers, not request headers (static)', () => {
+    // The handler reads response.headers.entries() — not the request headers object —
+    // to build its output. This is the structural guarantee that auth never leaks.
+    const block = sourceBlock("name: 'http_request'", "name: 'header_analysis'");
+    expect(block).toContain('response.headers.entries()');
+    // The request `headers` variable must not appear in the output template string.
+    const outputLineIdx = block.indexOf('HTTP ${method}');
+    expect(outputLineIdx).toBeGreaterThanOrEqual(0);
+    const outputLine = block.slice(outputLineIdx, block.indexOf('\n', outputLineIdx));
+    expect(outputLine).not.toContain('headers');
+  });
+});
+
+// =============================================================================
+// REDIRECT SAFETY — auth headers are not forwarded to redirect destinations
+// =============================================================================
+
+describe('TEMPEST_TARGET_HEADERS redirect safety (static invariants)', () => {
+  it('http_request does not override redirect behaviour (fetch strips auth on cross-origin redirect)', () => {
+    const block = sourceBlock("name: 'http_request'", "name: 'header_analysis'");
+    // No explicit `redirect:` option — undici/Node fetch default (follow) strips
+    // Authorization and Cookie on cross-origin 3xx per the Fetch spec.
+    expect(block).not.toContain('redirect:');
+    expect(block).not.toContain('location-trusted');
+  });
+
+  it('curl_request does not add --location-trusted (curl will not resend auth on redirect)', () => {
+    const curlStart = arsenalSource.indexOf("name: 'curl_request'");
+    expect(curlStart).toBeGreaterThanOrEqual(0);
+    const block = arsenalSource.slice(curlStart);
+    expect(block).not.toContain('location-trusted');
+  });
+});
