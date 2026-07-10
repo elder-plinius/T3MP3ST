@@ -18470,6 +18470,10 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             // must still clear any leftover "ENGAGING…/LIVE probing" UI instead of being a no-op.
             if (!missionRunning) {
                 const n = document.getElementById('cmdMissionName'); if (n) n.textContent = 'STANDBY';
+                // Also clear the substatus, or the header reads STANDBY with a stale red
+                // "approval declined" line beneath it. Match the initial idle state.
+                const s = document.getElementById('cmdMissionStatus');
+                if (s) { s.textContent = 'Awaiting orders'; s.style.color = '#666'; }
                 resetEngageUI();
                 return;
             }
