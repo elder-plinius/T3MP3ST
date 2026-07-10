@@ -53,7 +53,7 @@ Offensive security sits behind years of practice and expensive tooling. The bet 
 | 🕸️ **Web apps** | Black-box, external-attacker recon → exploit (XBEN suite) | ✅ Stable |
 | 🚩 **CTF** | Hint-free, sandbox-jailed solves (Cybench) | ✅ Stable |
 | 🤖 **Robotics / OT / embedded** | Coordinated-disclosure pipeline for OSS vuln hunting (OSV + live-PoC + refuter) | ✅ Pipeline stable |
-| 📂 **Source code** | White-box repo analysis with blind master-builder decomposition | ⚠️ Python-only ingest |
+| 📂 **Source code** | White-box repo analysis with blind master-builder decomposition | ✅ Multi-language ingest (web-tree-sitter) |
 | 💰 **Smart contracts** | Damn Vulnerable DeFi | ⚠️ reproduction, not novel discovery |
 | ☁️ **Cloud (IaC)** | Misconfig-detection benchmark (`cloud:bench`) + opt-in cloud arsenal (aws/az/gcloud + scoutsuite/cloudfox/pmapper; pacu gated) | 🚧 IaC-misconfig scaffolding — live-cloud exploitation not yet benchmarked |
 | 📱 **Mobile** | Built-in static analyzer (manifest misconfig + secret/cleartext detection, `mobile:bench`) + opt-in arsenal (mobsfscan/objection/drozer; frida gated) | 🚧 static-detection scaffolding — dynamic exploitation not benchmarked |
@@ -194,7 +194,7 @@ The framework is an 8-operator kill chain, and this table won't blow smoke about
 | Arsenal, MCP server, HTTP API | ✅ Stable | 35 built-in tools by default; 108 with the opt-in `T3MP3ST_FULL_ARSENAL` (+73 adapters, with dangerous/catalog-only drivers — metasploit, hydra, pacu, frida — behind narrow approved paths rather than generic execution) — both counts re-derive via `verify-claims`. `security_recon` over MCP |
 | Egress-scope containment | ✅ Stable (on by default) | once a mission target is set, built-in networked tools refuse off-scope public hosts — not the target/subdomains, not loopback/private (`SCOPE DENIED`) — a tightened default, not a bare tool runner |
 | Coordinated-disclosure pipeline | ✅ Stable | OSV novelty + live PoC + refuter panel + CVSS; drafts only, a human sends |
-| White-box source analysis | ⚠️ Experimental | Python-only regex ingest; multi-model decomposition costs more tokens, not fewer |
+| White-box source analysis | ⚠️ Experimental | Multi-language ingest via web-tree-sitter (Python/JS/TS/Go/Java/C/C++), fail-open to Python regex; multi-model decomposition costs more tokens, not fewer |
 | DeFi (Damn Vulnerable DeFi) | ⚠️ Experimental | reproduces known exploit classes; not novel discovery |
 | Exploiter / Infiltrator / Exfiltrator / Ghost | ⚠️ Experimental | run the real tool-backed ReAct loop (same engine as recon); unproven as a coordinated swarm — single-agent is the benchmarked path, live swarm exploitation still unreliable |
 | Advanced modules (cloud, persistence, swarm, cognition) | 🚧 Planned | interface-only in `src/stubs/` |

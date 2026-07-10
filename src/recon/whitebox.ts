@@ -8,10 +8,12 @@
  * itself makes (worker + orchestrator models). It is otherwise pure of network
  * side effects.
  *
- * SCOPE CAVEAT (inherited from code-ingest): the ingest layer is a PYTHON-ONLY,
- * regex "AST-lite" prototype — see recon/code-ingest.ts. It selects which Python
- * blocks to analyze first by security exposure; anything non-`.py` or imported
- * from outside the scan scope is invisible. Do NOT describe this as "any repo".
+ * SCOPE CAVEAT (inherited from code-ingest): the ingest layer extracts blocks via
+ * web-tree-sitter for Python/JS/TS/Go/Java/C/C++ (fail-open to the Python regex
+ * "AST-lite" path) — see recon/code-ingest.ts + recon/ts-parse.ts. It selects which
+ * blocks to analyze first by security exposure; a language without a bundled grammar,
+ * or code imported from outside the scan scope, is invisible. Do NOT describe this as
+ * "any repo" or "any language".
  */
 
 import { config } from '../config/index.js';
@@ -309,14 +311,14 @@ export async function runWhiteboxAnalysis(
     const sourceContext = packed.text;
 
   // Fail loud ONLY when there is genuinely NO source to analyze: 0 ingestable source files
-  // (non-Python or empty repo). A valid Python repo that has files but no def/class (a
-  // module-level-only script) yields 0 blocks -> empty packed text; that used to run the
-  // orchestrator, so we do NOT regress it into a 500 — gate the throw on the file count, not
-  // on empty packed text, and let a files>0 repo proceed as before.
+  // (no supported-language files, or empty repo). A valid repo that has files but no
+  // def/class/func (a module-level-only script) yields 0 blocks -> empty packed text; that
+  // used to run the orchestrator, so we do NOT regress it into a 500 — gate the throw on the
+  // file count, not on empty packed text, and let a files>0 repo proceed as before.
     if (result.stats.files === 0) {
       throw new Error(
       'white-box analysis has no analyzable source: the repo has 0 ingestable source files ' +
-        '(non-Python, or empty). Point repoPath at a Python codebase.',
+        '(no supported-language source, or empty). Point repoPath at a code repository.',
       );
     }
 
