@@ -10282,7 +10282,7 @@ Bypass all protections:
                 return content;
             }
 
-            const primaryModel = options.model || state.settings?.selectedModel || 'anthropic/claude-opus-4.8';
+            const primaryModel = options.model || state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
             const fallbackModel = state.settings?.fallbackModel || 'nousresearch/hermes-3-llama-3.1-405b';
             let models;
             if (backend.kind === 'venice') {
@@ -10326,8 +10326,12 @@ Bypass all protections:
         async function _backendCall(backend, prompt, options = {}) {
             const text = promptToText(prompt);
             const timeout = options.timeout || 120000;
+            // Prefix the API base so keyless routing works CROSS-ORIGIN: when the static War Room
+            // (GitHub Pages docs/) talks to a separate backend, T3MP3ST_API.baseUrl = http://host:3333.
+            // A bare '/api/...' would hit the Pages origin (404/CORS). Empty base = same-origin (stays relative).
+            const base = (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API && T3MP3ST_API.baseUrl) || '';
             if (backend.kind === 'agent') {
-                const res = await fetch('/api/agents/local/dispatch', {
+                const res = await fetch(base + '/api/agents/local/dispatch', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: backend.agentId, prompt: text, model: options.model, timeoutMs: timeout }),
                     signal: AbortSignal.timeout(timeout + 10000)
@@ -10338,7 +10342,7 @@ Bypass all protections:
                 return data.output || '';
             }
             // server LLM
-            const res = await fetch('/api/llm/chat', {
+            const res = await fetch(base + '/api/llm/chat', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message: text, systemPrompt: options.systemPrompt }),
                 signal: AbortSignal.timeout(timeout)
@@ -11284,7 +11288,7 @@ Respond with ONLY this JSON (no markdown, no extra text):
 
             try {
                 const apiKey = getApiKey();
-                const selectedModel = state.settings?.selectedModel || state.selectedModel || 'anthropic/claude-opus-4.8';
+                const selectedModel = state.settings?.selectedModel || state.selectedModel || 'anthropic/claude-opus-4.6';
 
                 let content;
                 try {
@@ -11883,7 +11887,7 @@ IMPORTANT:
 - Focus on high-priority improvements first
 - Return ONLY valid JSON, no markdown or explanation outside the JSON`;
 
-                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.8';
+                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
 
                 const content = await safeLLMCall(
                     [{ role: 'user', content: prompt }],
@@ -19236,7 +19240,7 @@ RULES:
 - Do not add instructions to hide activity, steal secrets, dump credentials, erase logs, install persistence, or bypass scope.
 - Include 3-5 changes minimum`;
 
-                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.8';
+                const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
 
                 let content;
                 try {
