@@ -10,10 +10,11 @@ echo "║           T3MP3ST API KEY CONFIGURATION                   ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
-ENV_FILE="$(dirname "$0")/../.env"
+ENV_FILE="$HOME/.t3mp3st/.env"
+mkdir -p "$(dirname "$ENV_FILE")"
 
 if [ -f "$ENV_FILE" ]; then
-    echo "[*] Existing .env file found; it will be replaced after you enter a new key."
+    echo "[*] Existing T3MP3ST env file found; it will be replaced after you enter a new key."
 fi
 
 echo ""
@@ -64,24 +65,12 @@ esac
 
 chmod 600 "$ENV_FILE"
 
-# Add .env to gitignore if not already there
-GITIGNORE="$(dirname "$0")/../.gitignore"
-if [ -f "$GITIGNORE" ]; then
-    if ! grep -q "^\.env$" "$GITIGNORE"; then
-        echo ".env" >> "$GITIGNORE"
-        echo "[+] Added .env to .gitignore"
-    fi
-else
-    echo ".env" > "$GITIGNORE"
-    echo "[+] Created .gitignore with .env"
-fi
-
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║              CONFIGURATION COMPLETE!                       ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
-echo "Your API key has been saved to .env (mode 600)"
+echo "Your API key has been saved to $ENV_FILE (mode 600)"
 echo ""
 echo "Start the server with:"
 echo "  npm run server"

@@ -6223,6 +6223,11 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                             return;
                         }
 
+                        if (status.paused && status.stallReason) {
+                            resolve(status);
+                            return;
+                        }
+
                         // Update kill chain from mission phase
                         if (status.mission?.currentPhase) {
                             const phaseMap = {
@@ -17921,7 +17926,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             // ── Local agents: fetch ONCE before the backbone label so both reflect the server's
             // actual agent state from the first poll (and t3mpPreferredAgent can route to a live one) ──
             let __agents = [];
-            try { const s = await (await fetch(base + '/api/agents/local/status')).json(); __agents = s.connected || []; } catch (_) {}
+            try { const s = await (await fetch(base + '/api/agents/local/status?check=1')).json(); __agents = s.connected || []; } catch (_) {}
             window.__t3mpServerAgents = __agents;
             window.__t3mpConnectedAgents = __agents.length;
             window.__t3mpLiveAgents = __agents.filter(a => a.lastPing && a.lastPing.ok).length;
@@ -17931,10 +17936,12 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                 const key = (typeof getApiKey === 'function') ? (getApiKey() || '') : '';
                 let txt, color;
                 const serverLLM = !!(health && health.llm && health.llm.connected);
+                const staleAgents = __agents.filter(a => !a.lastPing || !a.lastPing.ok).length;
                 const hasBackend = !!(agent || key || serverLLM);
                 if (!key && agent) { txt = '⚡ ' + agent.toUpperCase() + ' · local, no key'; color = '#00ff88'; }
                 else if (key) { txt = (key.startsWith('sk-ant-') ? 'Anthropic' : key.startsWith('sk-or-') ? 'OpenRouter' : key.startsWith('sk-') ? 'OpenAI' : 'OpenRouter') + ' · your key'; color = '#0088ff'; }
                 else if (serverLLM) { txt = (health.llm.provider || 'server') + ' · server key'; color = '#0088ff'; }
+                else if (staleAgents) { txt = 'local agent stale — model unreachable'; color = '#ffaa00'; }
                 else { txt = 'none — connect agent / add key'; color = '#ff6b6b'; }
                 $('sysLLM').innerHTML = '<span style="color:'+color+'">'+txt+'</span>';
                 // Keyless hero callout: when NO backend is present (no agent, no key, no server LLM),
@@ -17959,7 +17966,11 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             // ── Local agents cell (reuse the state fetched above; keeps the stale-count latch fresh) ──
             if ($('sysAgents')) {
                 $('sysAgents').innerHTML = __agents.length
-                    ? __agents.map(a => { const live = a.lastPing && a.lastPing.ok; return '<span style="color:'+(live?'#00ff88':'#ffaa00')+'">●</span><span style="color:#ccc">'+a.id+'</span>'; }).join('&nbsp;&nbsp;')
+                    ? __agents.map(a => {
+                        const live = a.lastPing && a.lastPing.ok;
+                        const err = a.lastPing && a.lastPing.error ? ' title="'+String(a.lastPing.error).replace(/"/g,'&quot;')+'"' : '';
+                        return '<span'+err+'><span style="color:'+(live?'#00ff88':'#ffaa00')+'">●</span><span style="color:#ccc">'+a.id+'</span><span style="color:#777;font-weight:normal;font-size:10px">'+(live?' live':' stale')+'</span></span>';
+                      }).join('&nbsp;&nbsp;')
                     : '<span style="color:#888;font-weight:normal">none — click to connect</span>';
             }
             // ── Drive the SitRep pipeline from /api/mission/status (sysPhases/sysFindings status cells were consolidated out) ──
@@ -18246,6 +18257,14 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
                     // Poll for mission completion (SSE provides real-time updates, poll for completion detection)
                     const finalStatus = await BackendDispatch.pollUntilComplete((status) => {
+                        if (status.paused && status.stallReason) {
+                            const reason = status.stallReason;
+                            document.getElementById('cmdMissionStatus').textContent = `Stalled — ${reason}`;
+                            document.getElementById('cmdMissionStatus').style.color = '#ff6b6b';
+                            addMissionLog('error', reason);
+                            addIntel('ERROR', reason, 'danger');
+                            return;
+                        }
                         // Periodic status update
                         if (status.operators?.summary) {
                             const ops = status.operators.summary;
@@ -18263,6 +18282,9 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     }, 3000);
 
                     // Mission complete
+                    if (finalStatus.paused && finalStatus.stallReason) {
+                        throw new Error(finalStatus.stallReason);
+                    }
                     const findingCount = finalStatus.findings?.length || 0;
                     completeMission(null);
                     addIntel('COMMAND', `Backend mission complete. ${findingCount} findings.`, 'success');
@@ -18286,7 +18308,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         setFidelity('off');
                         const why = isScopeBlock
                             ? 'the scope gate refused this target (no valid approval/receipt for it)'
-                            : 'the live-tools backend is unavailable';
+                            : `the live-tools backend failed: ${msg}`;
                         addIntel('REFUSED', `Refusing to simulate against external target ${target} — ${why}. Authorize the target (mint a receipt) or point at a local/practice target.`, 'danger');
                         addMissionLog('error', `Refused: will not run an LLM-only simulation against external target ${target} (${why})`);
                         toast(`Won't fake a run against ${target} — ${why}`, 'error');
@@ -24747,10 +24769,10 @@ Be specific and actionable. Format as structured JSON.`;
     else if (!a.authed) { status='Not authed'; color='amber'; }
     else if (stale) { status='⚠ Auth stale'; color='red'; }
     else if (live) { status='● Live · '+ps.latencyMs+'ms'; color='green'; }
-    else if (connected) { status='● Active'; color='green'; }
+    else if (connected) { status='● Connected · unchecked'; color='amber'; }
     else { status='Detected'; color='cyan'; }
     const disabled = !a.ready;
-    const borderColor = stale ? 'rgba(255,80,80,0.4)' : (connected||live) ? 'rgba(0,255,136,0.35)' : 'rgba(0,200,255,0.14)';
+    const borderColor = stale ? 'rgba(255,80,80,0.4)' : live ? 'rgba(0,255,136,0.35)' : connected ? 'rgba(255,170,0,0.28)' : 'rgba(0,200,255,0.14)';
     const sub = !a.installed ? 'binary not found on PATH'
               : stale ? ('⚠ '+(ps.error ? ps.error.slice(0,70) : 'authentication failed — re-login this CLI'))
               : (a.invokeHint || a.bin);
@@ -24786,10 +24808,10 @@ Be specific and actionable. Format as structured JSON.`;
     const live = Object.keys(pingStatus).filter(function(k){return pingStatus[k].ok;}).length;
     const sum = document.getElementById('localAgentsSummary');
     if (sum) sum.innerHTML = connectedIds.length+' active'+(live?' · '+live+' live':'')+' · '+ready+' ready · '+installed+'/'+agents.length+' installed';
-    // expose for the War Room backend-gate, and dismiss the nudge once ANY agent is connected
-    // (a plain connect counts — not only a successful live-ping)
+    // expose live/connected counts separately. A plain connect is just a registration; only a
+    // fresh successful ping proves the local model is currently usable.
     window.__t3mpLiveAgents = live; window.__t3mpConnectedAgents = connectedIds.length;
-    if (connectedIds.length > 0 || live > 0) { const nb = document.getElementById('noBackendNudge'); if (nb) nb.style.display = 'none'; }
+    if (live > 0) { const nb = document.getElementById('noBackendNudge'); if (nb) nb.style.display = 'none'; }
   }
 
   // ── remember connected agents + silently re-establish them after a refresh ──
@@ -24866,8 +24888,9 @@ Be specific and actionable. Format as structured JSON.`;
     // _isStandalone (no API server) is NOT a backend — client-side mode still needs an API key.
     // Counting it here let keyless standalone deploys bypass the "connect an agent / add a key"
     // gate and silently fall through to a failing OpenRouter pipeline. A backend = a real LLM:
-    // the server's own LLM (llmAvailable) or a connected local agent.
-    return !!(api.llmAvailable || window.__t3mpLiveAgents > 0 || window.__t3mpConnectedAgents > 0);
+    // the server's own LLM (llmAvailable) or a live local agent. A connected-but-stale
+    // agent is not enough, because the underlying local model may have gone down.
+    return !!(api.llmAvailable || window.__t3mpLiveAgents > 0);
   }
   window.t3mpHasBackend = hasBackend;
   // Pick the best connected agent to serve as the mission LLM backend: prefer a live-pinged one, and
@@ -24876,15 +24899,14 @@ Be specific and actionable. Format as structured JSON.`;
     var order = ['codex','hermes','claude'];
     var connected = (connectedIds || []).slice();
     var live = connected.filter(function(id){ return pingStatus[id] && pingStatus[id].ok; });
-    var pool = live.length ? live : connected;
+    var pool = live;
     // Fall back to the SERVER's reported agents (/api/agents/local/status, stashed by
     // refreshSystemStatus). Without this, a War Room loaded without first visiting Settings has an
     // empty client connectedIds and would route missions to a key-provider even though the server
     // already has a live agent — the exact AI-backbone/mission-routing mismatch we want to avoid.
     if (!pool.length && Array.isArray(window.__t3mpServerAgents)) {
       var srv = window.__t3mpServerAgents.slice();
-      var srvLive = srv.filter(function(a){ return a.lastPing && a.lastPing.ok; });
-      pool = (srvLive.length ? srvLive : srv).map(function(a){ return a.id; });
+      pool = srv.filter(function(a){ return a.lastPing && a.lastPing.ok; }).map(function(a){ return a.id; });
     }
     pool.sort(function(a,b){ return order.indexOf(a) - order.indexOf(b); });
     return pool[0] || null;

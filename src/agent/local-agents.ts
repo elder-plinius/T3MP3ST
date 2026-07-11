@@ -137,7 +137,7 @@ const SPECS: AgentSpec[] = [
     invokeHint: 'hermes -z "<prompt>"  (--yolo only if T3MP3ST_HERMES_YOLO=1)',
     versionArgs: ['--version'],
     parseVersion: (o) => (o.match(/v([\d]+\.[\d]+(\.[\d]+)?)/)?.[1]) || (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
-    authArtifacts: ['~/.hermes/.env'],
+    authArtifacts: ['~/.hermes/.env', "~/.hermes/auth.json"],
     oneShot: (p, m) => ['-z', p, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(m ? ['-m', m] : [])],
   },
 ];
@@ -236,6 +236,18 @@ export interface AgentRunResult {
   error?: string;
 }
 
+function agentFailureOutput(output: string): string | null {
+  const text = output.trim();
+  if (/^API call failed\b/i.test(text)) return text.slice(0, 300);
+  if (/connection error/i.test(text) && /failed/i.test(text)) return text.slice(0, 300);
+  return null;
+}
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /**
  * Drive a connected agent with a one-shot headless prompt (real round-trip — SPENDS the agent's quota).
  * Used by /ping (liveness proof) and /dispatch (actually using the operator).
@@ -249,7 +261,7 @@ export function runLocalAgent(
   const t0 = Date.now();
   if (!spec) return Promise.resolve({ ok: false, latencyMs: 0, output: '', error: `unknown agent: ${id}` });
   const args = spec.oneShot(prompt, opts.model);
-  const timeoutMs = opts.timeoutMs ?? 120000;
+  const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
   const maxChars = opts.maxChars ?? 4000;
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
   const env = childEnv();
@@ -270,7 +282,9 @@ export function runLocalAgent(
     child.on('close', (code) => {
       const latencyMs = Date.now() - t0;
       const output = out.trim().slice(0, maxChars);
-      if (code === 0) finish({ ok: true, latencyMs, output });
+      const semanticError = agentFailureOutput(output);
+      if (code === 0 && !semanticError) finish({ ok: true, latencyMs, output });
+      else if (semanticError) finish({ ok: false, latencyMs, output, error: semanticError });
       else finish({ ok: false, latencyMs, output, error: (errOut.trim() || `exited with code ${code}`).slice(0, 300) });
     });
   });
@@ -297,7 +311,7 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
   const env = childEnv();
   const model = opts.model && opts.model !== 'codex-default' && opts.model !== id ? opts.model : undefined;
-  const timeoutMs = opts.timeoutMs ?? 240000;
+  const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
 
   let args: string[];
   let viaStdin = true;
@@ -329,7 +343,9 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
       let content = out.trim();
       if (outFile) { try { content = (readFileSync(outFile, 'utf8').trim() || content); } catch { /* fall back to stdout */ } }
       finish(() => {
-        if (code === 0 && content) resolve(content);
+        const semanticError = agentFailureOutput(content);
+        if (code === 0 && content && !semanticError) resolve(content);
+        else if (semanticError) reject(new Error(semanticError));
         else reject(new Error((errOut.trim() || content || `exited with code ${code}`).slice(0, 800)));
       });
     });

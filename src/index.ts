@@ -208,6 +208,7 @@ import type {
   TempestConfig,
   LLMConfig,
   RuntimeHooks,
+  LLMProvider,
   OperatorArchetype,
   CommandEvents,
   Finding,
@@ -268,6 +269,9 @@ import {
 // TEMPEST COMMAND
 // =============================================================================
 
+const DEFAULT_AGENT_MAX_ITERATIONS = 15;
+const LOCAL_AGENT_MAX_ITERATIONS = Number(process.env.T3MP3ST_LOCAL_AGENT_MAX_ITERATIONS || 30);
+
 /**
  * TEMPEST Command - Main orchestration controller
  */
@@ -322,6 +326,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private tickInterval: NodeJS.Timeout | null = null;
   private tickCount: number = 0;
   private hooks: RuntimeHooks;
+  private readonly taskTimeoutMs: number;
 
   /**
    * White-box source context (security-prioritized code excerpt), set by the
@@ -356,6 +361,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     super();
     this.name = config.name;
     this.hooks = config.hooks || {};
+    this.taskTimeoutMs = TempestCommand.resolveTaskTimeoutMs(config.llm.provider);
 
     // Initialize LLM backbone
     this.llm = new LLMBackbone(config.llm);
@@ -496,8 +502,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     });
 
     // Forward mission events
-    this.mission.on('mission:completed', (_mission) => {
-      // Could trigger reporting here
+    this.mission.on('mission:completed', () => {
+      this.stop();
+    });
+
+    this.mission.on('mission:aborted', () => {
+      this.stop();
     });
 
     this.mission.on('mission:phase_changed', ({ mission, newPhase }) => {
@@ -782,6 +792,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public resume(): void {
     if (!this.running || !this.paused) return;
     this.paused = false;
+    this.stallReason = null;
     this.emit('command:resumed');
   }
 
@@ -810,28 +821,31 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * GENEROUS per-dispatch wall-clock backstop (ms). If a single task dispatch stays
    * in-flight longer than this, the tick loop force-resolves it as a timeout so
    * pendingOrActive can reach 0 and the mission can advance/complete even when an
-   * operator promise wedges. Deliberately large (default 5 min) so it NEVER kills a
-   * legitimately-slow-but-working LLM task (e.g. opus planning ~165s); it only fires
-   * on truly-hung dispatches. Override via T3MP3ST_TASK_TIMEOUT_MS.
+   * operator promise wedges. Deliberately large (default 5 min for API models,
+   * 30 min for local-agent backends) so it does not kill legitimately slow local
+   * CLI work; it only fires on truly-hung dispatches. Override via
+   * T3MP3ST_TASK_TIMEOUT_MS.
    */
-  private readonly taskTimeoutMs: number = TempestCommand.resolveTaskTimeoutMs();
-
   /**
-   * Resolve the dispatch timeout from the environment, falling back to the 5-minute
-   * default. Guards against a non-numeric / non-positive override.
+   * Resolve the dispatch timeout from the environment, falling back to the
+   * provider-specific default. Guards against a non-numeric / non-positive override.
    */
-  private static resolveTaskTimeoutMs(): number {
+  private static resolveTaskTimeoutMs(provider?: LLMProvider): number {
     const DEFAULT_TASK_TIMEOUT_MS = 300000; // 5 minutes — generous backstop, not a deadline
+    const LOCAL_AGENT_TASK_TIMEOUT_MS = 1800000; // local CLI agents can need multiple slow turns
     const raw = process.env.T3MP3ST_TASK_TIMEOUT_MS;
     if (raw != null && raw.trim() !== '') {
       const parsed = Number(raw);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;
     }
-    return DEFAULT_TASK_TIMEOUT_MS;
+    return provider === 'local-agent' ? LOCAL_AGENT_TASK_TIMEOUT_MS : DEFAULT_TASK_TIMEOUT_MS;
   }
 
   /** Track whether we've seeded initial tasks for the current mission */
   private taskSeeded: boolean = false;
+
+  /** Human-readable reason a mission was paused because required work failed. */
+  private stallReason: string | null = null;
 
   /**
    * Main tick loop — seeds tasks, dispatches to operators, advances phases
@@ -885,13 +899,28 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     );
     const inFlight = allMissionTasks.filter(t => this.activeDispatches.has(t.id));
 
-    // If we have tasks, all are done, and nothing is in-flight → advance phase
+    // If we have tasks, all are done, and nothing is in-flight → advance phase.
+    // Failed required tasks are terminal, but they are not successful progress.
+    // Stall instead of walking the phase bar forward with no backend/model work.
     if (allMissionTasks.length > 0 && pendingOrActive.length === 0 && inFlight.length === 0) {
+      const failedCurrentPhase = allMissionTasks.filter(
+        t => t.phase === mission.currentPhase && t.status === 'failed'
+      );
+      if (failedCurrentPhase.length > 0) {
+        const firstError = failedCurrentPhase[0].result?.error;
+        this.stallReason = `stalled in ${mission.currentPhase}: ${failedCurrentPhase.length} required task(s) failed` +
+          (firstError ? ` — ${firstError}` : '');
+        this.paused = true;
+        this.emit('command:paused');
+        return;
+      }
+
       const phaseIndex = mission.phases.indexOf(mission.currentPhase);
       if (phaseIndex === -1) return; // Guard: phase not found (race condition)
       if (phaseIndex < mission.phases.length - 1) {
         // Advance to next phase and generate tasks
         this.mission.advancePhase(mission.id);
+        this.stallReason = null;
         const targets = this.targetEnv.getAllTargets();
         for (const target of targets) {
           this.mission.generateNextPhaseTasks(target.address);
@@ -968,8 +997,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         // double-fire the completion hook.
         if (!this.activeDispatches.has(task.id)) return;
         this.clearDispatch(task.id);
-        taskQueue.complete(task.id, result);
-        this.hooks.onTaskCompleted?.(task);
+        if (result.success === false) {
+          taskQueue.fail(task.id, result.error || result.output || 'task returned unsuccessful result');
+        } else {
+          taskQueue.complete(task.id, result);
+          this.hooks.onTaskCompleted?.(task);
+        }
       }).catch((_error) => {
         if (!this.activeDispatches.has(task.id)) return;
         this.clearDispatch(task.id);
@@ -1003,8 +1036,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * never advances, and completeMission() is never called: the mission HANGS.
    *
    * On every tick we scan the in-flight dispatches and force-resolve any that have
-   * exceeded the GENEROUS wall-clock backstop (taskTimeoutMs, default 5 min), or
-   * that exhibit the exact wedge symptom (owning operator is `executing`/`tasked`
+   * exceeded the GENEROUS wall-clock backstop (taskTimeoutMs), or that exhibit
+   * the exact wedge symptom (owning operator is `executing`/`tasked`
    * but its currentTask is null — i.e. it has silently dropped the task). For each
    * we: (1) mark the task failed/timed-out in the queue, (2) clear its dispatch
    * bookkeeping, and (3) reset the owning operator back to idle so it can take new
@@ -1131,8 +1164,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // Attach the agent loop scoped to this archetype's SPECIALIZED role toolkit (defaultTools =
     // the curated per-operator tool allowlist). toolCategories stays as a coarse fallback.
     const profile = ARCHETYPE_PROFILES[archetype];
+    const maxIterations = this.llm.getProvider() === 'local-agent'
+      ? LOCAL_AGENT_MAX_ITERATIONS
+      : DEFAULT_AGENT_MAX_ITERATIONS;
     const agentLoop = new AgentLoop(this.llm, this.arsenal, {
-      maxIterations: 15,
+      maxIterations,
       maxTokens: 50000,
       toolCategories: profile.toolCategories,
       tools: profile.defaultTools,
@@ -1195,6 +1231,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     vault: ReturnType<EvidenceVault['getStats']>;
     opsec: ReturnType<OpsecController['getStats']>;
     activeMission: string | null;
+    stallReason: string | null;
   } {
     const activeMission = this.mission.getActiveMission();
 
@@ -1208,6 +1245,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       vault: this.vault.getStats(),
       opsec: this.opsec.getStats(),
       activeMission: activeMission?.id || null,
+      stallReason: this.stallReason,
     };
   }
 

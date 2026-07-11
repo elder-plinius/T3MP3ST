@@ -23,6 +23,8 @@ export interface TempestSettings {
     anthropic?: string;
     openai?: string;
     xai?: string;
+    gemini?: string;
+    local?: string;
   };
 
   // Default LLM settings
@@ -57,6 +59,12 @@ export interface TempestSettings {
 
   // xAI — Grok Build / Grok models (OpenAI-compatible API)
   xai: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // Google Gemini — native Gemini API via its OpenAI-compatible endpoint
+  gemini: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -122,6 +130,14 @@ const DEFAULT_SETTINGS: TempestSettings = {
   xai: {
     baseUrl: 'https://api.x.ai/v1',
     defaultModel: 'grok-build-0.1',
+  },
+
+  // Gemini's OpenAI-compatible surface lives under /v1beta/openai. The OpenAIAdapter posts to
+  // `${baseUrl}/chat/completions`, so the /openai path segment is REQUIRED here — without it,
+  // requests hit /v1beta/chat/completions, which is not a valid Gemini endpoint.
+  gemini: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    defaultModel: 'gemini-2.5-flash',
   },
 
   codex: {
@@ -422,6 +438,34 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
     },
   ],
+  // Native Gemini model ids (bare, no `google/` prefix) for Google's OpenAI-compatible endpoint.
+  // Distinct from the `google/gemini-*` ids under `openrouter`, which route through OpenRouter.
+  gemini: [
+    {
+      id: 'gemini-2.5-flash',
+      name: 'Gemini 2.5 Flash (native)',
+      provider: 'Google',
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast', 'tools'],
+    },
+    {
+      id: 'gemini-2.5-pro',
+      name: 'Gemini 2.5 Pro (native)',
+      provider: 'Google',
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'multimodal', 'tools'],
+    },
+    {
+      id: 'gemini-2.0-flash',
+      name: 'Gemini 2.0 Flash (native)',
+      provider: 'Google',
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -547,7 +591,7 @@ class ConfigManager {
   /**
    * Set an API key for a provider
    */
-  setApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai', key: string): void {
+  setApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'local', key: string): void {
     const apiKeys = this.config.get('apiKeys');
     apiKeys[provider] = key;
     this.config.set('apiKeys', apiKeys);
@@ -556,14 +600,22 @@ class ConfigManager {
   /**
    * Get an API key for a provider
    */
-  getApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai'): string | undefined {
+  getApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'local'): string | undefined {
     // First check environment variables (highest priority)
+    // local provider: a self-hosted/OpenAI-compatible server MAY require a bearer
+    // (Zhipu/z.ai, Together, etc.) — accept TEMPEST_LOCAL_API_KEY or provider-specific vars.
+    if (provider === 'local') {
+      const localKey = process.env.TEMPEST_LOCAL_API_KEY?.trim() || process.env.ZAI_API_KEY?.trim() || process.env.ZHIPUAI_API_KEY?.trim();
+      if (localKey) return localKey;
+      return this.config.get('apiKeys')[provider];
+    }
     const envVarMap = {
       openrouter: 'OPENROUTER_API_KEY',
       venice: 'VENICE_API_KEY',
       anthropic: 'ANTHROPIC_API_KEY',
       openai: 'OPENAI_API_KEY',
       xai: 'XAI_API_KEY',
+      gemini: 'GEMINI_API_KEY',
     };
 
     // Force a fully UNCONFIGURED server (no key from env OR the saved store) — used by
@@ -582,7 +634,7 @@ class ConfigManager {
   /**
    * Check if a provider has a valid API key configured
    */
-  hasApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai'): boolean {
+  hasApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'local'): boolean {
     const key = this.getApiKey(provider);
     return !!key && key.length > 10;
   }
@@ -590,7 +642,7 @@ class ConfigManager {
   /**
    * Remove an API key
    */
-  removeApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai'): void {
+  removeApiKey(provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'local'): void {
     const apiKeys = this.config.get('apiKeys');
     delete apiKeys[provider];
     this.config.set('apiKeys', apiKeys);
@@ -607,6 +659,7 @@ class ConfigManager {
     if (this.hasApiKey('anthropic')) providers.push('anthropic');
     if (this.hasApiKey('openai')) providers.push('openai');
     if (this.hasApiKey('xai')) providers.push('xai');
+    if (this.hasApiKey('gemini')) providers.push('gemini');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -654,6 +707,12 @@ class ConfigManager {
         baseUrl = this.config.get('xai').baseUrl;
         actualModel = model || this.config.get('xai').defaultModel;
         break;
+      case 'gemini':
+        // Google Gemini via its OpenAI-compatible endpoint (native tool-calling).
+        apiKey = this.getApiKey('gemini');
+        baseUrl = this.config.get('gemini').baseUrl;
+        actualModel = model || this.config.get('gemini').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -661,13 +720,16 @@ class ConfigManager {
         actualModel = 'mock-model';
         break;
       case 'local':
-        // Self-hosted, keyless. Defaults to Ollama; point TEMPEST_LOCAL_BASE_URL at
-        // any OpenAI-compatible server (LM Studio :1234/v1, vLLM :8000/v1, llama.cpp)
-        // and TEMPEST_LOCAL_MODEL at the model tag you're serving.
+        // Self-hosted, usually keyless. Defaults to Ollama; point TEMPEST_LOCAL_BASE_URL at
+        // any OpenAI-compatible server (LM Studio :1234/v1, vLLM :8000/v1, llama.cpp, Zhipu/z.ai
+        // /api/paas/v4) and TEMPEST_LOCAL_MODEL at the model tag you're serving.
+        // Some OpenAI-compatible servers require a real bearer (Zhipu, Together, etc.) —
+        // TEMPEST_LOCAL_API_KEY (or a provider-specific env like ZAI_API_KEY) provides it.
         baseUrl = process.env.TEMPEST_LOCAL_BASE_URL?.trim() || 'http://localhost:11434/api';
         // 'local-model' is the placeholder id from AVAILABLE_MODELS — treat it as unset so
         // TEMPEST_LOCAL_MODEL (or the llama3 default) wins; a real tag passed in still takes priority.
         actualModel = (model && model !== 'local-model' ? model : undefined) || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3';
+        apiKey = process.env.TEMPEST_LOCAL_API_KEY?.trim() || process.env.ZAI_API_KEY?.trim() || process.env.ZHIPUAI_API_KEY?.trim();
         break;
       default:
         throw new Error(`Unknown provider: ${actualProvider}`);
@@ -699,7 +761,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini') => {
       if (p === primary || !this.hasApiKey(p)) return;
       chain.push({
         provider: p,
@@ -713,6 +775,7 @@ class ConfigManager {
     add('anthropic');
     add('openai');
     add('xai');
+    add('gemini');
     return chain;
   }
 
@@ -793,8 +856,11 @@ class ConfigManager {
       ...settings,
       apiKeys: {
         openrouter: settings.apiKeys.openrouter ? '***REDACTED***' : undefined,
+        venice: settings.apiKeys.venice ? '***REDACTED***' : undefined,
         anthropic: settings.apiKeys.anthropic ? '***REDACTED***' : undefined,
         openai: settings.apiKeys.openai ? '***REDACTED***' : undefined,
+        xai: settings.apiKeys.xai ? '***REDACTED***' : undefined,
+        gemini: settings.apiKeys.gemini ? '***REDACTED***' : undefined,
       },
     };
     writeFileSync(filePath, JSON.stringify(safeSettings, null, 2));
@@ -805,11 +871,16 @@ class ConfigManager {
    */
   createEnvTemplate(filePath: string = join(process.cwd(), '.env.template')): void {
     const template = `# T3MP3ST Environment Configuration
-# Copy this file to .env and fill in your API keys
+# Save this file as ~/.t3mp3st/.env and fill in your API keys
+# The setup script writes the same T3MP3ST-owned file.
 
 # OpenRouter API Key (recommended - access to multiple models)
 # Get your key at: https://openrouter.ai/keys
 OPENROUTER_API_KEY=
+
+# Venice API Key
+# Get your key at: https://venice.ai
+VENICE_API_KEY=
 
 # Anthropic API Key (direct Claude access)
 # Get your key at: https://console.anthropic.com/
@@ -818,6 +889,25 @@ ANTHROPIC_API_KEY=
 # OpenAI API Key
 # Get your key at: https://platform.openai.com/api-keys
 OPENAI_API_KEY=
+
+# xAI API Key
+# Get your key at: https://console.x.ai/
+XAI_API_KEY=
+
+# Google Gemini API Key (direct Gemini API via its OpenAI-compatible endpoint)
+# Get your key at: https://aistudio.google.com/apikey
+GEMINI_API_KEY=
+
+# Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
+# Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).
+# For an OpenAI-compatible server, use a versioned path: LM Studio :1234/v1,
+# vLLM :8000/v1, or e.g. Zhipu/z.ai /api/paas/v4 — any /vN path speaks the
+# OpenAI wire (/chat/completions, choices[]); otherwise the Ollama native format is used.
+# Most local servers are keyless; if yours requires a bearer (Zhipu, Together, …)
+# set TEMPEST_LOCAL_API_KEY (ZAI_API_KEY / ZHIPUAI_API_KEY are accepted as aliases).
+TEMPEST_LOCAL_BASE_URL=http://localhost:11434/api
+TEMPEST_LOCAL_MODEL=llama3
+TEMPEST_LOCAL_API_KEY=
 `;
     writeFileSync(filePath, template);
   }
@@ -830,8 +920,8 @@ OPENAI_API_KEY=
 export const config = new ConfigManager();
 
 // Helper functions for quick access
-export const getApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai') => config.getApiKey(provider);
-export const setApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai', key: string) => config.setApiKey(provider, key);
-export const hasApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai') => config.hasApiKey(provider);
+export const getApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini') => config.getApiKey(provider);
+export const setApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini', key: string) => config.setApiKey(provider, key);
+export const hasApiKey = (provider: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini') => config.hasApiKey(provider);
 export const getLLMConfig = (provider?: LLMProvider, model?: string) => config.getLLMConfig(provider, model);
 export const getConfiguredProviders = () => config.getConfiguredProviders();

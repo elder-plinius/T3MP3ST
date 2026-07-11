@@ -71,6 +71,15 @@ describe('parseTextToolCalls — happy path + drift tolerance', () => {
 });
 
 describe('local-agent backbone surfaces toolCalls (keyless-path fix)', () => {
+  it('describes the current ACTION CONTRACT to the local agent', async () => {
+    cli.mockResolvedValueOnce('Final debrief.');
+    await localBackbone().chatWithTools([{ role: 'user', content: 'scan' }], TOOLS as never);
+    const prompt = String(cli.mock.calls.at(-1)?.[1] || '');
+    expect(prompt).toContain('ACTION CONTRACT');
+    expect(prompt).toContain('nmap_scan');
+    expect(prompt).toContain('port scan a host');
+  });
+
   it('returns toolCalls + finishReason=tool_calls when the agent requests a tool', async () => {
     cli.mockResolvedValueOnce('```json\n{"tool_calls":[{"name":"nmap_scan","arguments":{"target":"x"}}]}\n```');
     const res = await localBackbone().chatWithTools([{ role: 'user', content: 'scan' }], TOOLS as never);
@@ -82,6 +91,19 @@ describe('local-agent backbone surfaces toolCalls (keyless-path fix)', () => {
     const res = await localBackbone().chatWithTools([{ role: 'user', content: 'scan' }], TOOLS as never);
     expect(res.toolCalls).toBeUndefined();
     expect(res.finishReason).toBe('stop');
+  });
+
+  it('does not force the old short timeout when no local-agent timeout is configured', async () => {
+    cli.mockResolvedValueOnce('done');
+    await localBackbone().chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ timeoutMs: undefined });
+  });
+
+  it('passes an explicit local-agent timeout through to the CLI runner', async () => {
+    cli.mockResolvedValueOnce('done');
+    await new LLMBackbone({ provider: 'local-agent', model: 'codex', timeout: 900000 } as never)
+      .chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ timeoutMs: 900000 });
   });
 });
 

@@ -43,6 +43,7 @@ import {
   type SourceFile,
   type SourceBundle,
 } from '../orchestration/context-pack.js';
+import { redactString } from '../redact.js';
 
 // =============================================================================
 // TYPES
@@ -753,6 +754,7 @@ export function ingestRepository(config: IngestConfig): IngestResult {
   let truncated = config.maxFiles !== undefined && files.length >= config.maxFiles;
 
   const allBlocks: CodeBlock[] = [];
+  let processedFiles = 0;
   for (const path of files) {
     let content: string;
     try {
@@ -760,6 +762,7 @@ export function ingestRepository(config: IngestConfig): IngestResult {
     } catch {
       continue;
     }
+    processedFiles += 1;
     totalBytes += content.length;
     allBlocks.push(...parseFile(path, content));
     if (maxTotalBytes !== undefined && totalBytes >= maxTotalBytes) {
@@ -775,7 +778,7 @@ export function ingestRepository(config: IngestConfig): IngestResult {
   const reach = reachability(callGraph, entryPoints);
 
   const stats: IngestResult['stats'] = {
-    files: files.length,
+    files: processedFiles,
     blocks: allBlocks.length,
     exposed_externally: 0,
     exposed_internally: 0,
@@ -861,7 +864,7 @@ export function formatUnitForLLM(unit: AnalysisUnit): string {
     `risk signals: ${unit.riskSignals.length ? unit.riskSignals.join(', ') : '(none)'}`,
   );
   lines.push('---');
-  lines.push(b.body);
+  lines.push(redactString(b.body));
   return lines.join('\n');
 }
 

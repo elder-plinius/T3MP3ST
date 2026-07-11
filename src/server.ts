@@ -5982,6 +5982,13 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     res.status(400).json({ error: 'API key required — pass apiKey, configure one on the server, or connect a local agent (Claude Code / Codex / Hermes)' });
     return;
   }
+  if (provider === 'local-agent') {
+    const localAgent = await requireLiveLocalAgent(model);
+    if (!localAgent.ok) {
+      res.status(503).json({ error: localAgent.error });
+      return;
+    }
+  }
 
   if (targets.length === 0) {
     res.status(400).json({ error: 'At least one target required' });
@@ -6217,6 +6224,7 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
   res.json({
     active: status.running,
     paused: status.paused,
+    stallReason: status.stallReason,
     name: status.name,
     tickCount: status.tickCount,
     mission: mission ? {
@@ -6470,6 +6478,18 @@ function providerNeedsApiKey(provider: string): boolean {
   return !['codex', 'mock', 'local', 'local-agent'].includes(provider);
 }
 
+function readPositiveTimeoutEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function readGeneralTimeoutEnv(): number | undefined {
+  return readPositiveTimeoutEnv('TEMPEST_GENERAL_TIMEOUT_MS')
+    ?? readPositiveTimeoutEnv('T3MP3ST_GENERAL_TIMEOUT_MS');
+}
+
 // SECURITY NOTE: `apiKey` is accepted from the request BODY here (and in the
 // mission/general routes that call this). Sending secrets in the body is not
 // ideal — an Authorization header is preferred — but the same-origin UI posts
@@ -6493,7 +6513,9 @@ function resolveGeneralLLMConfig(provider: string, model: string | undefined, ap
       model: model || 'codex',
       maxTokens: 8192,
       temperature: 0.4,
-      timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000,
+      timeout: readGeneralTimeoutEnv()
+        ?? readPositiveTimeoutEnv('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS')
+        ?? 600000,
     };
   }
   const baseConfig = config.getLLMConfig(selectedProvider as any, model);
@@ -6507,7 +6529,7 @@ function resolveGeneralLLMConfig(provider: string, model: string | undefined, ap
     apiKey: effectiveKey,
     maxTokens: 8192,
     temperature: 0.4,
-    timeout: Number(process.env.TEMPEST_GENERAL_TIMEOUT_MS) || 300000, // General planning needs room (was a hardcoded 60s); override via env
+    timeout: readGeneralTimeoutEnv() ?? 300000, // General planning needs room (was a hardcoded 60s); override via env
   };
 }
 
@@ -7350,8 +7372,51 @@ app.get('/api/bounty/credentials', (_req: Request, res: Response) => {
 // Detect agent CLIs that are already installed + logged-in on this machine and enlist them as
 // operators — no keys are entered or read (auth is detected by artifact PRESENCE only; see
 // src/agent/local-agents.ts). In-memory registry of agents connected this session:
-const connectedLocalAgents = new Map<string, { id: string; label: string; version?: string; connectedAt: number; lastPing?: AgentRunSummary | null }>();
 type AgentRunSummary = { ok: boolean; latencyMs: number; output: string; error?: string };
+type ConnectedLocalAgent = {
+  id: string;
+  label: string;
+  version?: string;
+  connectedAt: number;
+  lastPing?: AgentRunSummary | null;
+  lastHealthCheckAt?: number;
+};
+const connectedLocalAgents = new Map<string, ConnectedLocalAgent>();
+const LOCAL_AGENT_HEALTH_TTL_MS = 30_000;
+const LOCAL_AGENT_HEALTH_TIMEOUT_MS = 15_000;
+
+async function refreshConnectedLocalAgentHealth(force = false): Promise<void> {
+  const now = Date.now();
+  const due = Array.from(connectedLocalAgents.values()).filter((agent) => (
+    force ||
+    !agent.lastHealthCheckAt ||
+    now - agent.lastHealthCheckAt > LOCAL_AGENT_HEALTH_TTL_MS
+  ));
+
+  await Promise.all(due.map(async (agent) => {
+    const result = await pingLocalAgent(agent.id, undefined, LOCAL_AGENT_HEALTH_TIMEOUT_MS);
+    const current = connectedLocalAgents.get(agent.id);
+    if (!current) return;
+    current.lastPing = result;
+    current.lastHealthCheckAt = Date.now();
+  }));
+}
+
+async function requireLiveLocalAgent(model: string | undefined): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const id = String(model || 'codex').trim();
+  const entry = connectedLocalAgents.get(id);
+  if (!entry) return { ok: false, error: `local agent "${id}" is not connected — connect it in Settings first` };
+
+  await refreshConnectedLocalAgentHealth(true);
+  const refreshed = connectedLocalAgents.get(id);
+  if (refreshed?.lastPing?.ok) return { ok: true, id };
+
+  return {
+    ok: false,
+    error: `local agent "${id}" is connected but not live` +
+      (refreshed?.lastPing?.error ? ` — ${refreshed.lastPing.error}` : ''),
+  };
+}
 
 // GET /api/agents/local/detect — which agents are installed / authed / ready (no tokens spent)
 app.get('/api/agents/local/detect', async (_req: Request, res: Response): Promise<void> => {
@@ -7378,7 +7443,14 @@ app.post('/api/agents/local/connect', async (req: Request, res: Response): Promi
     if (!d.authed) { results.push({ id, status: 'not-authed', version: d.version }); continue; }
     let ping: AgentRunSummary | null = null;
     if (doPing) ping = await pingLocalAgent(id);
-    connectedLocalAgents.set(id, { id, label: d.label, version: d.version, connectedAt: Date.now(), lastPing: ping });
+    connectedLocalAgents.set(id, {
+      id,
+      label: d.label,
+      version: d.version,
+      connectedAt: Date.now(),
+      lastPing: ping,
+      lastHealthCheckAt: ping ? Date.now() : undefined,
+    });
     results.push({ id, status: 'active', label: d.label, version: d.version, authMethod: d.authMethod, ping });
   }
   syncLocalAgentSelection(connectedLocalAgents, ids, replace);
@@ -7391,7 +7463,10 @@ app.post('/api/agents/local/ping', async (req: Request, res: Response): Promise<
   if (!body.id) { res.status(400).json({ error: 'id required' }); return; }
   const r = await pingLocalAgent(body.id, body.prompt);
   const entry = connectedLocalAgents.get(body.id);
-  if (entry) entry.lastPing = r;
+  if (entry) {
+    entry.lastPing = r;
+    entry.lastHealthCheckAt = Date.now();
+  }
   res.json({ id: body.id, ...r });
 });
 
@@ -7411,8 +7486,10 @@ app.post('/api/agents/local/disconnect', (req: Request, res: Response): void => 
   res.json({ ok: true, connected: Array.from(connectedLocalAgents.keys()) });
 });
 
-// GET /api/agents/local/status — currently connected agents
-app.get('/api/agents/local/status', (_req: Request, res: Response): void => {
+// GET /api/agents/local/status — connected agents, optionally with a bounded live health check.
+app.get('/api/agents/local/status', async (req: Request, res: Response): Promise<void> => {
+  const check = /^(1|true|yes|on)$/i.test(String(req.query.check || ''));
+  if (check) await refreshConnectedLocalAgentHealth(false);
   res.json({ connected: Array.from(connectedLocalAgents.values()) });
 });
 

@@ -18,6 +18,7 @@ import type { MissionControl } from '../mission/index.js';
 import type { OpsecController } from '../opsec/index.js';
 import { randomUUID } from 'crypto';
 import { SEVERITY_SCORES } from '../evidence/index.js';
+import { redactString } from '../redact.js';
 
 // =============================================================================
 // ANALYSIS ENGINE
@@ -251,7 +252,7 @@ export class AnalysisEngine {
     // Executive Summary
     lines.push('## Executive Summary');
     lines.push('');
-    lines.push(report.summary.overview);
+    lines.push(redactString(report.summary.overview));
     lines.push('');
     lines.push('### Risk Overview');
     lines.push('');
@@ -282,26 +283,27 @@ export class AnalysisEngine {
     );
 
     for (const finding of sortedFindings) {
-      lines.push(`### ${finding.title}`);
+      lines.push(`### ${redactString(finding.title)}`);
       lines.push('');
       lines.push(`**Severity:** ${finding.severity.toUpperCase()}`);
       if (finding.cvss) lines.push(`**CVSS:** ${finding.cvss}`);
       if (finding.cve?.length) lines.push(`**CVE:** ${finding.cve.join(', ')}`);
       lines.push('');
       lines.push('**Description:**');
-      lines.push(finding.description);
+      lines.push(redactString(finding.description));
       lines.push('');
 
       if (finding.remediation) {
         lines.push('**Remediation:**');
-        lines.push(finding.remediation);
+        lines.push(redactString(finding.remediation));
         lines.push('');
       }
 
       if (finding.evidence.length > 0) {
         lines.push('**Evidence:**');
         for (const evidence of finding.evidence) {
-          lines.push(`- ${evidence.type}: \`${evidence.content.substring(0, 100)}${evidence.content.length > 100 ? '...' : ''}\``);
+          const content = redactString(evidence.content);
+          lines.push(`- ${evidence.type}: \`${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\``);
         }
         lines.push('');
       }
@@ -313,15 +315,15 @@ export class AnalysisEngine {
       lines.push('');
 
       for (const path of report.attackPaths) {
-        lines.push(`### ${path.name}`);
+        lines.push(`### ${redactString(path.name)}`);
         lines.push('');
         lines.push(`**Impact Level:** ${path.impactLevel.toUpperCase()}`);
         lines.push('');
-        lines.push(path.description);
+        lines.push(redactString(path.description));
         lines.push('');
         lines.push('**Steps:**');
         for (let i = 0; i < path.steps.length; i++) {
-          lines.push(`${i + 1}. ${path.steps[i]}`);
+          lines.push(`${i + 1}. ${redactString(path.steps[i])}`);
         }
         lines.push('');
       }
@@ -342,8 +344,8 @@ export class AnalysisEngine {
         lines.push('### Immediate Priority');
         lines.push('');
         for (const rec of byPriority.immediate) {
-          lines.push(`- **${rec.title}** (Effort: ${rec.effort})`);
-          lines.push(`  ${rec.description}`);
+          lines.push(`- **${redactString(rec.title)}** (Effort: ${rec.effort})`);
+          lines.push(`  ${redactString(rec.description)}`);
         }
         lines.push('');
       }
@@ -352,8 +354,8 @@ export class AnalysisEngine {
         lines.push('### Short-Term Priority');
         lines.push('');
         for (const rec of byPriority.short_term) {
-          lines.push(`- **${rec.title}** (Effort: ${rec.effort})`);
-          lines.push(`  ${rec.description}`);
+          lines.push(`- **${redactString(rec.title)}** (Effort: ${rec.effort})`);
+          lines.push(`  ${redactString(rec.description)}`);
         }
         lines.push('');
       }
@@ -362,8 +364,8 @@ export class AnalysisEngine {
         lines.push('### Long-Term Priority');
         lines.push('');
         for (const rec of byPriority.long_term) {
-          lines.push(`- **${rec.title}** (Effort: ${rec.effort})`);
-          lines.push(`  ${rec.description}`);
+          lines.push(`- **${redactString(rec.title)}** (Effort: ${rec.effort})`);
+          lines.push(`  ${redactString(rec.description)}`);
         }
         lines.push('');
       }

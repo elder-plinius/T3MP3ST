@@ -461,6 +461,9 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       return {
         success: result.success,
         output: result.summary,
+        error: result.finalSummaryError
+          ? `${result.summary} Final summary failed: ${result.finalSummaryError}`
+          : undefined,
         findings: result.findings.map(f => f.title),
         nextTasks: undefined,
       };

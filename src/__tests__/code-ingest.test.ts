@@ -349,4 +349,30 @@ describe('packAnalysisUnits', () => {
     expect(text).toContain('risk signals:');
     expect(text).toContain('requests.get(url)'); // body included
   });
+
+  it('redacts source secrets before producing LLM-facing context', () => {
+    const blocks = parseFile('secrets.py', `def leak():\n    api_key = "sk-ant-api03-ABCDEFGHIJKLMNOP"\n    return "Authorization: Bearer abcdefghijklmnop"\n`);
+    const block = blocks[0];
+    if (!block) throw new Error('expected parseFile to return a block');
+    const unit: AnalysisUnit = {
+      block,
+      exposure: 'neutral',
+      callers: [],
+      callees: [],
+      reachable: false,
+      reachDepth: Infinity,
+      reachabilityPaths: [],
+      riskSignals: [],
+      priority: 0,
+    };
+
+    const formatted = formatUnitForLLM(unit);
+    const packed = packAnalysisUnits([unit], 100_000).text;
+
+    for (const text of [formatted, packed]) {
+      expect(text).not.toContain('sk-ant-api03-ABCDEFGHIJKLMNOP');
+      expect(text).not.toContain('Bearer abcdefghijklmnop');
+      expect(text).toContain('[redacted]');
+    }
+  });
 });

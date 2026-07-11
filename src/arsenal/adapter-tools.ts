@@ -79,6 +79,39 @@ const str = (v: unknown): string | undefined =>
   typeof v === 'string' && v.trim() ? v.trim() : undefined;
 
 /**
+ * Resolve the filesystem PATH a source/supply-chain scanner should run against (semgrep, gitleaks,
+ * trivy, …). These adapters are non-networked and operate on a directory, defaulting to the working
+ * dir (`.`). The subcommand + output flags in each template are HARDCODED — only this path is
+ * tunable, and it is sanitised so it cannot smuggle a flag or an inherited URL past the gate:
+ *   - a leading `-` would be reparsed as a scanner flag (arg injection) → fall back to `.`,
+ *   - an http(s) URL (e.g. a networked mission target inherited via context.target.address) is not a
+ *     scan path → fall back to `.`.
+ */
+const scanPath = (target: string, params: Record<string, unknown>): string => {
+  const p = str(params.path) ?? str(params.target) ?? (target || undefined);
+  if (!p || /^-/.test(p) || /^https?:\/\//i.test(p)) return '.';
+  return p;
+};
+
+/**
+ * Resolve the local FILE/artifact a reverse-engineering or mobile analyser runs against (objdump,
+ * readelf, r2, myth, apkleaks, …). Unlike a directory scanner, a binary tool has no sensible cwd
+ * default — a bare `objdump .` is meaningless — so instead of silently degrading this REFUSES an
+ * absent or non-local path by throwing, which the factory handler turns into a clean
+ * `{ success:false }` result (never an unhandled rejection). The two rejected shapes:
+ *   - no path at all → the tool would spawn `<binary> ''` / `<binary>` and produce nothing,
+ *   - an http(s) URL (e.g. a networked mission target inherited via context.target.address) → not a
+ *     local artifact. (A leading `-` is already refused upstream by the factory's option-looking-
+ *     target guard, since these templates read the artifact from their `targetParam`.)
+ */
+const artifactPath = (target: string, params: Record<string, unknown>): string => {
+  const p = str(params.file) ?? str(params.path) ?? str(params.artifact) ?? (target || undefined);
+  if (!p) throw new Error('requires a file/artifact path (none was provided).');
+  if (/^https?:\/\//i.test(p)) throw new Error(`'${p}' is a URL, not a local artifact path.`);
+  return p;
+};
+
+/**
  * Per-binary arg templates for the common command-ready adapters. Keyed by `adapter.binary` (the
  * process name), with `adapter.id` also accepted as a fallback key so callers can template by either.
  * Anything not listed here falls back to `DEFAULT_TEMPLATE` (pass the target as a positional arg).
@@ -217,6 +250,111 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
       return args;
     },
   },
+
+  // ── Source / supply-chain scanners (non-networked, operate on a PATH) ───────────────────────────
+  // Without these, each falls through to DEFAULT_TEMPLATE and spawns `<binary> <target>` — which for
+  // a subcommand-driven scanner is a broken invocation (e.g. `semgrep .` never runs a scan, and with
+  // no path it is `semgrep ''`). Templates mirror the catalog `commandHint` and hardcode the
+  // subcommand + machine-readable output flags; the only tunable is the scan path (see scanPath).
+  semgrep: {
+    targetParam: 'path',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => ['scan', '--config', 'auto', '--json', scanPath(target, params)],
+  },
+  gitleaks: {
+    targetParam: 'path',
+    defaultTimeoutMs: 180_000,
+    build: (target, params) => ['detect', '--source', scanPath(target, params), '--report-format', 'json', '--redact', '--no-banner'],
+  },
+  trufflehog: {
+    targetParam: 'path',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => ['filesystem', scanPath(target, params), '--json', '--no-update'],
+  },
+  trivy: {
+    targetParam: 'path',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => ['fs', '--format', 'json', scanPath(target, params)],
+  },
+  syft: {
+    targetParam: 'path',
+    defaultTimeoutMs: 180_000,
+    build: (target, params) => ['dir:' + scanPath(target, params), '-o', 'cyclonedx-json'],
+  },
+  grype: {
+    targetParam: 'path',
+    defaultTimeoutMs: 180_000,
+    build: (target, params) => ['dir:' + scanPath(target, params), '-o', 'json'],
+  },
+  checkov: {
+    targetParam: 'path',
+    defaultTimeoutMs: 180_000,
+    build: (target, params) => ['-d', scanPath(target, params), '-o', 'json'],
+  },
+
+  // ── Reverse-engineering / mobile / smart-contract static analysis (local_read, operate on a FILE) ─
+  // Without these each falls through to DEFAULT_TEMPLATE and spawns `<binary> <file>` — which for a
+  // subcommand- or flag-driven analyser is a broken (or, for r2, an INTERACTIVE-shell-hanging)
+  // invocation. Templates mirror the catalog `commandHint` and hardcode the READ-ONLY subcommand +
+  // machine-readable output flags; the only tunable is the artifact/scan path (see artifactPath /
+  // scanPath). None add an intrusive or code-executing flag — risk stays where the catalog put it.
+  objdump: {
+    // `objdump <file>` errors ("no options given"); disassembly needs an action flag.
+    targetParam: 'file',
+    defaultTimeoutMs: 60_000,
+    build: (target, params) => ['-d', '-M', 'intel', artifactPath(target, params)],
+  },
+  readelf: {
+    // `readelf <file>` errors ("Warning: Nothing to do"); `-a` dumps all ELF headers.
+    targetParam: 'file',
+    defaultTimeoutMs: 60_000,
+    build: (target, params) => ['-a', artifactPath(target, params)],
+  },
+  checksec: {
+    // checksec takes its subject as `--file=<path>`, not a bare positional.
+    targetParam: 'file',
+    defaultTimeoutMs: 30_000,
+    build: (target, params) => ['--file=' + artifactPath(target, params)],
+  },
+  r2: {
+    // A bare `r2 <file>` drops into an INTERACTIVE prompt and blocks the agent loop until the
+    // per-adapter timeout burns out. `-q -c ij` runs ONE read-only info command as JSON, then quits;
+    // `scr.color=0` keeps the JSON free of ANSI escapes. No `w`/`!`/analysis-write commands are used.
+    targetParam: 'file',
+    defaultTimeoutMs: 60_000,
+    build: (target, params) => ['-q', '-e', 'scr.color=0', '-c', 'ij', artifactPath(target, params)],
+  },
+  exiftool: {
+    // `exiftool <file>` works but prints human text; `-json` gives a structured, parseable channel.
+    targetParam: 'file',
+    defaultTimeoutMs: 30_000,
+    build: (target, params) => ['-json', artifactPath(target, params)],
+  },
+  myth: {
+    // `myth <file>` errors; Mythril needs the `analyze` subcommand. `-o json` emits machine output.
+    targetParam: 'file',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => ['analyze', artifactPath(target, params), '-o', 'json'],
+  },
+  apkleaks: {
+    // `apkleaks <file>` errors; the APK is supplied via `-f`. Results print to stdout.
+    targetParam: 'file',
+    defaultTimeoutMs: 180_000,
+    build: (target, params) => ['-f', artifactPath(target, params)],
+  },
+  slither: {
+    // Slither accepts a positional target, but a bare run prints human text; `--json -` streams the
+    // findings as JSON to stdout. Directory-oriented, so it may default to the working dir.
+    targetParam: 'path',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => [scanPath(target, params), '--json', '-'],
+  },
+  mobsfscan: {
+    // Directory-oriented static scanner; `--json` gives a structured channel over the default text.
+    targetParam: 'path',
+    defaultTimeoutMs: 180_000,
+    build: (target, params) => ['--json', scanPath(target, params)],
+  },
 };
 
 /** Fallback for any mintable adapter without a bespoke template: pass the target as a positional arg. */
@@ -231,6 +369,16 @@ const TARGET_PARAM_KEYS = ['url', 'target', 'host', 'hostname', 'domain', 'addre
 
 function resolveTemplate(adapter: ToolAdapter): ArgTemplate {
   return ARG_TEMPLATES[adapter.binary] ?? ARG_TEMPLATES[adapter.id] ?? DEFAULT_TEMPLATE;
+}
+
+/**
+ * True when the adapter has a bespoke `ARG_TEMPLATE` (a real, hardcoded invocation) rather than
+ * falling through to `DEFAULT_TEMPLATE`'s bare `<binary> <target>`. Exported so the invocation-honesty
+ * guard test can assert that every mintable adapter's invocation correctness is explicitly classified
+ * — and that a newly-catalogued subcommand tool cannot silently ship a broken positional invocation.
+ */
+export function hasArgTemplate(adapter: ToolAdapter): boolean {
+  return Boolean(ARG_TEMPLATES[adapter.binary] ?? ARG_TEMPLATES[adapter.id]);
 }
 
 /**

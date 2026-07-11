@@ -5,12 +5,24 @@ import { join } from 'path';
 const configSource = readFileSync(join(process.cwd(), 'src/config/index.ts'), 'utf8');
 const setupScript = readFileSync(join(process.cwd(), 'scripts/setup-api.sh'), 'utf8');
 
-function configLoadEnvBlock(): string {
-  const start = configSource.indexOf('private loadEnvVariables(): void');
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = configSource.indexOf('\n  /**\n   * Get all settings', start);
-  expect(end).toBeGreaterThan(start);
+function sourceBlock(startMarker: string, endMarker: string): string {
+  const start = configSource.indexOf(startMarker);
+  expect(start, `missing start marker ${startMarker}`).toBeGreaterThanOrEqual(0);
+  const end = configSource.indexOf(endMarker, start);
+  expect(end, `missing end marker ${endMarker}`).toBeGreaterThan(start);
   return configSource.slice(start, end);
+}
+
+function configLoadEnvBlock(): string {
+  return sourceBlock('private loadEnvVariables(): void', '\n  /**\n   * Get all settings');
+}
+
+function exportConfigBlock(): string {
+  return sourceBlock('exportConfig(filePath: string): void', '\n  /**\n   * Create a .env template file');
+}
+
+function envTemplateBlock(): string {
+  return sourceBlock('createEnvTemplate(filePath:', '\n    writeFileSync(filePath, template);');
 }
 
 describe('API key environment handling hardening', () => {
@@ -19,6 +31,30 @@ describe('API key environment handling hardening', () => {
 
     expect(block).not.toContain("join(process.cwd(), '.env')");
     expect(block).toContain("join(homedir(), '.t3mp3st', '.env')");
+  });
+
+  it('setup-api.sh writes the same T3MP3ST-owned env file that ConfigManager reads', () => {
+    const block = configLoadEnvBlock();
+
+    expect(setupScript).not.toMatch(/dirname "\$0"\).*\.\.\/\.env/);
+    expect(setupScript).toMatch(/\.t3mp3st/);
+    expect(setupScript).toMatch(/mkdir\s+-p\s+"\$\(dirname "\$ENV_FILE"\)"/);
+    expect(block).toContain("join(homedir(), '.t3mp3st', '.env')");
+  });
+
+  it('env template points users at the T3MP3ST-owned env file, not a caller-cwd .env', () => {
+    const block = envTemplateBlock();
+
+    expect(block).toContain('~/.t3mp3st/.env');
+    expect(block).not.toContain('Copy this file to .env');
+  });
+
+  it('exportConfig redacts every supported provider key slot', () => {
+    const block = exportConfigBlock();
+
+    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai']) {
+      expect(block).toContain(`${provider}: settings.apiKeys.${provider} ? '***REDACTED***' : undefined`);
+    }
   });
 
   it('ConfigManager uses env keys in-memory and does not persist imported env keys', () => {

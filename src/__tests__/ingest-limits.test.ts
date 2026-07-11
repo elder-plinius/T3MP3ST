@@ -36,6 +36,8 @@ describe('ingest ceilings (bounded ingest, non-regressing)', () => {
     const dir = makeRepo(20); dirs.push(dir);
     const res = ingestRepository(cfg(dir, { maxTotalBytes: 50 })); // ~30 bytes/file → breaks after ~2
     expect(res.stats.truncated).toBe(true);
+    expect(res.stats.files).toBeLessThan(20);
+    expect(res.stats.files).toBe(res.stats.blocks); // fixture has one block per processed file
     expect(res.stats.blocks).toBeGreaterThan(0);
   });
 

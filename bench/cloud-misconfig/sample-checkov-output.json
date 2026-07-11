@@ -1,0 +1,13 @@
+{
+  "_note": "A committed, representative `checkov -o json` result over the corpus fixtures, used by --self-test to validate the parser + scorer OFFLINE (checkov need not be installed). The secure control trips only a benign logging check (CKV_AWS_18), NOT any target misconfig check — so discrimination must pass.",
+  "results": {
+    "failed_checks": [
+      { "check_id": "CKV_AWS_20", "file_path": "/s3-public-acl.tf", "resource": "aws_s3_bucket.public", "severity": "HIGH" },
+      { "check_id": "CKV_AWS_24", "file_path": "/sg-open-ssh.tf", "resource": "aws_security_group.ssh", "severity": "HIGH" },
+      { "check_id": "CKV_AWS_16", "file_path": "/rds-unencrypted.tf", "resource": "aws_db_instance.db", "severity": "HIGH" },
+      { "check_id": "CKV_AWS_62", "file_path": "/iam-wildcard.tf", "resource": "aws_iam_policy.admin", "severity": "HIGH" },
+      { "check_id": "CKV_AWS_3", "file_path": "/ebs-unencrypted.tf", "resource": "aws_ebs_volume.v", "severity": "HIGH" },
+      { "check_id": "CKV_AWS_18", "file_path": "/s3-secure-control.tf", "resource": "aws_s3_bucket.secure", "severity": "LOW" }
+    ]
+  }
+}

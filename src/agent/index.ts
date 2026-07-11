@@ -65,6 +65,8 @@ export interface AgentResult {
   durationMs: number;
   /** Whether the agent hit the iteration limit */
   hitLimit: boolean;
+  /** Error from the forced final-summary call after hitting limits, if any */
+  finalSummaryError?: string;
 }
 
 export interface AgentEvents {
@@ -267,6 +269,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     });
 
     let summary = 'Agent reached iteration limit without producing a final summary.';
+    let finalSummaryError: string | undefined;
     try {
       const finalResponse = await this.llm.chat(messages, { maxTokens: 2048 });
       summary = finalResponse.content;
@@ -275,8 +278,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       for (const f of this.parseFinalFindings(summary)) {
         if (!allFindings.some((x) => x.title === f.title)) allFindings.push(f);
       }
-    } catch {
-      // Use what we have
+    } catch (error) {
+      finalSummaryError = error instanceof Error ? error.message : String(error);
     }
 
     const result: AgentResult = {
@@ -288,6 +291,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       tokensUsed,
       durationMs: Date.now() - startTime,
       hitLimit,
+      finalSummaryError,
     };
 
     this.emit('agent:complete', result);
