@@ -211,6 +211,8 @@ backup_protected() {
 
 collect_protected
 protected_count="$(grep -c . "$protected_list" 2>/dev/null || echo 0)"
+protected_count="$(echo "$protected_count" | tr -d '[:space:]')"
+[[ "$protected_count" =~ ^[0-9]+$ ]] || protected_count=0
 
 commit_count="$(git rev-list --count HEAD 2>/dev/null || echo 0)"
 [[ -d .git ]] || commit_count=0
