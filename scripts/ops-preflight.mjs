@@ -91,7 +91,7 @@ async function main() {
 
   // 2. Mission status — fail if a mission is already active
   const mission = await apiGet('/api/mission/status');
-  const missionActive = mission.ok && mission.data?.phase && mission.data.phase !== 'idle' && mission.data.phase !== 'completed';
+  const missionActive = mission.ok && mission.data?.active === true;
   check('No active mission in progress', !missionActive,
     missionActive ? `mission ${mission.data.id || 'unknown'} in phase: ${mission.data.phase}` : 'idle',
     'block');
@@ -99,8 +99,8 @@ async function main() {
   // 3. Pending approvals — warn if pending receipts exist
   const approvals = await apiGet('/api/approvals?status=pending');
   let pendingCount = 0;
-  if (approvals.ok) {
-    pendingCount = Array.isArray(approvals.data) ? approvals.data.length : approvals.data?.total || 0;
+  if (approvals.ok && Array.isArray(approvals.data?.approvals)) {
+    pendingCount = approvals.data.approvals.length;
   }
   check('No pending action receipts', pendingCount === 0,
     pendingCount > 0 ? `${pendingCount} pending approval(s) — review before launch` : 'none pending',
@@ -111,8 +111,8 @@ async function main() {
     check('API provider configured', true, 'key-based provider detected', 'warn');
   } else {
     const localAgent = await apiGet('/api/agents/local/status');
-    if (localAgent.ok && localAgent.data?.connected) {
-      check('Local agent connected', true, `${localAgent.data.name || 'agent'} connected`, 'warn');
+    if (localAgent.ok && Array.isArray(localAgent.data?.connected) && localAgent.data.connected.length > 0) {
+      check('Local agent connected', true, `${localAgent.data.connected[0]?.name || 'agent'} connected`, 'warn');
     } else {
       check('Local agent or API key configured', false,
         'no API key set and local agent not connected — configure in War Room Settings',
