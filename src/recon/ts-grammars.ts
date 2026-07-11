@@ -136,7 +136,7 @@ export async function initGrammars(
   }
 }
 
-/** A loaded grammar for `ext`, or undefined (→ caller falls back to parseFile). */
+/** A loaded grammar for `ext`, or undefined (→ caller returns [] for non-.py; .py uses parseFile). */
 export function getGrammar(ext: string): GrammarEntry | undefined {
   return registry.get(ext);
 }

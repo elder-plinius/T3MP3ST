@@ -1,12 +1,12 @@
 # Plan: T3MP3ST-MLINGEST — Multi-language white-box ingest (web-tree-sitter)
 
 ## Executive Summary
-- **Goal:** Replace the Python-only `parseFile` stage with a portable `web-tree-sitter` extractor emitting the existing `CodeBlock` shape; reuse the security-ranking pipeline verbatim; fail-open to the Python regex.
+- **Goal:** Replace the Python-only `parseFile` stage with a portable `web-tree-sitter` extractor emitting the existing `CodeBlock` shape; reuse the security-ranking pipeline verbatim; language-scoped fail-open (`.py` keeps the Python regex; other languages return `[]` on a grammar miss / parse error — never the Python regex).
 - **Complexity:** Medium-low (no async ripple — see Arch). **Risk:** Low-Medium. **Diff:** 3 new source files (`param-split`, `ts-grammars`, `ts-parse`) + edits to 3 (`code-ingest`, `whitebox`, `server`) + coverage config + test suites.
 - **Spec:** `2026-07-10-multilang-ingest-design.md`. **Reviews folded:** architect-review (async→sync pivot + 5 defects), test-automator (RED discrimination + granularity).
 
 ## 🚨 Critical Implementation Standards
-- Fail-open mandatory: any grammar init/parse failure routes that file to `parseFile`; ingest never crashes a mission.
+- Fail-open mandatory (language-scoped): `.py` → `parseFile`; a non-`.py` grammar init/parse failure → `[]` (never the Python regex). Ingest never crashes a mission.
 - Security ranking reused, not rewritten (`classify`/`prioritize`/`reachability`/`context-pack` untouched).
 - vitest green, `tsc --noEmit` clean, `eslint` clean. No TODO/HACK/dead code; every failure path handled.
 - **100% coverage of our code (hard gate).** Statements/branches/functions/lines = 100% on every NEW file (`param-split.ts`, `ts-grammars.ts`, `ts-parse.ts`) and 100% of every new branch/function added to edited files (`code-ingest.ts`, `whitebox.ts`). Sole carve-out: the **single** `await initGrammars(...)` wiring line at `server.ts` bootstrap — `initGrammars` itself is 100% unit-tested in `grammar-registry`; the wiring line is exercised by `npm run smoke` at the ship gate. (`cli.ts` is NOT wired — the CLI never ingests; ingest is reached only via `server.ts:6060/6126`.) Coverage is necessary-not-sufficient — the review gate confirms assertions are meaningful, not line-touching.
@@ -22,19 +22,20 @@ bootstrap (server start / CLI main):  await initGrammars(exts)   // load all gra
 crawl (multi-lang includeExts)
   → ingestRepository (SYNC, unchanged signature) — per file:
        parseFileMultiLang(path, content, ext)              // SYNC
-         ├─ getParser(ext) loaded? → parser.parse() → query → nodeToCodeBlock[] → CodeBlock[]
-         └─ no parser (unsupported / not-yet-loaded / init failed) → parseFile(...)   // FAIL-OPEN
+         ├─ ext == .py                                    → parseFile(...)   // Python regex, unchanged
+         ├─ non-.py, getGrammar(ext) loaded?              → parser.parse() → query → nodeToCodeBlock[] → CodeBlock[]
+         └─ non-.py, no grammar / not-yet-loaded / timeout / error → []   // FAIL-OPEN (never the Python regex)
   → buildCallGraph → findEntryPoints → reachability → classify → prioritize   (UNCHANGED)
   → context-pack → orchestrator                                                (UNCHANGED)
 ```
-Race: a mission firing before init resolves simply fail-opens to Python for that call — degrade, never crash. Grammars eager-loaded at bootstrap (~few MB, one-time) — the cost of a sync hot path.
+Race: a mission firing before init resolves simply fail-opens for that call (`.py` → Python regex, other languages → `[]`) — degrade, never crash. Grammars eager-loaded at bootstrap (~few MB, one-time) — the cost of a sync hot path.
 
 **Killed by the sync pivot:** the async signature change on `ingestRepository`; the `ingest-limits.test.ts` await churn (D1); the unguarded-init mission crash (D5, now a bootstrap try/catch).
 **NOT killed — still required (validator BLOCKER):** `whitebox.ts` must still be edited to repoint BOTH production callers (`ingestRepoToSourceContext` L125, `runWhiteboxAnalysis` L205) from `createPythonIngestConfig` → `createMultiLangIngestConfig`. This config-swap is independent of sync/async; without it the multilang extractor only ever sees `.py` in production and the PR is a no-op. Node `whitebox-wiring` below.
 
 ## Current State (grounded in /tmp/T3MP3ST)
 - `CodeBlock = {id, path, name, kind, lineStart, lineEnd, params, decorators, body}` (`id=\`${path}::${name}@${lineStart}\``; `decorators=[]` for non-Python).
-- `parseFile` (code-ingest.ts:409, stays as sync fallback); `parseParams` (decl L328, Python-only).
+- `parseFile` (code-ingest.ts:409, stays as the `.py` path only); `parseParams` (decl L328, Python-only).
 - `ingestRepository` (L749, **stays sync**); sink regexes L169–201; `crawl` L238.
 - **Two** production `ingestRepository` callers, both in `whitebox.ts`: `ingestRepoToSourceContext` (L125) and `runWhiteboxAnalysis` (L205) — both pass `createPythonIngestConfig`. (`server.ts:6060` calls `ingestRepoToSourceContext`, not `ingestRepository` directly.) Both must be repointed — see `whitebox-wiring`.
 
@@ -110,7 +111,7 @@ describe('createMultiLangIngestConfig', () => {
 
 ## Owned-node acceptance tests (real assertions committed up front — tester finding 5)
 - **`grammar-registry`** — `ts-grammars.test.ts`: registry has entries for all 8 exts with non-empty query + `@name`/`@def` captures; **`initGrammars` fail-open**: forcing a bad wasm path leaves the registry empty and `getParser` returns undefined, **no throw** (covers D5).
-- **`ts-parse`** — `ts-parse.test.ts`: parse a TS and a Go function → assert `name/params/lineStart/body`; unsupported `.zzz` → returns `parseFile` result, no throw.
+- **`ts-parse`** — `ts-parse.test.ts`: parse a TS and a Go function → assert `name/params/lineStart/body`; unsupported non-`.py` `.zzz` → returns `[]`, no throw; `.py` → byte-identical to `parseFile`.
 - **`server-init-wiring`** — `tsc --noEmit` clean; the single bootstrap line covered by `npm run smoke` at the ship gate (`initGrammars` itself is 100% unit-tested in `grammar-registry`).
 - **`ingest-wiring`** (headline regression) — `ts-parse-multilang-rank.test.ts`: temp repo `.py`+`.go`+`.ts`+`.java`, each a sink-bearing function; `ingestRepository(createMultiLangIngestConfig(root))` (sync) → non-`.py` blocks present, classified `attack_surface`, priority > a neutral block; **PLUS a cross-language reachability case** (Go/TS entry-point → reachable callee gets the reach bonus) to guard `buildCallGraph` name-matching on non-Python ids (tester finding 5). Existing `code-ingest.test.ts` unchanged (sync preserved).
 - **`whitebox-wiring`** (production-path regression) — `whitebox-multilang.test.ts`: temp Go+TS repo through `ingestRepoToSourceContext(root)` → asserts non-`.py` source in the returned `sourceContext` (the real server/CLI entry, not the config directly); `tsc --noEmit` + `eslint` green; `whitebox-containment` tests still green.
@@ -152,7 +153,7 @@ describe('createMultiLangIngestConfig', () => {
     {
       "id": "ts-parse",
       "files": ["src/recon/ts-parse.ts", "src/__tests__/ts-parse.test.ts"],
-      "change": "Create ts-parse.ts: nodeToCodeBlock(node, source, path) -> full CodeBlock (id, kind, lineStart/lineEnd from node position, params via splitParamList on the parameters-node text, decorators [], body via node text); parseFileMultiLang(path, content, ext): CodeBlock[] — SYNC — via getParser(ext), falling back to parseFile on no-parser/unsupported/any error. MUST bound parse time (web-tree-sitter parser.setTimeoutMicros / parse-limit) so a pathological input cannot spin — on timeout, treat as parse failure and fail-open to parseFile. Integration crux — author yourself.",
+      "change": "Create ts-parse.ts: nodeToCodeBlock(node, source, path) -> full CodeBlock (id, kind, lineStart/lineEnd from node position, params via splitParamList on the parameters-node text, decorators [], body via node text); parseFileMultiLang(path, content, ext): CodeBlock[] — SYNC — `.py` → parseFile; non-.py via getGrammar(ext), returning [] on no-grammar/unsupported/any error (never the Python regex). MUST bound parse time (wall-clock via progressCallback) so a pathological input cannot spin — on timeout, treat as parse failure and return []. Integration crux — author yourself.",
       "accept": "npx vitest run src/__tests__/ts-parse.test.ts",
       "local": false
     },
@@ -175,14 +176,14 @@ describe('createMultiLangIngestConfig', () => {
     {
       "id": "server-init-wiring",
       "files": ["src/server.ts"],
-      "change": "Invoke `await initGrammars(SUPPORTED_EXTS)` ONCE at server bootstrap (before app.listen) so grammars are loaded before any ingest request; on init failure log and continue (registry empty -> Python fallback). server.ts is the ONLY ingest entrypoint (6060/6126); do NOT wire cli.ts (the CLI never ingests). Cross-cutting entrypoint — author yourself.",
+      "change": "Invoke `await initGrammars(SUPPORTED_EXTS)` ONCE at server bootstrap (before app.listen) so grammars are loaded before any ingest request; on init failure log and continue (registry empty -> .py via parseFile, other languages -> []). server.ts is the ONLY ingest entrypoint (6060/6126); do NOT wire cli.ts (the CLI never ingests). Cross-cutting entrypoint — author yourself.",
       "accept": "npx tsc --noEmit",
       "local": false
     },
     {
       "id": "ingest-wiring",
       "files": ["src/recon/code-ingest.ts", "src/__tests__/ts-parse-multilang-rank.test.ts"],
-      "change": "In ingestRepository (KEEP SYNC), dispatch each file through parseFileMultiLang(path, content, ext) with parseFile fallback, preserving byte/file ceilings. Author the headline multilang-rank regression test (non-.py blocks extracted + attack_surface ranked + cross-language reachability). Do NOT change ingestRepository's signature or any caller. Author yourself.",
+      "change": "In ingestRepository (KEEP SYNC), dispatch each file through parseFileMultiLang(path, content, ext) (language-scoped fail-open: .py -> parseFile, other languages -> []), preserving byte/file ceilings. Author the headline multilang-rank regression test (non-.py blocks extracted + attack_surface ranked + cross-language reachability). Do NOT change ingestRepository's signature or any caller. Author yourself.",
       "accept": "npx vitest run src/__tests__/ts-parse-multilang-rank.test.ts src/__tests__/code-ingest.test.ts",
       "local": false
     },
@@ -196,7 +197,7 @@ describe('createMultiLangIngestConfig', () => {
     {
       "id": "adversarial-tests",
       "files": ["src/__tests__/ts-parse-adversarial.test.ts"],
-      "change": "Author a hostile-input suite exercising the FULL wired path (parseFileMultiLang + ingestRepository): malformed/syntactically-broken source per language; a .go file containing Python (and vice-versa); binary/non-UTF8 bytes; a multi-MB generated file and a deeply-nested/very-long-line file (byte/file ceilings hold); a PATHOLOGICAL input that would make tree-sitter spin (asserts parse returns within the timeout and fail-opens — proves the ts-parse timeout is real, not aspirational); a symlink and a symlink-loop under the repo root (crawl must not escape the contained root or hang); empty file; unicode identifiers; a file that makes tree-sitter error. Assert: never throws (fail-open to parseFile), bounded wall-time, CodeBlock invariants hold (lineStart<=lineEnd, body non-empty when name present, params is string[]), ingest resolves. Owned (crafted adversarial inputs).",
+      "change": "Author a hostile-input suite exercising the FULL wired path (parseFileMultiLang + ingestRepository): malformed/syntactically-broken source per language; a .go file containing Python (and vice-versa); binary/non-UTF8 bytes; a multi-MB generated file and a deeply-nested/very-long-line file (byte/file ceilings hold); a PATHOLOGICAL input that would make tree-sitter spin (asserts parse returns within the timeout and fail-opens — proves the ts-parse timeout is real, not aspirational); a symlink and a symlink-loop under the repo root (crawl must not escape the contained root or hang); empty file; unicode identifiers; a file that makes tree-sitter error. Assert: never throws (non-.py fail-opens to [], .py to parseFile), bounded wall-time, CodeBlock invariants hold (lineStart<=lineEnd, body non-empty when name present, params is string[]), ingest resolves. Owned (crafted adversarial inputs).",
       "accept": "npx vitest run src/__tests__/ts-parse-adversarial.test.ts",
       "local": false
     },

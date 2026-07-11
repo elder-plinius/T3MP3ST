@@ -57,8 +57,9 @@ Options considered:
 ```
 crawl (broadened includeExts)
   → parseFileMultiLang(path, content)          ← NEW: web-tree-sitter → CodeBlock[]
-      ├─ grammar for ext loaded?  → tree-sitter query → CodeBlock[]
-      └─ no grammar / init fails  → parseFile() (existing Python regex)   ← fail-open
+      ├─ ext == .py                          → parseFile()  (existing Python regex, unchanged)
+      ├─ non-.py, grammar loaded             → tree-sitter query → CodeBlock[]
+      └─ non-.py, no grammar / timeout / err → []  (never the Python regex)   ← fail-open
   → buildCallGraph → findEntryPoints → reachability → classify → prioritize   (UNCHANGED)
   → context-pack (BUDGET) → orchestrator (REASON)                             (UNCHANGED)
 ```
@@ -67,10 +68,10 @@ crawl (broadened includeExts)
 
 **New units:**
 - `src/recon/ts-grammars.ts` — `initGrammars(exts): Promise<void>` (one-time, cached, `try/catch` → empty registry on failure = fail-open); `getParser(ext): Parser | undefined` (sync accessor); the ext→{query, captures, wasm} registry.
-- `src/recon/ts-parse.ts` — `parseFileMultiLang(path, content, ext): CodeBlock[]` (**sync**): `getParser(ext)` present → `parser.parse()` (with a **bounded parse time** via `setTimeoutMicros`/parse-limit — a hostile input must not spin) → query → `nodeToCodeBlock`; timeout/absent/error → `parseFile(...)`. `nodeToCodeBlock` fills the full `CodeBlock` shape (`name` from `@name`, `body`/`lineStart`/`lineEnd` from node position, `params` via `splitParamList(text, lang)`, `decorators []`, `kind`).
+- `src/recon/ts-parse.ts` — `parseFileMultiLang(path, content, ext): CodeBlock[]` (**sync**): `.py` → `parseFile()`; non-`.py` with a loaded grammar → `parser.parse()` (with a **bounded parse time** — a hostile input must not spin) → query → `nodeToCodeBlock`; non-`.py` with no grammar / timeout / error → `[]` (never the Python regex — routing brace/`class` syntax through it would emit corrupt blocks). `nodeToCodeBlock` fills the full `CodeBlock` shape (`name` from `@name`, `body`/`lineStart`/`lineEnd` from node position, `params` via `splitParamList(text, lang)`, `decorators []`, `kind`).
 - Per-language query table (top ~8: `py, js, ts, tsx, go, java, c, cpp`). cxpak's grammar queries are a reference for the capture patterns.
 
-**Wiring.** (1) Bootstrap: `await initGrammars(...)` once at **`server.ts` startup** (the only ingest entrypoint — `server.ts:6060/6126`; the CLI never ingests, so `cli.ts` is not wired). (2) `ingestRepository()` (`code-ingest.ts:749`, **stays sync**) dispatches each file through `parseFileMultiLang(...)` with `parseFile` fallback. (3) **Production caller swap (required):** both `whitebox.ts` callers of `ingestRepository` — `ingestRepoToSourceContext` (L125) and `runWhiteboxAnalysis` (L205) — move from `createPythonIngestConfig` to `createMultiLangIngestConfig`; without this the extractor only sees `.py` in production.
+**Wiring.** (1) Bootstrap: `await initGrammars(...)` once at **`server.ts` startup** (the only ingest entrypoint — `server.ts:6060/6126`; the CLI never ingests, so `cli.ts` is not wired). (2) `ingestRepository()` (`code-ingest.ts:749`, **stays sync**) dispatches each file through `parseFileMultiLang(...)` (language-scoped fail-open: `.py` → `parseFile`, other languages → `[]`). (3) **Production caller swap (required):** both `whitebox.ts` callers of `ingestRepository` — `ingestRepoToSourceContext` (L125) and `runWhiteboxAnalysis` (L205) — move from `createPythonIngestConfig` to `createMultiLangIngestConfig`; without this the extractor only sees `.py` in production.
 
 ## 6. Security-ranking reuse & cross-language sinks
 
@@ -78,15 +79,15 @@ crawl (broadened includeExts)
 
 ## 7. Fail-open
 
-- Grammar missing/unsupported ext → that file falls back to `parseFile` (Python files unaffected; unknown languages simply parse as before / are skipped as today).
-- web-tree-sitter init throws in a hostile env → whole extractor falls back to the Python path. **Ingest never crashes a mission; worst case is today's behavior.**
+- `.py` always → `parseFile` (Python files unaffected). A non-`.py` file with a missing/unsupported/failed grammar → `[]` (honest absence) — **never** the Python regex, which would mis-parse brace/`class` syntax into corrupt blocks (wrong line spans, lost methods). This language-scoping is part of the security boundary.
+- web-tree-sitter init throws in a hostile env → the registry stays empty; `.py` still ingests via the Python regex, every other language yields `[]` (and a one-time `console.warn`). **Ingest never crashes a mission.**
 
 ## 8. Test plan (vitest — matches their suite; deterministic, no model calls)
 
 1. **Multi-language extraction (headline regression).** Temp repo (`mkdtempSync`, mirroring `code-ingest.test.ts`) with `.py` + `.go` + `.ts` files, each holding a function with a known sink. Assert non-`.py` functions are extracted as `CodeBlock`s **and** land as `attack_surface`/high-priority after `classify`/`prioritize`. This test *is* the proof the limitation is fixed.
 2. **CodeBlock fidelity.** For a known TS/Go function, assert `name`, `params`, `line`, and `body` (contains the sink line) are correct.
-3. **Fail-open — unsupported ext.** A `.zig` (or grammar-absent) file routes to fallback / is handled, no throw.
-4. **Fail-open — grammar init failure.** Force `initGrammars` to fail (bad wasm path) → registry stays empty, `getParser` returns undefined, every file routes to `parseFile`; `ingestRepository` resolves normally, mission-safe.
+3. **Fail-open — unsupported ext.** A `.zig` (or grammar-absent, non-`.py`) file returns `[]`, no throw (a `.py` file still routes to `parseFile`).
+4. **Fail-open — grammar init failure.** Force `initGrammars` to fail (bad wasm path) → registry stays empty, `getGrammar` returns undefined, `.py` routes to `parseFile` and every other language returns `[]`; `ingestRepository` resolves normally, mission-safe.
 5. **Cross-language sink patterns.** Unit-test each added regex against a positive and negative snippet.
 6. *(optional, `--ignored` like `spine-live.test.ts`)* real wasm load against a fixture repo — live smoke.
 
