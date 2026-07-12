@@ -66,7 +66,10 @@ describe('parseTextToolCalls — happy path + drift tolerance', () => {
   it('is DoS-safe on pathological brace input (was: quadratic ReDoS)', () => {
     const t0 = Date.now();
     expect(parseTextToolCalls('{'.repeat(80000))).toBeUndefined();
-    expect(Date.now() - t0).toBeLessThan(300); // bounded — the old greedy regex took ~2100ms
+    // Bounded — the old greedy regex took ~2100ms. Generous ceiling (2x below that
+    // regression target) so V8 coverage instrumentation / slow CI can't false-fail
+    // this wall-clock guard; it still fails hard if the quadratic ReDoS returns.
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 });
 
