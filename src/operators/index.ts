@@ -38,8 +38,8 @@ export interface OperatorEvents {
   'task:failed': { task: Task; error: string };
   'task:decomposed': { parent: Task; subtasks: Task[]; reason: string };
   'agent:thinking': { task: Task; content: string };
-  'agent:tool_call': { task: Task; name: string; args: Record<string, unknown> };
-  'agent:tool_result': { task: Task; name: string; result: ToolResult };
+  'agent:tool_call': { task: Task; name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
+  'agent:tool_result': { task: Task; name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'finding:discovered': { finding: Finding };
   'finding:gate-blocked': { finding: Finding; reasons: string[] };
   'credential:harvested': { credential: Credential };
@@ -429,11 +429,11 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       const onThinking = ({ content }: { content: string }): void => {
         this.emit('agent:thinking', { task, content });
       };
-      const onToolCall = ({ name, args }: { name: string; args: Record<string, unknown> }): void => {
-        this.emit('agent:tool_call', { task, name, args });
+      const onToolCall = ({ name, args, source }: { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' }): void => {
+        this.emit('agent:tool_call', { task, name, args, source });
       };
-      const onToolResult = ({ name, result }: { name: string; result: ToolResult }): void => {
-        this.emit('agent:tool_result', { task, name, result });
+      const onToolResult = ({ name, result, source }: { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' }): void => {
+        this.emit('agent:tool_result', { task, name, result, source });
       };
       const canForwardAgentEvents =
         typeof this.agentLoop.on === 'function' &&

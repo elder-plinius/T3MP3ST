@@ -7131,13 +7131,16 @@ Correlating findings across agents, identifying patterns, producing actionable i
                             : ev.kind === 'tool_result' ? '#00aaff'
                             : ev.kind === 'thinking' ? '#cfd6e6'
                             : '#00ff88';
+                        const sourceBadge = ev.source === 'backend_seeded'
+                            ? '<span style="display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid rgba(255,170,0,0.45);border-radius:3px;color:#ffaa00;font-size:9px;text-transform:uppercase;letter-spacing:0.4px;">backend-seeded</span>'
+                            : '';
                         return `
                             <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.055);display:grid;grid-template-columns:76px 74px minmax(110px,180px) minmax(0,1fr);gap:10px;align-items:start;">
                                 <div style="font-size:10px;color:var(--text-muted);">${liveScanTime(ev.timestamp)}</div>
                                 <div style="font-size:10px;color:${color};font-weight:800;">${liveScanEscape(liveScanKindLabel(ev.kind))}</div>
                                 <div style="font-size:10px;color:var(--accent);overflow-wrap:anywhere;">${liveScanEscape(ev.callsign || ev.archetype || ev.operatorId || '-')}</div>
                                 <div style="min-width:0;">
-                                    <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;overflow-wrap:anywhere;">${liveScanEscape(ev.taskName || ev.toolName || '-')}</div>
+                                    <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;overflow-wrap:anywhere;">${liveScanEscape(ev.taskName || ev.toolName || '-')}${sourceBadge}</div>
                                     <div style="font-size:12px;color:var(--text-primary);line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;">${liveScanEscape(ev.detail || '')}</div>
                                 </div>
                             </div>

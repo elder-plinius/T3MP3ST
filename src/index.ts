@@ -570,15 +570,15 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.recordProgress('thinking', operator, task, content);
     });
 
-    operator.on('agent:tool_call', ({ task, name, args }) => {
-      this.recordProgress('tool_call', operator, task, `${name} ${JSON.stringify(args || {})}`, { toolName: name });
+    operator.on('agent:tool_call', ({ task, name, args, source }) => {
+      this.recordProgress('tool_call', operator, task, `${name} ${JSON.stringify(args || {})}`, { toolName: name, source });
     });
 
-    operator.on('agent:tool_result', ({ task, name, result }) => {
+    operator.on('agent:tool_result', ({ task, name, result, source }) => {
       const detail = result.success
         ? (result.output || 'Tool completed')
         : (result.error || result.output || 'Tool failed');
-      this.recordProgress('tool_result', operator, task, detail, { toolName: name, success: result.success });
+      this.recordProgress('tool_result', operator, task, detail, { toolName: name, success: result.success, source });
     });
 
     operator.on('finding:discovered', ({ finding }) => {
@@ -670,7 +670,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     operator: OperatorAgent,
     task: Task | undefined,
     detail: string,
-    extra: Partial<Pick<ScanProgressEvent, 'toolName' | 'success'>> = {}
+    extra: Partial<Pick<ScanProgressEvent, 'toolName' | 'success' | 'source'>> = {}
   ): void {
     const compact = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
     const event: ScanProgressEvent = {

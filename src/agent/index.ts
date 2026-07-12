@@ -71,8 +71,8 @@ export interface AgentResult {
 
 export interface AgentEvents {
   'agent:step': AgentStep;
-  'agent:tool_call': { name: string; args: Record<string, unknown> };
-  'agent:tool_result': { name: string; result: ToolResult };
+  'agent:tool_call': { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
+  'agent:tool_result': { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'agent:thinking': { content: string };
   'agent:complete': AgentResult;
   'agent:error': { error: Error; step: number };
@@ -371,7 +371,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     target: Target | undefined,
     iteration: number
   ): Promise<AgentStep> {
-    this.emit('agent:tool_call', { name: toolCall.name, args: toolCall.arguments });
+    const source = iteration < 0 ? 'backend_seeded' : 'agent';
+    this.emit('agent:tool_call', { name: toolCall.name, args: toolCall.arguments, source });
 
     let toolResult: ToolResult;
     try {
@@ -395,7 +396,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       };
     }
 
-    this.emit('agent:tool_result', { name: toolCall.name, result: toolResult });
+    this.emit('agent:tool_result', { name: toolCall.name, result: toolResult, source });
 
     return {
       iteration,

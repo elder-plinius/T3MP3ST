@@ -544,6 +544,7 @@ export interface ScanProgressEvent {
   taskId?: string;
   taskName?: string;
   toolName?: string;
+  source?: 'agent' | 'backend_seeded';
   detail: string;
   success?: boolean;
 }
