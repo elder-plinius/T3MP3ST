@@ -5714,6 +5714,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
 
             connected: false,
             llmAvailable: false,
+            serverLLM: null,
 
             // Check server health
             async checkHealth() {
@@ -5747,6 +5748,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                     this.connected = data.status === 'operational';
                     // /api/health returns llm as an object ({connected:true,...}); accept that or the legacy string
                     this.llmAvailable = data.llm === 'connected' || !!(data.llm && data.llm.connected);
+                    this.serverLLM = data.llm && typeof data.llm === 'object' ? data.llm : null;
                     // Keep the dispatch latch honest: BackendDispatch.available is otherwise write-only-true.
                     // A server that's down / lost mission support must clear it; a healthy one re-arms it.
                     if (typeof BackendDispatch !== 'undefined') {
@@ -15725,12 +15727,14 @@ ACTION_INPUT: {"output":"Found confirmed SQLi on /login endpoint..."}`;
 
         function getGeneralConfig() {
             const apiKey = getApiKey();
-            const provider = localStorage.getItem('t3mp3st_general_provider') || (T3MP3ST_API?.connected ? 'codex' : 'openrouter');
-            const model = provider === 'codex' ? 'codex-default' : (state.settings?.selectedModel || 'anthropic/claude-sonnet-4');
+            const savedProvider = localStorage.getItem('t3mp3st_general_provider');
+            const provider = savedProvider || (T3MP3ST_API?.connected && !T3MP3ST_API?.llmAvailable ? 'codex' : undefined);
+            const model = provider === 'codex' ? 'codex-default' : (provider ? (state.settings?.selectedModel || 'anthropic/claude-sonnet-4') : undefined);
             return { apiKey, provider, model };
         }
 
         function _generalNeedsApiKey(provider) {
+            if (!provider) return false;
             return !['codex', 'mock', 'local'].includes(provider);
         }
 
@@ -18181,19 +18185,27 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                 // Determine the LLM backend. Priority: a configured API key → its provider; else a
                 // connected local agent (Claude Code / Codex / Hermes) which needs NO key (uses its own
                 // login); else fall through to the server's own configured LLM.
-                let provider = 'openrouter';
-                let model = state.settings.selectedModel || 'anthropic/claude-sonnet-4';
+                let provider;
+                let model;
                 const agentBackend = (!apiKey && typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
                 if (!apiKey && agentBackend) {
                     provider = 'local-agent';
                     model = agentBackend; // the agent id (codex|claude|hermes) travels in `model`
                     addIntel('BACKEND', `No API key — routing the mission through your connected agent: ${agentBackend.toUpperCase()}`, 'success');
                     addMissionLog('info', `LLM backend: local agent (${agentBackend}) — no API key needed`);
+                } else if (!apiKey) {
+                    addIntel('BACKEND', 'No browser API key — using the server-configured LLM backend', 'success');
+                    addMissionLog('info', 'LLM backend: server default — no browser API key sent');
                 } else if (apiKey && apiKey.startsWith('sk-ant-')) {
                     provider = 'anthropic';
+                    model = state.settings.selectedModel || 'anthropic/claude-sonnet-4';
                     model = model.replace('anthropic/', ''); // Anthropic API doesn't use prefix
                 } else if (apiKey && apiKey.startsWith('sk-') && !apiKey.startsWith('sk-ant-') && !apiKey.startsWith('sk-or-')) {
                     provider = 'openai';
+                    model = state.settings.selectedModel || 'anthropic/claude-sonnet-4';
+                } else {
+                    provider = 'openrouter';
+                    model = state.settings.selectedModel || 'anthropic/claude-sonnet-4';
                 }
 
                 try {
@@ -25104,10 +25116,11 @@ Be specific and actionable. Format as structured JSON.`;
   function _admBackbone(){
     const apiKey = (typeof getApiKey === 'function') ? (getApiKey() || '') : '';
     const agent = (!apiKey && typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
-    let provider = 'openrouter', model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4');
+    let provider, model;
     if (!apiKey && agent) { provider = 'local-agent'; model = agent; }
-    else if (apiKey && apiKey.startsWith('sk-ant-')) { provider = 'anthropic'; model = model.replace('anthropic/', ''); }
-    else if (apiKey && apiKey.startsWith('sk-') && !apiKey.startsWith('sk-or-')) { provider = 'openai'; }
+    else if (apiKey && apiKey.startsWith('sk-ant-')) { provider = 'anthropic'; model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4').replace('anthropic/', ''); }
+    else if (apiKey && apiKey.startsWith('sk-') && !apiKey.startsWith('sk-or-')) { provider = 'openai'; model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4'); }
+    else if (apiKey) { provider = 'openrouter'; model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4'); }
     return { provider: provider, model: model, apiKey: apiKey || undefined };
   }
   window.admiralPreviewPlan = async function(){
@@ -25297,7 +25310,7 @@ Be specific and actionable. Format as structured JSON.`;
     const cur = (document.getElementById('opPromptEdit')||{}).value || '';
     const apiKey = (typeof getApiKey==='function')?(getApiKey()||''):'';
     const agent = (!apiKey && typeof window.t3mpPreferredAgent==='function')?window.t3mpPreferredAgent():null;
-    let provider='openrouter', model; if(!apiKey&&agent){provider='local-agent';model=agent;}
+    let provider, model; if(!apiKey&&agent){provider='local-agent';model=agent;} else if(apiKey){provider='openrouter';}
     try { const d = await (await fetch(base()+'/api/admiral/suggest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operatorPrompt:cur,archetype:SELECTED,provider,model,apiKey:apiKey||undefined})})).json();
       if(d.error) throw new Error(d.error); ADVICE=d; renderAdvice();
     } catch(e){ if(box) box.innerHTML='<div style="font-size:12px;color:#ff6b6b;padding:8px;">Suggestion failed: '+esc(e.message)+'</div>'; }

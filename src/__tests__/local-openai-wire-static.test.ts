@@ -43,6 +43,14 @@ describe('local OpenAI-compatible provider hardening', () => {
     expect(localCase).toMatch(/ZHIPUAI_API_KEY/);
   });
 
+  it('getLLMConfig treats UI local placeholders as unset model names', () => {
+    const localCase = block(configSource, "case 'local':", 'break;');
+
+    expect(localCase).toContain('local-model');
+    expect(localCase).toContain('local/ollama');
+    expect(localCase).toContain('TEMPEST_LOCAL_MODEL');
+  });
+
   it('getApiKey resolves a local key from env without persisting it', () => {
     // The local key is read in-memory from env, matching the env-key hardening
     // invariant (env keys are never written to the store).

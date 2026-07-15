@@ -726,9 +726,10 @@ class ConfigManager {
         // Some OpenAI-compatible servers require a real bearer (Zhipu, Together, etc.) —
         // TEMPEST_LOCAL_API_KEY (or a provider-specific env like ZAI_API_KEY) provides it.
         baseUrl = process.env.TEMPEST_LOCAL_BASE_URL?.trim() || 'http://localhost:11434/api';
-        // 'local-model' is the placeholder id from AVAILABLE_MODELS — treat it as unset so
-        // TEMPEST_LOCAL_MODEL (or the llama3 default) wins; a real tag passed in still takes priority.
-        actualModel = (model && model !== 'local-model' ? model : undefined) || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3';
+        // Placeholder ids from AVAILABLE_MODELS / the static UI are not real served model tags.
+        // Treat them as unset so TEMPEST_LOCAL_MODEL (or the llama3 default) wins; a real tag
+        // passed in still takes priority.
+        actualModel = (model && !['local-model', 'local/ollama'].includes(model) ? model : undefined) || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3';
         apiKey = process.env.TEMPEST_LOCAL_API_KEY?.trim() || process.env.ZAI_API_KEY?.trim() || process.env.ZHIPUAI_API_KEY?.trim();
         break;
       default:
