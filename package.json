@@ -79,7 +79,11 @@
     "smoke:live": "node scripts/smoke.mjs --live",
     "capability": "node scripts/capability-smoke.mjs",
     "gauntlet": "node scripts/capability-smoke.mjs --gauntlet",
-    "test:gate": "npm run build --silent && node scripts/test-gate.mjs"
+    "test:gate": "npm run build --silent && node scripts/test-gate.mjs",
+    "update": "node scripts/update.mjs",
+    "update:dry": "node scripts/update.mjs --dry-run",
+    "update:hard": "node scripts/update.mjs --hard",
+    "test:update": "node scripts/test-update.mjs"
   },
   "bin": {
     "tempest": "./dist/cli.js",
