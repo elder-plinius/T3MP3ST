@@ -661,7 +661,7 @@ if (-not $Force) {
 }
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$backupRoot = Join-Path $env:TEMP "t3mp3st-update-backup-$timestamp"
+$backupRoot = Join-Path ([System.IO.Path]::GetTempPath()) "t3mp3st-update-backup-$timestamp"
 $oldSha = $localSha
 $script:StepTotal = 2 + $(if ($protected.Count -gt 0) { 2 } else { 0 })
 $script:StepIndex = 0

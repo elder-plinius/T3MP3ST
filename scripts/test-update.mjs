@@ -184,6 +184,7 @@ test('update.ps1 has dry-run guards and hard reset opt-in', () => {
   const ps1 = readFileSync(join(__dirname, 'update.ps1'), 'utf8');
   assert(ps1.includes('if ($DryRun)'), 'PowerShell dry-run guard missing');
   assert(ps1.includes('if ($Hard)'), 'PowerShell hard reset opt-in missing');
+  assert(ps1.includes('[System.IO.Path]::GetTempPath()'), 'PowerShell backup root must use a portable temp path');
 });
 
 test('update.sh has dry-run guard, negation and failure trap', () => {
