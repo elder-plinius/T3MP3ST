@@ -29,6 +29,14 @@ describe('listProviderModels — OpenAI-compatible providers', () => {
     expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer sk-test');
   });
 
+  it('passes an abort signal so a non-responsive provider cannot hold the route open indefinitely', async () => {
+    const f = fakeFetch({ data: [{ id: 'gpt-4o' }] });
+    await listProviderModels('openai', { baseUrl: 'https://api.openai.com/v1', apiKey: 'k', fetchImpl: f, timeoutMs: 123 });
+
+    const init = f.mock.calls[0][1] as { signal?: AbortSignal };
+    expect(init.signal).toBeTruthy();
+  });
+
   it('handles venice/xai/local the same OpenAI-compatible way (base already ends in /v1)', async () => {
     const f = fakeFetch({ data: [{ id: 'llama-3.3-70b' }] });
     const models = await listProviderModels('venice', { baseUrl: 'https://api.venice.ai/api/v1', apiKey: 'k', fetchImpl: f });
@@ -88,6 +96,13 @@ describe('listProviderModels — failure modes (caller fails open to the static 
     expect(f).not.toHaveBeenCalled();  // no pointless network call
   });
 
+  it('throws for an unknown provider instead of treating it as OpenAI-compatible', async () => {
+    const f = fakeFetch({});
+    await expect(listProviderModels('not-a-provider', { baseUrl: 'https://example.test/v1', fetchImpl: f }))
+      .rejects.toThrow(/not supported/);
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it('throws when the response has no data[] array (malformed)', async () => {
     const f = fakeFetch({ nonsense: true });
     await expect(listProviderModels('openai', { baseUrl: 'https://api.openai.com/v1', apiKey: 'k', fetchImpl: f }))
@@ -117,5 +132,18 @@ describe('resolveModels — fail-open orchestrator (never throws; the panel is n
     const r = await resolveModels('codex', { staticFallback: STATIC, fetchImpl: fakeFetch({}) });
     expect(r.source).toBe('static');
     expect(r.models).toEqual(STATIC);
+  });
+
+  it('fails open for an unknown provider without calling a caller-supplied base URL', async () => {
+    const f = fakeFetch({});
+    const r = await resolveModels('not-a-provider', {
+      baseUrl: 'https://example.test/v1',
+      staticFallback: STATIC,
+      fetchImpl: f,
+    });
+
+    expect(r.source).toBe('static');
+    expect(r.models).toEqual(STATIC);
+    expect(f).not.toHaveBeenCalled();
   });
 });

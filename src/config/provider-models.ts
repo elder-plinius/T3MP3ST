@@ -14,16 +14,36 @@ export interface ProviderModel {
 
 type FetchLike = (
   url: string,
-  init?: { headers?: Record<string, string> },
+  init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const DEFAULT_MODEL_LIST_TIMEOUT_MS = 15_000;
 
 // Pseudo-providers with no remote model list (CLI-driven or in-process).
 const NO_REMOTE_LIST = new Set(['codex', 'mock', 'local-agent']);
+const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'local']);
+const DIRECT_REMOTE_LIST = new Set(['anthropic', 'openrouter']);
 
 const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');
+
+export function providerCanListModels(provider: string): boolean {
+  return DIRECT_REMOTE_LIST.has(provider) || OPENAI_COMPATIBLE_REMOTE_LIST.has(provider);
+}
+
+function timeoutSignal(timeoutMs: number): AbortSignal | undefined {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  if (typeof AbortController === 'undefined') return undefined;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  if (typeof timeout.unref === 'function') timeout.unref();
+  return controller.signal;
+}
 
 /** Extract `data[].id` from an OpenAI-/Anthropic-shaped model-list response, or throw if malformed/empty. */
 function parseModelList(body: unknown): ProviderModel[] {
@@ -43,10 +63,13 @@ function parseModelList(body: unknown): ProviderModel[] {
  */
 export async function listProviderModels(
   provider: string,
-  opts: { baseUrl?: string; apiKey?: string; fetchImpl?: FetchLike } = {},
+  opts: { baseUrl?: string; apiKey?: string; fetchImpl?: FetchLike; timeoutMs?: number } = {},
 ): Promise<ProviderModel[]> {
   if (NO_REMOTE_LIST.has(provider)) {
     throw new Error(`provider '${provider}' has no remote model list`);
+  }
+  if (!providerCanListModels(provider)) {
+    throw new Error(`provider '${provider}' is not supported for remote model listing`);
   }
   const doFetch = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
   if (!doFetch) throw new Error('no fetch implementation available');
@@ -73,7 +96,8 @@ export async function listProviderModels(
     if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
   }
 
-  const res = await doFetch(url, { headers });
+  const signal = timeoutSignal(opts.timeoutMs ?? DEFAULT_MODEL_LIST_TIMEOUT_MS);
+  const res = await doFetch(url, { headers, signal });
   if (!res.ok) throw new Error(`model-list request failed: HTTP ${res.status}`);
   return parseModelList(await res.json());
 }
@@ -91,7 +115,7 @@ export interface ResolvedModels {
  */
 export async function resolveModels(
   provider: string,
-  opts: { baseUrl?: string; apiKey?: string; fetchImpl?: FetchLike; staticFallback: ProviderModel[] },
+  opts: { baseUrl?: string; apiKey?: string; fetchImpl?: FetchLike; timeoutMs?: number; staticFallback: ProviderModel[] },
 ): Promise<ResolvedModels> {
   try {
     return { source: 'live', models: await listProviderModels(provider, opts) };

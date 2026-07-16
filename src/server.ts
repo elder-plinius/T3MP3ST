@@ -36,6 +36,10 @@ import { redactCredential } from './evidence/index.js';
 
 const execFileAsync = promisify(execFile);
 
+function isKnownLLMProvider(provider: string): provider is LLMProvider {
+  return Object.prototype.hasOwnProperty.call(AVAILABLE_MODELS, provider);
+}
+
 // =============================================================================
 // PAYLOAD DATABASES (Shared with MCP server)
 // =============================================================================
@@ -6096,12 +6100,14 @@ app.get('/api/llm/status', (_req: Request, res: Response) => {
 // (source:'static') so a missing key / network error never leaves the panel empty.
 app.post('/api/models', async (req: Request, res: Response): Promise<void> => {
   const body = (req.body ?? {}) as { provider?: string; apiKey?: string; baseUrl?: string };
-  const provider = (typeof body.provider === 'string' && body.provider) || config.getLLMConfig().provider;
+  const defaultProvider = config.getLLMConfig().provider;
+  const requestedProvider = (typeof body.provider === 'string' && body.provider.trim()) || defaultProvider;
+  const provider = isKnownLLMProvider(requestedProvider) ? requestedProvider : defaultProvider;
   // getLLMConfig throws for any provider it doesn't switch on (e.g. the legitimate 'local-agent', or a
   // garbage string). A synchronous throw inside this async handler would hang the request (Express 4
   // never responds), so swallow it and fall through to the static list — the route must always answer.
   let cfg: { baseUrl?: string; apiKey?: string } = {};
-  try { cfg = config.getLLMConfig(provider as LLMProvider); } catch { /* unknown provider → static fallback */ }
+  try { cfg = config.getLLMConfig(provider); } catch { /* provider has no remote/server config → static fallback */ }
   const bodyBaseUrl = typeof body.baseUrl === 'string' && body.baseUrl.trim() ? body.baseUrl : undefined;
   const bodyKey = typeof body.apiKey === 'string' && body.apiKey ? body.apiKey : undefined;
   // Bind key+baseUrl by source: a caller-supplied custom baseUrl must bring its OWN key — never lend
@@ -6109,7 +6115,7 @@ app.post('/api/models', async (req: Request, res: Response): Promise<void> => {
   // server key is only ever sent to the server's own configured provider endpoint.
   const baseUrl = bodyBaseUrl ?? cfg.baseUrl;
   const apiKey = bodyBaseUrl ? bodyKey : (bodyKey ?? cfg.apiKey);
-  const staticFallback = (AVAILABLE_MODELS[provider as LLMProvider] || []).map((m: { id: string }) => ({ id: m.id }));
+  const staticFallback = AVAILABLE_MODELS[provider].map((m: { id: string }) => ({ id: m.id }));
   const resolved = await resolveModels(provider, { baseUrl, apiKey, staticFallback });
   res.json({ provider, ...resolved });
 });
