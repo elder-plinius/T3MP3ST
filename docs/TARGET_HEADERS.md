@@ -1,71 +1,38 @@
-# Target Header Injection (`TEMPEST_TARGET_HEADERS`)
+# Target Header Injection
 
-## Overview
-
-T3MP3ST can inject a fixed set of HTTP headers into every outbound request made by its arsenal tools. This is useful when scanning authenticated endpoints — set your credentials once in `~/.t3mp3st/.env` and every HTTP probe picks them up automatically, without having to repeat them in every tool call.
+T3MP3ST can apply authentication headers to its HTTP arsenal tools. The headers are bound to one exact origin so credentials are not sent to other authorized targets, subdomains, ports, or redirect destinations.
 
 ## Configuration
 
-Set `TEMPEST_TARGET_HEADERS` in `~/.t3mp3st/.env` as a JSON object of header name → value pairs:
+Set both values in `~/.t3mp3st/.env`:
 
 ```bash
-# Bearer token
-TEMPEST_TARGET_HEADERS={"Authorization":"Bearer eyJhbGciOiJSUzI1NiJ9..."}
-
-# Session cookie
-TEMPEST_TARGET_HEADERS={"Cookie":"session=abc123; csrf=xyz"}
-
-# Multiple headers
-TEMPEST_TARGET_HEADERS={"Authorization":"Bearer token","X-Tenant":"acme","X-API-Key":"secret"}
+TEMPEST_TARGET_ORIGIN=https://api.target.example
+TEMPEST_TARGET_HEADERS={"Authorization":"Bearer token","X-Tenant":"acme"}
 ```
 
-The value must be a valid JSON object. If the variable is absent, empty, contains malformed JSON, or contains a non-object value (e.g. a JSON array), no headers are injected and the tool continues silently — there is no error.
+`TEMPEST_TARGET_ORIGIN` must contain only an `http` or `https` origin: scheme, hostname, and optional port. Paths, query strings, fragments, and embedded credentials are rejected. Origin matching includes the scheme and effective port.
 
-## Affected Tools
+`TEMPEST_TARGET_HEADERS` must be a non-empty JSON object whose values are strings. Invalid or incomplete configuration fails closed: the request continues without configured headers.
 
-| Tool | How headers are injected |
-| --- | --- |
-| `http_request` | Merged into the `headers` init of every `fetch()` call. Per-request `headers` parameter overrides env headers for the same key. |
-| `header_analysis` | Forwarded as `headers` on the `HEAD` request used to inspect security response headers. |
-| `curl_request` | Prepended as `-H "Name: Value"` arguments before any per-request headers. Since curl applies last-wins for duplicate `-H` flags, per-request headers always take precedence. |
+Transport-level headers such as `Host`, `Content-Length`, `Connection`, `Transfer-Encoding`, and proxy authorization headers are rejected. Authentication headers including `Authorization`, `Cookie`, and application-specific API key headers are supported.
 
-## Override Precedence
+## Coverage And Overrides
 
-Per-request headers (the `headers` parameter of a specific tool call) always override env headers for the same key. Env headers serve as defaults that apply to every call automatically.
+Configured headers are applied to HTTP requests made by all built-in web probes and to `curl_request` when the request URL matches the configured origin. They are not applied to unrelated origins.
 
-```
-# .env
-TEMPEST_TARGET_HEADERS={"Authorization":"Bearer base-token","X-Tenant":"acme"}
-
-# Agent tool call with an explicit override:
-http_request(url="https://api.target.com/users", headers={"Authorization":"Bearer scoped-token"})
-
-# Effective headers sent:
-#   Authorization: Bearer scoped-token   ← per-request wins
-#   X-Tenant: acme                       ← from env (not overridden)
-```
+Headers supplied explicitly by a tool call override configured defaults case-insensitively. For example, `authorization` overrides a configured `Authorization` value without sending duplicates.
 
 ## Redirect Safety
 
-Injected credentials are protected against redirect-based leakage by default:
+Built-in requests follow redirects while retaining configured headers only for same-origin hops. Before following a cross-origin redirect, T3MP3ST removes every configured header as well as standard credential headers.
 
-- **`http_request` / `header_analysis`** use Node.js `fetch` (undici), which follows the Fetch specification: `Authorization` and `Cookie` headers are stripped automatically on cross-origin redirects (a different host or scheme). A target that 302s to an external host will not receive your token.
-- **`curl_request`** does not pass `--location-trusted`, so curl will not resend `Authorization` on redirect either. (curl only follows redirects at all if `-L` is explicitly supplied, which the tool does not add by default.)
-
-Neither tool sets `redirect: 'manual'` or `--location-trusted`, so the safe default behaviors are preserved. A future enhancement could further scope env headers to only the operator-authorized origin, providing an explicit binding between the token and the egress scope gate's allowed hosts.
+When configured headers are active, `curl_request` removes `-L`, `--location`, and `--location-trusted` from caller-supplied flags. This prevents custom authentication headers from being forwarded to a redirect destination.
 
 ## Secret Handling
 
-Injected request headers are never echoed in tool output. `http_request` builds its output from the **response** headers returned by the server (`Object.fromEntries(response.headers.entries())`), not the request headers — so a bearer token or session cookie sent to the target is not written to the evidence store.
+Configured curl headers are written to a temporary mode `0600` config file rather than command-line arguments, then deleted after execution. This keeps values out of the local process list.
 
-## Security Notes
+Before Arsenal records or emits a tool result, configured header values are replaced with `[REDACTED]` in output, errors, findings, and other structured result fields. This also covers targets that reflect a credential in a response.
 
-- `~/.t3mp3st/.env` is created with mode `0600` by `scripts/setup-api.sh` — readable only by your user.
-- Never commit `.env` to source control. The repo's `.gitignore` already excludes it.
-- The env variable name `TEMPEST_TARGET_HEADERS` is intentionally namespaced to avoid accidental collision with generic shell variables.
-
-## Reference
-
-- Source: `src/arsenal/index.ts` — `parseTargetHeaders()` function and its three call sites.
-- Template: `.env.example` — documents `TEMPEST_TARGET_HEADERS` with inline examples.
-- Related: `docs/SCOPE_AND_AUTHORIZATION.md` for the broader egress scope gate that controls which hosts these headers are sent to.
+Keep `~/.t3mp3st/.env` private and never commit real credentials. Rotate a credential if it appears in logs or evidence created outside the Arsenal execution path.

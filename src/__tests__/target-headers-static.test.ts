@@ -1,329 +1,170 @@
-/**
- * TEMPEST_TARGET_HEADERS — static invariants + runtime behaviour
- *
- * Pins the contract for the env-driven header injection feature:
- *   - parseTargetHeaders() is defined and handles all edge cases (invalid JSON, arrays, empty)
- *   - all three HTTP tools (http_request, header_analysis, curl_request) inject env headers
- *   - per-request headers always override env headers for the same key
- *   - the .env.example documents the variable with worked examples
- */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { BUILTIN_TOOLS, createToolContext } from '../arsenal/index.js';
+import { Arsenal, BUILTIN_TOOLS, createToolContext } from '../arsenal/index.js';
 
-const arsenalSource = readFileSync(join(process.cwd(), 'src/arsenal/index.ts'), 'utf8');
+const httpTool = BUILTIN_TOOLS.find(tool => tool.name === 'http_request');
+const technologyTool = BUILTIN_TOOLS.find(tool => tool.name === 'technology_detect');
+if (!httpTool || !technologyTool) throw new Error('Required HTTP tools are not registered');
+const originalOrigin = process.env.TEMPEST_TARGET_ORIGIN;
+const originalHeaders = process.env.TEMPEST_TARGET_HEADERS;
 
-function sourceBlock(startMarker: string, endMarker: string): string {
-  const start = arsenalSource.indexOf(startMarker);
-  expect(start, `missing start marker "${startMarker}"`).toBeGreaterThanOrEqual(0);
-  const end = arsenalSource.indexOf(endMarker, start);
-  expect(end, `missing end marker "${endMarker}"`).toBeGreaterThan(start);
-  return arsenalSource.slice(start, end);
-}
-
-// =============================================================================
-// STATIC INVARIANTS
-// =============================================================================
-
-describe('TEMPEST_TARGET_HEADERS static invariants', () => {
-  it('parseTargetHeaders function is defined in the arsenal source', () => {
-    expect(arsenalSource).toContain('function parseTargetHeaders()');
-  });
-
-  it('parseTargetHeaders silently swallows invalid JSON — no rethrow', () => {
-    const fn = sourceBlock('function parseTargetHeaders()', '\n}');
-    // The catch must swallow, not re-throw.
-    expect(fn).toContain('} catch {');
-    expect(fn).not.toContain('throw');
-  });
-
-  it('parseTargetHeaders rejects arrays — only plain objects are valid header maps', () => {
-    const fn = sourceBlock('function parseTargetHeaders()', '\n}');
-    expect(fn).toContain('!Array.isArray(parsed)');
-  });
-
-  it('http_request spreads env headers first so per-request headers override them', () => {
-    // Spread order must be: { ...parseTargetHeaders(), ...per-request }
-    const block = sourceBlock("name: 'http_request'", "name: 'header_analysis'");
-    const envIdx = block.indexOf('...parseTargetHeaders()');
-    const perIdx = block.indexOf('context.parameters.headers');
-    expect(envIdx, 'parseTargetHeaders() spread must be present').toBeGreaterThanOrEqual(0);
-    expect(perIdx, 'per-request headers spread must come after env headers').toBeGreaterThan(envIdx);
-  });
-
-  it('header_analysis passes target headers to the HEAD request', () => {
-    const block = sourceBlock("name: 'header_analysis'", "name: 'dir_bruteforce'");
-    expect(block).toContain('parseTargetHeaders()');
-    expect(block).toContain("method: 'HEAD'");
-  });
-
-  it('curl_request prepends env -H args before per-request headers (last-wins = request overrides)', () => {
-    const curlStart = arsenalSource.indexOf("name: 'curl_request'");
-    expect(curlStart, "curl_request tool must exist in arsenal source").toBeGreaterThanOrEqual(0);
-    const block = arsenalSource.slice(curlStart);
-    const envHeadersIdx = block.indexOf('parseTargetHeaders()');
-    // Per-request headers are pushed in `if (headers) {` block — must come after env headers.
-    const perRequestIdx = block.indexOf('if (headers) {');
-    expect(envHeadersIdx, 'parseTargetHeaders() must be used in curl_request').toBeGreaterThanOrEqual(0);
-    expect(perRequestIdx, 'per-request headers block must come after env headers').toBeGreaterThan(envHeadersIdx);
-  });
-
-  it('.env.example documents TEMPEST_TARGET_HEADERS with Bearer and Cookie examples', () => {
-    const envExample = readFileSync(join(process.cwd(), '.env.example'), 'utf8');
-    expect(envExample).toContain('TEMPEST_TARGET_HEADERS');
-    expect(envExample).toContain('Authorization');
-    expect(envExample).toContain('Cookie');
-  });
-});
-
-// =============================================================================
-// RUNTIME BEHAVIOUR
-// =============================================================================
-
-const httpTool = BUILTIN_TOOLS.find(t => t.name === 'http_request')!;
-const headersTool = BUILTIN_TOOLS.find(t => t.name === 'header_analysis')!;
-
-/**
- * Minimal Response stub for fetch mocks.
- * - entries() feeds http_request's Object.fromEntries(response.headers.entries())
- * - get() feeds header_analysis's security-header inspection loop
- */
-function makeResponse(status = 200, headerMap: Record<string, string> = {}): Response {
+function response(status = 200, headers: Record<string, string> = {}): Response {
+  const normalized = new Map(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
   return {
     status,
-    statusText: 'OK',
+    statusText: status === 200 ? 'OK' : 'Found',
     headers: {
-      entries: (): Iterable<[string, string]> => Object.entries(headerMap),
-      get: (name: string): string | null => headerMap[name] ?? null,
+      entries: () => normalized.entries(),
+      get: (name: string) => normalized.get(name.toLowerCase()) ?? null,
     },
+    text: async () => '<html></html>',
   } as unknown as Response;
 }
 
-describe('TEMPEST_TARGET_HEADERS runtime behaviour — http_request', () => {
-  let prevHeaders: string | undefined;
-
-  beforeEach(() => {
-    prevHeaders = process.env.TEMPEST_TARGET_HEADERS;
+function configure(origin = 'https://target.example') {
+  process.env.TEMPEST_TARGET_ORIGIN = origin;
+  process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({
+    Authorization: 'Bearer configured-secret',
+    'X-Tenant': 'acme',
   });
+}
 
-  afterEach(() => {
-    if (prevHeaders === undefined) {
-      delete process.env.TEMPEST_TARGET_HEADERS;
-    } else {
-      process.env.TEMPEST_TARGET_HEADERS = prevHeaders;
-    }
-    vi.unstubAllGlobals();
-  });
+beforeEach(() => configure());
 
-  it('sends a bearer token from env on every request', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Authorization: 'Bearer test-token' });
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse());
+afterEach(() => {
+  if (originalOrigin === undefined) delete process.env.TEMPEST_TARGET_ORIGIN;
+  else process.env.TEMPEST_TARGET_ORIGIN = originalOrigin;
+  if (originalHeaders === undefined) delete process.env.TEMPEST_TARGET_HEADERS;
+  else process.env.TEMPEST_TARGET_HEADERS = originalHeaders;
+  vi.unstubAllGlobals();
+});
+
+describe('target header binding', () => {
+  it('injects configured headers only into the exact origin', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(response());
     vi.stubGlobal('fetch', mockFetch);
 
-    await httpTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example/api' }));
+    await httpTool.handler(createToolContext(undefined, { url: 'https://other.example/api' }));
+    await httpTool.handler(createToolContext(undefined, { url: 'http://target.example/api' }));
 
-    expect(mockFetch).toHaveBeenCalledOnce();
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer test-token');
+    expect(new Headers(mockFetch.mock.calls[0][1].headers).get('authorization')).toBe('Bearer configured-secret');
+    expect(new Headers(mockFetch.mock.calls[1][1]?.headers).has('authorization')).toBe(false);
+    expect(new Headers(mockFetch.mock.calls[2][1]?.headers).has('authorization')).toBe(false);
   });
 
-  it('per-request header overrides env header for the same key', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Authorization: 'Bearer env-token' });
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse());
+  it('requires both the origin binding and a valid non-empty string header map', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(response());
+    vi.stubGlobal('fetch', mockFetch);
+
+    delete process.env.TEMPEST_TARGET_ORIGIN;
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example' }));
+    process.env.TEMPEST_TARGET_ORIGIN = 'https://target.example';
+    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Authorization: 123 });
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example' }));
+
+    expect(new Headers(mockFetch.mock.calls[0][1].headers).has('authorization')).toBe(false);
+    expect(new Headers(mockFetch.mock.calls[1][1].headers).has('authorization')).toBe(false);
+  });
+
+  it('rejects origins with paths and transport-level headers', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(response());
+    vi.stubGlobal('fetch', mockFetch);
+
+    configure('https://target.example/api');
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example/api' }));
+    configure();
+    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Host: 'other.example' });
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example/api' }));
+
+    expect(new Headers(mockFetch.mock.calls[0][1].headers).has('authorization')).toBe(false);
+    expect(new Headers(mockFetch.mock.calls[1][1].headers).has('host')).toBe(false);
+  });
+
+  it('lets explicit tool headers override configured headers case-insensitively', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(response());
     vi.stubGlobal('fetch', mockFetch);
 
     await httpTool.handler(createToolContext(undefined, {
-      url: 'https://example.com',
-      headers: { Authorization: 'Bearer request-override' },
+      url: 'https://target.example',
+      headers: { authorization: 'Bearer request-secret' },
     }));
 
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer request-override');
+    const sent = new Headers(mockFetch.mock.calls[0][1].headers);
+    expect(sent.get('authorization')).toBe('Bearer request-secret');
+    expect([...sent.keys()].filter(name => name === 'authorization')).toHaveLength(1);
+    expect(sent.get('x-tenant')).toBe('acme');
   });
 
-  it('env and per-request headers are both forwarded when they target different keys', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ 'X-Tenant': 'acme' });
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse());
+  it('applies configured headers to built-in probes beyond http_request', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(response());
     vi.stubGlobal('fetch', mockFetch);
 
-    await httpTool.handler(createToolContext(undefined, {
-      url: 'https://example.com',
-      headers: { Authorization: 'Bearer scoped' },
-    }));
+    await technologyTool.handler(createToolContext(undefined, { url: 'https://target.example' }));
 
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    const sent = init.headers as Record<string, string>;
-    expect(sent['X-Tenant']).toBe('acme');
-    expect(sent['Authorization']).toBe('Bearer scoped');
-  });
-
-  it('sends no env headers when TEMPEST_TARGET_HEADERS is unset', async () => {
-    delete process.env.TEMPEST_TARGET_HEADERS;
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse());
-    vi.stubGlobal('fetch', mockFetch);
-
-    await httpTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
-
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(Object.keys(init.headers as Record<string, string>)).toHaveLength(0);
-  });
-
-  it('sends no env headers when TEMPEST_TARGET_HEADERS is invalid JSON', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = 'not-valid-json{{{';
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse());
-    vi.stubGlobal('fetch', mockFetch);
-
-    await httpTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
-
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(Object.keys(init.headers as Record<string, string>)).toHaveLength(0);
-  });
-
-  it('sends no env headers when TEMPEST_TARGET_HEADERS is a JSON array (not an object)', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = '["Authorization","Bearer token"]';
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse());
-    vi.stubGlobal('fetch', mockFetch);
-
-    await httpTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
-
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(Object.keys(init.headers as Record<string, string>)).toHaveLength(0);
+    expect(new Headers(mockFetch.mock.calls[0][1].headers).get('authorization')).toBe('Bearer configured-secret');
   });
 });
 
-describe('TEMPEST_TARGET_HEADERS runtime behaviour — header_analysis', () => {
-  let prevHeaders: string | undefined;
-
-  beforeEach(() => {
-    prevHeaders = process.env.TEMPEST_TARGET_HEADERS;
-  });
-
-  afterEach(() => {
-    if (prevHeaders === undefined) {
-      delete process.env.TEMPEST_TARGET_HEADERS;
-    } else {
-      process.env.TEMPEST_TARGET_HEADERS = prevHeaders;
-    }
-    vi.unstubAllGlobals();
-  });
-
-  it('forwards env headers to the HEAD request when set', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Cookie: 'session=abc123' });
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, {}));
+describe('target header redirect safety', () => {
+  it('removes every configured header before a cross-origin redirect', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(response(302, { location: 'https://external.example/landing' }))
+      .mockResolvedValueOnce(response());
     vi.stubGlobal('fetch', mockFetch);
 
-    await headersTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example/start' }));
 
-    expect(mockFetch).toHaveBeenCalledOnce();
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)['Cookie']).toBe('session=abc123');
+    expect(new Headers(mockFetch.mock.calls[0][1].headers).get('x-tenant')).toBe('acme');
+    expect(new Headers(mockFetch.mock.calls[1][1].headers).has('authorization')).toBe(false);
+    expect(new Headers(mockFetch.mock.calls[1][1].headers).has('x-tenant')).toBe(false);
+    expect(String(mockFetch.mock.calls[1][0])).toBe('https://external.example/landing');
   });
 
-  it('passes headers: undefined to fetch when no env headers are set', async () => {
-    delete process.env.TEMPEST_TARGET_HEADERS;
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, {}));
+  it('keeps configured headers on same-origin redirects', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(response(302, { location: '/next' }))
+      .mockResolvedValueOnce(response());
     vi.stubGlobal('fetch', mockFetch);
 
-    await headersTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
+    await httpTool.handler(createToolContext(undefined, { url: 'https://target.example/start' }));
 
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    // When parseTargetHeaders() returns {}, the handler passes `undefined` (not an empty object)
-    expect(init.headers).toBeUndefined();
+    expect(new Headers(mockFetch.mock.calls[1][1].headers).get('authorization')).toBe('Bearer configured-secret');
   });
+});
 
-  it('returns a successful security header analysis', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Authorization: 'Bearer token' });
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, {
-      'Strict-Transport-Security': 'max-age=31536000',
+describe('target header secret handling', () => {
+  it('redacts configured values from persisted tool output and findings', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(response(200, {
+      'x-reflected-value': 'Bearer configured-secret',
     }));
     vi.stubGlobal('fetch', mockFetch);
+    const arsenal = new Arsenal();
+    arsenal.register(httpTool);
 
-    const result = await headersTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
+    const result = await arsenal.execute('http_request', createToolContext(undefined, {
+      url: 'https://target.example',
+    }));
 
-    expect(result.success).toBe(true);
-    expect(result.output).toContain('Strict-Transport-Security');
-  });
-});
-
-// =============================================================================
-// SECRET REDACTION — injected request headers must not appear in output
-// =============================================================================
-
-describe('TEMPEST_TARGET_HEADERS secret redaction', () => {
-  let prevHeaders: string | undefined;
-
-  beforeEach(() => {
-    prevHeaders = process.env.TEMPEST_TARGET_HEADERS;
+    expect(result.output).toContain('[REDACTED]');
+    expect(result.output).not.toContain('configured-secret');
+    expect(arsenal.getExecutions()[0].result?.output).not.toContain('configured-secret');
   });
 
-  afterEach(() => {
-    if (prevHeaders === undefined) {
-      delete process.env.TEMPEST_TARGET_HEADERS;
-    } else {
-      process.env.TEMPEST_TARGET_HEADERS = prevHeaders;
-    }
-    vi.unstubAllGlobals();
+  it('keeps configured curl headers out of argv and disables redirect-following flags', () => {
+    const source = readFileSync(join(process.cwd(), 'src/arsenal/index.ts'), 'utf8');
+    const curl = source.slice(source.indexOf("name: 'curl_request'"));
+    expect(curl).toContain("writeFile(configPath");
+    expect(curl).toContain("mode: 0o600");
+    expect(curl).toContain('withoutCurlRedirectFlags');
+    expect(curl).not.toContain("args.push('-H', `${name}: ${value}`)");
   });
 
-  it('http_request does not echo the injected bearer token in tool output', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Authorization: 'Bearer ultra-secret-token' });
-    // Response headers contain something benign — only these should appear in output.
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, { 'Content-Type': 'application/json' }));
-    vi.stubGlobal('fetch', mockFetch);
-
-    const result = await httpTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
-
-    expect(result.success).toBe(true);
-    // Response headers are echoed (expected).
-    expect(result.output).toContain('Content-Type');
-    // Request auth headers must NOT appear in output.
-    expect(result.output).not.toContain('ultra-secret-token');
-    expect(result.output).not.toContain('Authorization');
-  });
-
-  it('header_analysis does not echo the injected cookie in tool output', async () => {
-    process.env.TEMPEST_TARGET_HEADERS = JSON.stringify({ Cookie: 'session=ultra-secret-session' });
-    const mockFetch = vi.fn().mockResolvedValue(makeResponse(200, {}));
-    vi.stubGlobal('fetch', mockFetch);
-
-    const result = await headersTool.handler(createToolContext(undefined, { url: 'https://example.com' }));
-
-    expect(result.success).toBe(true);
-    expect(result.output).not.toContain('ultra-secret-session');
-    expect(result.output).not.toContain('Cookie');
-  });
-
-  it('http_request output is built from response headers, not request headers (static)', () => {
-    // The handler reads response.headers.entries() — not the request headers object —
-    // to build its output. This is the structural guarantee that auth never leaks.
-    const block = sourceBlock("name: 'http_request'", "name: 'header_analysis'");
-    expect(block).toContain('response.headers.entries()');
-    // The request `headers` variable must not appear in the output template string.
-    const outputLineIdx = block.indexOf('HTTP ${method}');
-    expect(outputLineIdx).toBeGreaterThanOrEqual(0);
-    const outputLine = block.slice(outputLineIdx, block.indexOf('\n', outputLineIdx));
-    expect(outputLine).not.toContain('headers');
-  });
-});
-
-// =============================================================================
-// REDIRECT SAFETY — auth headers are not forwarded to redirect destinations
-// =============================================================================
-
-describe('TEMPEST_TARGET_HEADERS redirect safety (static invariants)', () => {
-  it('http_request does not override redirect behaviour (fetch strips auth on cross-origin redirect)', () => {
-    const block = sourceBlock("name: 'http_request'", "name: 'header_analysis'");
-    // No explicit `redirect:` option — undici/Node fetch default (follow) strips
-    // Authorization and Cookie on cross-origin 3xx per the Fetch spec.
-    expect(block).not.toContain('redirect:');
-    expect(block).not.toContain('location-trusted');
-  });
-
-  it('curl_request does not add --location-trusted (curl will not resend auth on redirect)', () => {
-    const curlStart = arsenalSource.indexOf("name: 'curl_request'");
-    expect(curlStart).toBeGreaterThanOrEqual(0);
-    const block = arsenalSource.slice(curlStart);
-    expect(block).not.toContain('location-trusted');
+  it('routes every built-in fetch call through the target-aware helper', () => {
+    const source = readFileSync(join(process.cwd(), 'src/arsenal/index.ts'), 'utf8');
+    const builtins = source.slice(source.indexOf('export const BUILTIN_TOOLS'), source.indexOf('export const EXTERNAL_TOOLS'));
+    expect(builtins).not.toMatch(/\bfetch\s*\(/);
+    expect(builtins).toContain('targetFetch(');
   });
 });
