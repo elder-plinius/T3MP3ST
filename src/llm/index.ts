@@ -744,9 +744,12 @@ class LocalAdapter implements LLMProviderAdapter {
       + (contract
         ? ' You drive a ReAct loop: REQUEST tools, the harness runs them and returns results, you reason until the surface is exhausted.' + contract
         : ' Operate in planning and analysis mode; when JSON is requested, return ONLY the requested block — no preamble.');
-    const out: { role: string; content: string }[] = [{ role: 'system', content: preamble }];
+    const systemParts = [preamble];
+    const out: { role: string; content: string }[] = [];
     for (const m of messages) {
-      if (m.role === 'assistant' && m.toolCalls?.length) {
+      if (m.role === 'system') {
+        if (m.content.trim()) systemParts.push(m.content);
+      } else if (m.role === 'assistant' && m.toolCalls?.length) {
         out.push({ role: 'assistant', content: `[requested tools: ${m.toolCalls.map(t => t.name).join(', ')}]` });
       } else if (m.role === 'tool') {
         out.push({ role: 'user', content: `TOOL RESULT (${m.name || 'tool'}):\n${m.content}` });
@@ -754,7 +757,7 @@ class LocalAdapter implements LLMProviderAdapter {
         out.push({ role: m.role, content: m.content });
       }
     }
-    return out;
+    return [{ role: 'system', content: systemParts.join('\n\n') }, ...out];
   }
 
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {

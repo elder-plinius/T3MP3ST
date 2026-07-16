@@ -1,0 +1,1 @@
+[{"type":"V","inject_type":"inHTML-URL","severity":"high","cwe":"CWE-79","method":"GET","param":"q","data":"https://target.example.com/?q=<script>alert(1)</script>","evidence":"reflected in HTML body","poc":"<script>alert(1)</script>","message_str":"reflected XSS"}]

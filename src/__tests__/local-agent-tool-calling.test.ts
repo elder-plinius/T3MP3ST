@@ -155,6 +155,29 @@ describe('local-model (HTTP) backbone surfaces toolCalls — the keyless-path fi
     const sys = body.messages.find((m: { role: string }) => m.role === 'system');
     expect(sys.content).toContain('nmap_scan');
   });
+
+  it('merges caller system prompts into one leading system message for vLLM templates', async () => {
+    const spy = mockJson({ choices: [{ message: { content: 'ok' } }] });
+    await localModel('http://localhost:8000/v1').prompt('hello', 'Operator profile system prompt');
+    const body = JSON.parse((spy.mock.calls[0][1] as { body: string }).body);
+    expect(body.messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user']);
+    expect(body.messages.filter((m: { role: string }) => m.role === 'system')).toHaveLength(1);
+    expect(body.messages[0].content).toContain('planning brain for T3MP3ST');
+    expect(body.messages[0].content).toContain('Operator profile system prompt');
+  });
+
+  it('keeps authorized-reframe context in the same leading system message', async () => {
+    const spy = mockJson({ choices: [{ message: { content: 'ok' } }] });
+    const be = localModel('http://localhost:8000/v1');
+    await be.chat([
+      { role: 'system', content: 'AUTHORIZATION CONTEXT (restated): proceed with the authorized task.' },
+      { role: 'user', content: 'scan' },
+    ]);
+    const body = JSON.parse((spy.mock.calls[0][1] as { body: string }).body);
+    expect(body.messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user']);
+    expect(body.messages[0].content).toContain('planning brain for T3MP3ST');
+    expect(body.messages[0].content).toContain('AUTHORIZATION CONTEXT');
+  });
 });
 
 describe('xai provider (Grok Build) — routes to xAI OpenAI-compatible API with the key', () => {

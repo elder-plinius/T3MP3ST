@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { execFile, execFileSync, spawn } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { accessSync, constants, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir, userInfo } from 'os';
 import { join } from 'path';
 
@@ -126,7 +126,17 @@ const SPECS: AgentSpec[] = [
     versionArgs: ['--version'],
     parseVersion: (o) => (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
     authArtifacts: ['~/.codex/auth.json', '~/.config/codex/auth.json'],
-    oneShot: (p, m) => ['exec', ...(m ? ['-m', m] : []), p],
+    oneShot: (p, m) => [
+      'exec',
+      '--ephemeral',
+      '--skip-git-repo-check',
+      '--sandbox',
+      'read-only',
+      '--color',
+      'never',
+      ...(m ? ['-m', m] : []),
+      p,
+    ],
   },
   {
     id: 'hermes',
@@ -172,12 +182,70 @@ export interface AgentDetection {
   ready: boolean;      // installed && authed
 }
 
-function resolvePath(bin: string): string | undefined {
-  try {
-    return execFileSync('command', ['-v', bin], { shell: '/bin/bash', encoding: 'utf8' }).trim() || undefined;
-  } catch {
-    try { return execFileSync('which', [bin], { encoding: 'utf8' }).trim() || undefined; } catch { return undefined; }
+/**
+ * Curated POSIX install dirs an agent CLI commonly lands in, under the REAL agent home (issue #78).
+ *
+ * The bug: a T3MP3ST server launched from Finder / the desktop app / any non-interactive shell
+ * inherits launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin). That omits every place a CLI
+ * actually installs — so `execFile('claude', …)` throws ENOENT and a working, authed CLI reads as
+ * `installed:false`. We recover it by ALSO scanning these dirs (they are where Claude Code's native
+ * installer, Homebrew, npm-global, and the version managers put their bins). Anchored to agentHome()
+ * — NOT os.homedir() — so a HOME redirect can't hide them (same rationale as `agentHome`).
+ */
+function wellKnownBinDirs(home: string): string[] {
+  const dirs = [
+    join(home, '.local', 'bin'),                       // Claude Code native installer, pipx, mise
+    join(home, '.local', 'share', 'mise', 'shims'),    // mise
+    join(home, '.asdf', 'shims'),                      // asdf
+    '/opt/homebrew/bin',                               // Homebrew (Apple Silicon)
+    '/usr/local/bin',                                  // Homebrew (Intel) / manual installs
+    join(home, '.bun', 'bin'),                         // bun
+    join(home, '.deno', 'bin'),                        // deno
+    join(home, '.volta', 'bin'),                       // volta
+    join(home, '.npm-global', 'bin'),                  // npm prefix override
+    join(home, '.yarn', 'bin'),                        // yarn global
+    join(home, 'Library', 'pnpm'),                     // pnpm (macOS default)
+    join(home, '.local', 'share', 'pnpm'),             // pnpm (XDG)
+    '/opt/local/bin',                                  // MacPorts
+  ];
+  // Version managers keep a per-version bin dir — enumerate the installed versions so an
+  // npm-global CLI (e.g. codex) under the active node still resolves under a minimal PATH.
+  for (const nodeVersions of [join(home, '.nvm', 'versions', 'node')]) {
+    try { for (const v of readdirSync(nodeVersions)) dirs.push(join(nodeVersions, v, 'bin')); } catch { /* not present */ }
   }
+  for (const fnmDir of [join(home, '.local', 'share', 'fnm', 'node-versions'),
+                        join(home, 'Library', 'Application Support', 'fnm', 'node-versions')]) {
+    try { for (const v of readdirSync(fnmDir)) dirs.push(join(fnmDir, v, 'installation', 'bin')); } catch { /* not present */ }
+  }
+  return dirs;
+}
+
+/**
+ * Absolute path to `bin`, resolved WITHOUT a shell against PATH plus the well-known install dirs
+ * (issue #78). Fail-open: an unresolved name is returned unchanged so `execFile`/`spawn` still throw
+ * the same ENOENT (→ `installed:false`) they did before — no behavior change when a CLI is truly
+ * absent. Pure-fs (no shell) so it can't hang or be injected, and it uses an X_OK access check to
+ * match `execFile`'s own executable-file semantics (a non-executable name-collision is skipped, not
+ * returned). win32 is intentionally NOT handled here (where.exe / .cmd-shim resolution is PR #18's
+ * domain) — the bare name is returned so Node's own %PATH%/PATHEXT lookup stays in effect.
+ */
+export function resolveBin(bin: string): string {
+  if (process.platform === 'win32' || bin.includes('/')) return bin;
+  const path = process.env.PATH || '';
+  for (const dir of [...path.split(':'), ...wellKnownBinDirs(agentHome())]) {
+    // Absolute dirs only: skips blank PATH segments (whose POSIX "= cwd" meaning is a known
+    // CWD-execution vector) and relative segments (which would leak a non-absolute `path`).
+    if (!dir.startsWith('/')) continue;
+    const cand = join(dir, bin);
+    try {
+      // X_OK alone also passes for a DIRECTORY named `bin` (dirs carry the search bit); the OS's own
+      // execvp skips such a directory and searches on, so require a regular file to match that and
+      // avoid returning a dir that execFile would then reject with EACCES (a false installed:true).
+      accessSync(cand, constants.X_OK);
+      if (statSync(cand).isFile()) return cand;
+    } catch { /* missing, not executable, or not a regular file — keep scanning */ }
+  }
+  return bin;
 }
 
 function authState(spec: AgentSpec): { authed: boolean; method?: string } {
@@ -186,7 +254,10 @@ function authState(spec: AgentSpec): { authed: boolean; method?: string } {
   }
   if (spec.keychainService) {
     try {
-      execFileSync('security', ['find-generic-password', '-s', spec.keychainService], { stdio: 'ignore' });
+      // timeout: a headless/SSH/locked-keychain session (the same non-interactive launch context
+      // as #78) can make `security` block on an ACL prompt; bound it so detection can't hang the
+      // event loop. A timeout throws → treated as "not in keychain" (fail-open, same as absence).
+      execFileSync('security', ['find-generic-password', '-s', spec.keychainService], { stdio: 'ignore', timeout: 2000 });
       return { authed: true, method: 'keychain' };
     } catch { /* not in keychain */ }
   }
@@ -198,8 +269,12 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
     id: spec.id, label: spec.label, vendor: spec.vendor, bin: spec.bin,
     blurb: spec.blurb, invokeHint: spec.invokeHint,
   };
+  // Resolve against PATH + well-known install dirs so a Finder/desktop launch's minimal PATH
+  // doesn't hide an installed CLI (issue #78). Absolute when found; the bare name otherwise
+  // (→ execFile throws the same ENOENT → installed:false, preserving the true-absence path).
+  const exe = resolveBin(spec.bin);
   return new Promise((resolve) => {
-    execFile(spec.bin, spec.versionArgs, { timeout: 8000 }, (err, stdout) => {
+    execFile(exe, spec.versionArgs, { timeout: 8000 }, (err, stdout) => {
       if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
         resolve({ ...base, installed: false, authed: false, ready: false });
         return;
@@ -210,7 +285,7 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
       resolve({
         ...base,
         installed: true,
-        path: resolvePath(spec.bin),
+        path: exe !== spec.bin ? exe : undefined,
         version,
         authed: auth.authed,
         authMethod: auth.method,
@@ -267,7 +342,9 @@ export function runLocalAgent(
   const env = childEnv();
   return new Promise((resolve) => {
     // stdin:'ignore' so the agent doesn't stall waiting on piped input (e.g. `claude -p`'s 3s stdin wait).
-    const child = spawn(spec.bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    // resolveBin: same PATH-robust resolution the detector uses, so a CLI detected under a minimal
+    // launchd PATH also SPAWNS (detected-but-unspawnable would be worse than undetected) — issue #78.
+    const child = spawn(resolveBin(spec.bin), args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
     let done = false;
@@ -322,7 +399,7 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
   } else if (id === 'codex') {
     workDir = mkdtempSync(join(tmpdir(), 't3mp3st-codexllm-'));
     outFile = join(workDir, 'reply.txt');
-    args = ['exec', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'read-only', '--output-last-message', outFile, ...(model ? ['-m', model] : [])];
+    args = ['exec', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'read-only', '--output-last-message', outFile, ...(model ? ['-m', model] : [])];
   } else { // hermes — takes the prompt as an arg
     args = ['-z', prompt, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(model ? ['-m', model] : [])];
     viaStdin = false;
@@ -330,7 +407,8 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
 
   const cleanup = () => { if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { /* noop */ } } };
   return new Promise((resolve, reject) => {
-    const child = spawn(spec.bin, args, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    // resolveBin: PATH-robust resolution (issue #78) — see runLocalAgent.
+    const child = spawn(resolveBin(spec.bin), args, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
     let done = false;

@@ -1,0 +1,1 @@
+{"commandline":"ffuf -u https://target.example.com/FUZZ -w common.txt","results":[{"input":{"FUZZ":"admin"},"status":200,"length":1234,"words":56,"url":"https://target.example.com/admin"},{"input":{"FUZZ":"login"},"status":301,"length":0,"words":1,"url":"https://target.example.com/login"}]}
