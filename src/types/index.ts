@@ -6,7 +6,7 @@
 // LLM CONFIGURATION
 // =============================================================================
 
-export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'codex' | 'mock' | 'local' | 'local-agent';
+export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'codex' | 'mock' | 'local' | 'local-agent';
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -426,6 +426,7 @@ export interface ToolFinding {
   details: string;
   cvss?: number;
   cve?: string[];
+  cwe?: string[];
   remediation?: string;
   /**
    * How this finding was produced — the provenance flag the honesty gate keys on:
@@ -534,6 +535,21 @@ export interface Appendix {
 // EVENT TYPES
 // =============================================================================
 
+export interface ScanProgressEvent {
+  id: string;
+  timestamp: number;
+  kind: 'task_started' | 'thinking' | 'tool_call' | 'tool_result' | 'task_completed' | 'task_failed';
+  operatorId: string;
+  callsign: string;
+  archetype: OperatorArchetype;
+  taskId?: string;
+  taskName?: string;
+  toolName?: string;
+  source?: 'agent' | 'backend_seeded';
+  detail: string;
+  success?: boolean;
+}
+
 export interface CommandEvents {
   'command:started': void;
   'command:stopped': void;
@@ -547,6 +563,7 @@ export interface CommandEvents {
   'target:owned': { target: Target; operatorId: string };
   'detection:triggered': DetectionEvent;
   'mission:phase_changed': { missionId: string; phase: KillChainPhase };
+  'scan:progress': ScanProgressEvent;
   'abort:recommended': string;
   /** A capability-approval gate decision (allowed/denied) on an intrusive/dangerous tool — bridged to
    *  the dashboard's live approval/audit feed. Structural match for arsenal/approval.ts ApprovalRecord. */

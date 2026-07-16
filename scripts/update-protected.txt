@@ -1,0 +1,21 @@
+# Paths preserved across `npm run update` (repo-relative).
+# Lines starting with # are ignored. Glob * and ** supported.
+# Optional overlay: scripts/update-protected.local.txt
+
+.env
+.env.*
+!.env.example
+.keys.local
+.keys.bounty.json
+bench/cybench/corpus-stage/
+bench/cybench/service-stage/
+bench/cybench/challenges/
+bench/xbow/stage/
+bench/xbow/challenges/
+bench/wild-hunt/
+bench/decomposition-results/
+bench/refusal-frontier/
+bench/nyu/
+docs/disclosures/
+reports/
+evidence/

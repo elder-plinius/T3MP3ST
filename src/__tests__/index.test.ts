@@ -419,7 +419,7 @@ describe('Wedged-dispatch timeout backstop', () => {
     expect(stopped).toBe(true);
   });
 
-  it('a wedged mission reaches phase advancement once the per-dispatch backstop fires', async () => {
+  it('a wedged mission stalls instead of advancing after required recon dispatches time out', async () => {
     // Tiny backstop so the test is fast and deterministic.
     const prev = process.env.T3MP3ST_TASK_TIMEOUT_MS;
     process.env.T3MP3ST_TASK_TIMEOUT_MS = '30';
@@ -442,14 +442,18 @@ describe('Wedged-dispatch timeout backstop', () => {
       command.start();
 
       // Poll (real timers): the 1s tick loop must dispatch, wedge, then reap the
-      // dispatch via the backstop and advance past RECON.
+      // dispatch via the backstop. Failed required recon work should stall instead
+      // of advancing the mission with no successful backend/model work.
       const deadline = Date.now() + 8000;
-      while (Date.now() < deadline && !phaseAdvanced) {
+      while (Date.now() < deadline && !command.getStatus().paused) {
         await new Promise(r => setTimeout(r, 100));
       }
+      const status = command.getStatus();
       command.stop();
 
-      expect(phaseAdvanced).toBe(true);
+      expect(phaseAdvanced).toBe(false);
+      expect(status.paused).toBe(true);
+      expect(status.stallReason).toContain('stalled in reconnaissance');
       // The wedged operator was reset back to idle (or re-tasked in a later phase),
       // never left stuck in 'executing' with no current task.
       const stuck = command.cell.getAllOperators().some(

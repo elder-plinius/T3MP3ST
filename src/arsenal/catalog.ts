@@ -179,7 +179,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['jsonl', 'text'],
     installHint: 'brew install projectdiscovery/tap/httpx',
     commandHint: 'httpx -u https://example.com -status-code -title -tech-detect -json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'HTTP probing and technology detection for discovered assets.',
   },
   {
@@ -211,7 +211,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['jsonl', 'text'],
     installHint: 'brew install projectdiscovery/tap/katana',
     commandHint: 'katana -u https://example.com -jsonl -silent',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Crawler for endpoint discovery and attack-surface mapping.',
   },
   {
@@ -307,7 +307,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'text'],
     installHint: 'brew install dalfox',
     commandHint: 'dalfox url https://example.com?q=test -o result.json --format json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'XSS validation adapter for scoped endpoints.',
   },
   {
@@ -339,7 +339,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'sarif'],
     installHint: 'brew install semgrep or pipx install semgrep',
     commandHint: 'semgrep scan --config auto --json .',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Static analysis backbone for repository hardening.',
   },
   {
@@ -355,7 +355,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'sarif'],
     installHint: 'brew install gitleaks',
     commandHint: 'gitleaks detect --source . --report-format json --redact',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Secret detection must redact values before ledger insertion.',
   },
   {
@@ -387,7 +387,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'sarif'],
     installHint: 'brew install aquasecurity/trivy/trivy',
     commandHint: 'trivy fs --format json .',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Vulnerability and IaC scanner for repos and images.',
   },
   {
@@ -419,7 +419,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json'],
     installHint: 'brew install grype',
     commandHint: 'grype dir:. -o json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Pairs well with Syft SBOMs for dependency vulnerability triage.',
   },
   {

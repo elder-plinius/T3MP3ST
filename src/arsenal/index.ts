@@ -7,6 +7,9 @@
 import { EventEmitter } from 'eventemitter3';
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { promisify } from 'util';
 import * as net from 'net';
 import * as dns from 'dns';
@@ -59,6 +62,115 @@ async function checkPort(host: string, port: number, timeout: number = 2000): Pr
 
     socket.connect(port, host);
   });
+}
+
+// =============================================================================
+// TARGET HEADER INJECTION
+// =============================================================================
+
+interface TargetHeaderConfig {
+  origin: string;
+  headers: Headers;
+}
+
+const FORBIDDEN_TARGET_HEADERS = new Set([
+  'connection', 'content-length', 'host', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailer', 'transfer-encoding', 'upgrade',
+]);
+
+/** Parse an exact-origin binding and its default headers. Invalid configuration fails closed. */
+function parseTargetHeaderConfig(): TargetHeaderConfig | null {
+  const rawOrigin = process.env.TEMPEST_TARGET_ORIGIN?.trim();
+  const rawHeaders = process.env.TEMPEST_TARGET_HEADERS?.trim();
+  if (!rawOrigin || !rawHeaders) return null;
+
+  try {
+    const target = new URL(rawOrigin);
+    if (!['http:', 'https:'].includes(target.protocol)
+      || target.username || target.password
+      || target.pathname !== '/' || target.search || target.hash) {
+      return null;
+    }
+
+    const parsed: unknown = JSON.parse(rawHeaders);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string' || FORBIDDEN_TARGET_HEADERS.has(name.toLowerCase())) return null;
+      headers.set(name, value);
+    }
+    return headers.keys().next().done ? null : { origin: target.origin, headers };
+  } catch {
+    return null;
+  }
+}
+
+function targetHeadersForUrl(url: string | URL, explicit?: RequestInit['headers']): Headers | undefined {
+  const merged = new Headers();
+  const config = parseTargetHeaderConfig();
+  try {
+    if (config && new URL(url).origin === config.origin) {
+      config.headers.forEach((value, name) => merged.set(name, value));
+    }
+  } catch {
+    // Let fetch or curl report malformed URLs; they simply receive no configured secrets.
+  }
+  new Headers(explicit).forEach((value, name) => merged.set(name, value));
+  return merged.keys().next().done ? undefined : merged;
+}
+
+function redactConfiguredSecrets(result: ToolResult): ToolResult {
+  const config = parseTargetHeaderConfig();
+  const secrets = config ? [...config.headers.values()].filter(Boolean) : [];
+  if (secrets.length === 0) return result;
+
+  const redact = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      return secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), value);
+    }
+    if (Array.isArray(value)) return value.map(redact);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, redact(nested)]));
+    }
+    return value;
+  };
+  return redact(result) as ToolResult;
+}
+
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+const CROSS_ORIGIN_CREDENTIAL_HEADERS = ['authorization', 'cookie', 'cookie2', 'proxy-authorization'];
+
+/** Apply exact-origin headers to every built-in fetch without leaking them across redirects. */
+async function targetFetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
+  const config = parseTargetHeaderConfig();
+  let currentUrl = new URL(url);
+  if (!config || currentUrl.origin !== config.origin) return globalThis.fetch(url, init);
+
+  const explicitHeaders = new Headers(init.headers);
+  let method = (init.method || 'GET').toUpperCase();
+  let body = init.body;
+
+  for (let redirects = 0; redirects <= 20; redirects++) {
+    const headers = targetHeadersForUrl(currentUrl, explicitHeaders);
+    const response = await globalThis.fetch(currentUrl, { ...init, method, body, headers, redirect: 'manual' });
+    const location = response.headers.get('location');
+    if (!REDIRECT_STATUS.has(response.status) || !location) return response;
+    if (redirects === 20) throw new Error('Target request exceeded 20 redirects');
+
+    const nextUrl = new URL(location, currentUrl);
+    if (nextUrl.origin !== currentUrl.origin) {
+      config.headers.forEach((_value, name) => explicitHeaders.delete(name));
+      CROSS_ORIGIN_CREDENTIAL_HEADERS.forEach(name => explicitHeaders.delete(name));
+    }
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === 'POST')) {
+      method = 'GET';
+      body = undefined;
+      ['content-encoding', 'content-language', 'content-location', 'content-type'].forEach(name => explicitHeaders.delete(name));
+    }
+    currentUrl = nextUrl;
+  }
+  throw new Error('Target request redirect handling failed');
 }
 
 // =============================================================================
@@ -301,7 +413,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     const startTime = Date.now();
 
     try {
-      const result = await tool.handler(context);
+      const result = redactConfiguredSecrets(await tool.handler(context));
       const durationMs = Date.now() - startTime;
 
       execution.completedAt = Date.now();
@@ -312,7 +424,10 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       return result;
     } catch (error) {
       execution.completedAt = Date.now();
-      execution.error = error instanceof Error ? error.message : String(error);
+      execution.error = redactConfiguredSecrets({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      }).error;
 
       this.emit('tool:error', { tool, error: error as Error });
 
@@ -748,11 +863,11 @@ export const BUILTIN_TOOLS: CustomTool[] = [
     handler: async (context) => {
       const url = context.parameters.url as string;
       const method = (context.parameters.method as string) || 'GET';
-      const headers = (context.parameters.headers as Record<string, string>) || {};
+      const headers = context.parameters.headers as Record<string, string> | undefined;
       const body = context.parameters.body as string | undefined;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           method,
           headers,
           body: body && method !== 'GET' ? body : undefined,
@@ -787,7 +902,10 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         'Permissions-Policy', 'Cross-Origin-Opener-Policy', 'Cross-Origin-Resource-Policy',
       ];
       try {
-        const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(10000) });
+        const response = await targetFetch(url, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(10000),
+        });
         const analysis = securityHeaders.map(h => {
           const value = response.headers.get(h);
           return `${h}: ${value ? `✓ ${value}` : '✗ Missing'}`;
@@ -834,7 +952,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           batch.map(async (path) => {
             const fullUrl = `${baseUrl}/${path}`;
             try {
-              const response = await fetch(fullUrl, {
+              const response = await targetFetch(fullUrl, {
                 method: 'GET',
                 signal: AbortSignal.timeout(timeout),
                 redirect: 'manual',
@@ -895,7 +1013,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           signal: AbortSignal.timeout(10000),
         });
 
@@ -1022,7 +1140,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -1099,7 +1217,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
       try {
         const baselineUrl = new URL(baseUrl);
         baselineUrl.searchParams.set(param, 'normalvalue');
-        const baselineResp = await fetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
+        const baselineResp = await targetFetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
         const baselineBody = await baselineResp.text();
         baselineLength = baselineBody.length;
       } catch {
@@ -1111,7 +1229,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), { signal: AbortSignal.timeout(5000) });
+          const response = await targetFetch(testUrl.toString(), { signal: AbortSignal.timeout(5000) });
           const body = await response.text();
           const bodyLower = body.toLowerCase();
 
@@ -1321,7 +1439,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         baselineBody.set(usernameField, username);
         baselineBody.set(passwordField, 'definitely_invalid_password_xyz123!@#');
 
-        const baselineResp = await fetch(url, {
+        const baselineResp = await targetFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: baselineBody.toString(),
@@ -1345,7 +1463,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           body.set(usernameField, username);
           body.set(passwordField, password);
 
-          const response = await fetch(url, {
+          const response = await targetFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
@@ -1605,7 +1723,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       try {
         const robotsUrl = `${baseUrl}/robots.txt`;
-        const response = await fetch(robotsUrl, {
+        const response = await targetFetch(robotsUrl, {
           signal: AbortSignal.timeout(10000),
         });
 
@@ -1766,7 +1884,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       try {
         // Fetch main page
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           signal: AbortSignal.timeout(10000),
         });
         const headers = Object.fromEntries(response.headers.entries());
@@ -1840,7 +1958,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
         const probePromises = versionPaths.map(async (vp) => {
           try {
-            const probeResp = await fetch(`${baseUrl}${vp.path}`, {
+            const probeResp = await targetFetch(`${baseUrl}${vp.path}`, {
               signal: AbortSignal.timeout(5000),
               redirect: 'manual',
             });
@@ -1994,7 +2112,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           method: 'GET',
           signal: AbortSignal.timeout(10000),
         });
@@ -2151,7 +2269,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           batch.map(async (path) => {
             try {
               const fullUrl = `${baseUrl}${path}`;
-              const resp = await fetch(fullUrl, {
+              const resp = await targetFetch(fullUrl, {
                 method: 'GET',
                 signal: AbortSignal.timeout(5000),
                 redirect: 'manual',
@@ -2231,7 +2349,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       // First try OPTIONS to see if Allow header is returned
       let optionsAllow: string | null = null;
       try {
-        const optResp = await fetch(url, {
+        const optResp = await targetFetch(url, {
           method: 'OPTIONS',
           signal: AbortSignal.timeout(5000),
         });
@@ -2253,7 +2371,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
         }
 
         try {
-          const response = await fetch(url, {
+          const response = await targetFetch(url, {
             method,
             signal: AbortSignal.timeout(5000),
             redirect: 'manual',
@@ -2332,7 +2450,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 
       for (const test of testOrigins) {
         try {
-          const response = await fetch(url, {
+          const response = await targetFetch(url, {
             method: 'GET',
             headers: { 'Origin': test.origin },
             signal: AbortSignal.timeout(5000),
@@ -2403,7 +2521,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           signal: AbortSignal.timeout(10000),
           redirect: 'manual', // Don't follow redirects to capture Set-Cookie
         });
@@ -2521,7 +2639,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             redirect: 'manual', // Don't follow redirects
             signal: AbortSignal.timeout(5000),
           });
@@ -2613,7 +2731,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       try {
         const baselineUrl = new URL(baseUrl);
         baselineUrl.searchParams.set(param, 'nonexistent_file_xyz');
-        const baseResp = await fetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
+        const baseResp = await targetFetch(baselineUrl.toString(), { signal: AbortSignal.timeout(5000) });
         const baseBody = await baseResp.text();
         baselineLength = baseBody.length;
       } catch {
@@ -2625,7 +2743,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -2727,7 +2845,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           const testUrl = new URL(baseUrl);
           testUrl.searchParams.set(param, payload);
 
-          const response = await fetch(testUrl.toString(), {
+          const response = await targetFetch(testUrl.toString(), {
             signal: AbortSignal.timeout(5000),
           });
           const body = await response.text();
@@ -2803,7 +2921,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const url = context.parameters.url as string;
 
       try {
-        const response = await fetch(url, {
+        const response = await targetFetch(url, {
           method: 'GET',
           signal: AbortSignal.timeout(10000),
         });
@@ -3102,6 +3220,10 @@ function sanitizeExternalFlags(tool: 'curl' | 'nmap', raw?: string): string[] {
   return out;
 }
 
+function withoutCurlRedirectFlags(flags: string[]): string[] {
+  return flags.filter(flag => !/^--location(?:-trusted)?(?:=|$)/i.test(flag) && !/^-[^-]*L/.test(flag));
+}
+
 export const EXTERNAL_TOOLS: CustomTool[] = [
   {
     name: 'nmap_scan',
@@ -3249,6 +3371,8 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const flags = context.parameters.flags as string | undefined;
 
       const args = ['-s', '-i', '-X', method];
+      let configuredHeaders = targetHeadersForUrl(url);
+      let configDir: string | undefined;
       if (data) {
         // A body starting with @ (read local file) or < (read stdin) turns curl into a local-file
         // disclosure primitive. --data-raw sends it verbatim and disables @/< interpretation.
@@ -3256,19 +3380,44 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
         args.push('--data-raw', data);
       }
       if (headers) {
-        for (const h of headers.split(',')) {
-          args.push('-H', h.trim());
+        const headerLines = headers.split(',').map(header => header.trim()).filter(Boolean);
+        if (configuredHeaders) {
+          const explicitHeaders = new Headers();
+          for (const header of headerLines) {
+            const separator = header.indexOf(':');
+            if (separator <= 0) return { success: false, error: `curl_request: invalid header '${header}'` };
+            explicitHeaders.set(header.slice(0, separator).trim(), header.slice(separator + 1).trim());
+          }
+          configuredHeaders = targetHeadersForUrl(url, explicitHeaders);
+        } else {
+          for (const header of headerLines) args.push('-H', header);
         }
       }
-      if (flags) args.push(...sanitizeExternalFlags('curl', flags)); // drop -o/-K/-T/-x file-read/write injection
-      args.push(url);
-
-      const result = await runSubprocess('curl', args, { timeout: 30000 });
-      return {
-        success: result.exitCode === 0,
-        output: result.stdout,
-        error: result.exitCode !== 0 ? result.stderr : undefined,
-      };
+      if (flags) {
+        const sanitized = sanitizeExternalFlags('curl', flags); // drop -o/-K/-T/-x file-read/write injection
+        args.push(...(configuredHeaders ? withoutCurlRedirectFlags(sanitized) : sanitized));
+      }
+      try {
+        if (configuredHeaders) {
+          configDir = await mkdtemp(join(tmpdir(), 't3mp3st-curl-'));
+          const configPath = join(configDir, 'headers.conf');
+          const escapeConfig = (value: string): string => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const config = [...configuredHeaders.entries()]
+            .map(([name, value]) => `header = "${escapeConfig(`${name}: ${value}`)}"`)
+            .join('\n');
+          await writeFile(configPath, `${config}\n`, { mode: 0o600 });
+          args.push('--config', configPath);
+        }
+        args.push(url);
+        const result = await runSubprocess('curl', args, { timeout: 30000 });
+        return redactConfiguredSecrets({
+          success: result.exitCode === 0,
+          output: result.stdout,
+          error: result.exitCode !== 0 ? result.stderr : undefined,
+        });
+      } finally {
+        if (configDir) await rm(configDir, { recursive: true, force: true });
+      }
     },
   },
 ];

@@ -271,6 +271,7 @@ export class TargetEnvironment extends EventEmitter<TargetEvents> {
 
 export function createTargetFromUrl(url: string, zone: TargetZone = 'external'): Target {
   const parsed = new URL(url);
+  const normalizedUrl = parsed.toString();
 
   return {
     id: randomUUID(),
@@ -278,12 +279,17 @@ export function createTargetFromUrl(url: string, zone: TargetZone = 'external'):
     type: 'web_application',
     zone,
     status: 'discovered',
-    address: url,
+    address: parsed.hostname,
     port: parsed.port ? parseInt(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80),
     protocol: parsed.protocol.replace(':', ''),
     services: [],
     vulnerabilities: [],
     credentials: [],
+    metadata: {
+      url: normalizedUrl,
+      origin: parsed.origin,
+      path: `${parsed.pathname}${parsed.search}${parsed.hash}`,
+    },
     discoveredAt: Date.now(),
   };
 }

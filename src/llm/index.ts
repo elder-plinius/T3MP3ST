@@ -725,9 +725,12 @@ class LocalAdapter implements LLMProviderAdapter {
     return { valid: true };
   }
 
-  // A /v1 base URL means an OpenAI-compatible server (/chat/completions, choices[]).
+  // A versioned base URL (/v1, /v2, /v4, …) means an OpenAI-compatible server
+  // (/chat/completions, choices[]). Many OpenAI-compatible providers version their
+  // API at paths other than /v1 (e.g. Zhipu/z.ai exposes /api/paas/v4), so match any
+  // /vN rather than literally /v1.
   private isOpenAIWire(baseUrl: string): boolean {
-    return /\/v1(\/|$)/.test(baseUrl);
+    return /\/v\d+(\/|$)/.test(baseUrl);
   }
 
   // Inject the Arsenal contract as a system turn when tools are offered, and
@@ -741,9 +744,12 @@ class LocalAdapter implements LLMProviderAdapter {
       + (contract
         ? ' You drive a ReAct loop: REQUEST tools, the harness runs them and returns results, you reason until the surface is exhausted.' + contract
         : ' Operate in planning and analysis mode; when JSON is requested, return ONLY the requested block — no preamble.');
-    const out: { role: string; content: string }[] = [{ role: 'system', content: preamble }];
+    const systemParts = [preamble];
+    const out: { role: string; content: string }[] = [];
     for (const m of messages) {
-      if (m.role === 'assistant' && m.toolCalls?.length) {
+      if (m.role === 'system') {
+        if (m.content.trim()) systemParts.push(m.content);
+      } else if (m.role === 'assistant' && m.toolCalls?.length) {
         out.push({ role: 'assistant', content: `[requested tools: ${m.toolCalls.map(t => t.name).join(', ')}]` });
       } else if (m.role === 'tool') {
         out.push({ role: 'user', content: `TOOL RESULT (${m.name || 'tool'}):\n${m.content}` });
@@ -751,7 +757,7 @@ class LocalAdapter implements LLMProviderAdapter {
         out.push({ role: m.role, content: m.content });
       }
     }
-    return out;
+    return [{ role: 'system', content: systemParts.join('\n\n') }, ...out];
   }
 
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
@@ -1067,7 +1073,8 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const agentId = this.config.model || 'codex';
     const prompt = this.formatPrompt(messages, options);
-    const content = (await localAgentChat(agentId, prompt, { timeoutMs: this.config.timeout || 240000 })).trim();
+    const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
+    const content = (await localAgentChat(agentId, prompt, { timeoutMs })).trim();
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
@@ -1203,6 +1210,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config);
       case 'xai':
         return new OpenAIAdapter(config); // xAI (Grok Build / grok-*) is OpenAI-compatible
+      case 'gemini':
+        return new OpenAIAdapter(config); // Gemini via Google's OpenAI-compatible endpoint (baseUrl ends in /v1beta/openai)
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':

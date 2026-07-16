@@ -49,12 +49,28 @@ npm test
 npm run doctor
 ```
 
+For changes that affect claims, run modes, agent/tool execution, target scope,
+egress, redaction, reports, or benchmark artifacts, include a contribution
+receipt using [`docs/CONTRIBUTION_RECEIPTS.md`](docs/CONTRIBUTION_RECEIPTS.md).
+
 If the API is running:
 
 ```bash
 npm run arsenal:smoke
 npm run field:drill
 ```
+
+Follow the full [Pull Request Delivery Guide](docs/PULL_REQUEST_DELIVERY.md)
+before requesting review. In particular, run:
+
+```bash
+git diff --name-status upstream/main...HEAD
+```
+
+The PR must stay scoped to its title. Do not include stale-base deletions,
+unrelated provider/config churn, benchmark fixture removals, provenance doc
+removals, or safety-test removals. If the branch has drifted, recreate it from
+current `main` and reapply only the intended change.
 
 ## Style
 

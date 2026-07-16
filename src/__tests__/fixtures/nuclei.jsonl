@@ -1,0 +1,3 @@
+[INF] nuclei banner line that is not JSON and must be skipped
+{"template-id":"CVE-2021-44228","info":{"name":"Apache Log4j RCE","severity":"critical","description":"Log4j JNDI remote code execution via crafted header","classification":{"cve-id":["CVE-2021-44228"],"cwe-id":["CWE-502"],"cvss-score":10.0},"remediation":"Upgrade log4j to 2.17.0 or later"},"host":"https://target.example.com","matched-at":"https://target.example.com/api"}
+{"template-id":"nginx-version","info":{"name":"Nginx Version Disclosure","severity":"info"},"host":"https://target.example.com","matched-at":"https://target.example.com"}

@@ -55,3 +55,13 @@ bench/nyu/
 # sensitive export leak-gate denylist (operator handle + embargoed disclosure
 # targets + personal vault) loaded by the exporter — never commit
 scripts/.export-denylist.local
+
+# --- project-local AIWG bundle source ---
+# Keep runtime/generated AIWG workspace state local. Only project-local addon
+# source is publishable.
+!.aiwg/
+.aiwg/*
+!.aiwg/addons/
+!.aiwg/addons/**
+
+server.pid

@@ -1,4 +1,4 @@
-# 🌩️ T3MP3ST
+# 🌩️ T3MP3ST 🌩️
 
 <!-- ⊰ sharp eye on the raw source. there's a flag for the curious: T3MP3ST{r3c31pt5_n0t_v1b3z} — the one that counts, you earn: run `npm run verify-claims`. LOVE PLINY ⊱ -->
 
@@ -34,7 +34,7 @@ Three things set it apart:
 2. **Keyless.** The AI coding agent already on your machine is the backbone. No API keys, no second bill, no gatekeeper.
 3. **Honest about scope.** The [status table](#what-ships-today) marks exactly what's stable, experimental, or roadmap — because red-teaming shouldn't be a priesthood, and it damn sure shouldn't run on vibes.
 
-**Jump to** → [Quick start](#quick-start) · [What it hunts](#what-it-hunts) · [What ships today](#what-ships-today) · [Benchmarks](#benchmarks) · [Architecture](#architecture) · [Docs](#documentation)
+**Jump to** → [Quick start](#quick-start) · [Updating](#updating-from-upstream) · [What it hunts](#what-it-hunts) · [What ships today](#what-ships-today) · [Benchmarks](#benchmarks) · [Architecture](#architecture) · [Docs](#documentation)
 
 ## ⚠️ Authorized use only
 
@@ -77,13 +77,18 @@ export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY / OPEN
 export XAI_API_KEY=...            # Grok Build (grok-build-0.1) — xAI's coding model, native tool-calling
 ```
 
+Slow local agents can be given more room with `T3MP3ST_LOCAL_AGENT_TIMEOUT_MS`
+for each CLI call, `T3MP3ST_TASK_TIMEOUT_MS` for mission tasks, and
+`T3MP3ST_GENERAL_TIMEOUT_MS` for planning requests. Values are milliseconds.
+
 Or run it **fully offline** on your own model — no key, no cloud. Defaults to Ollama; point it at any OpenAI-compatible server (LM Studio, vLLM, llama.cpp):
 
 ```bash
 ollama serve && ollama pull llama3                          # or an OpenAI-compatible server
 export TEMPEST_LOCAL_BASE_URL=http://localhost:11434/api    # LM Studio: http://localhost:1234/v1
 export TEMPEST_LOCAL_MODEL=llama3
-npx tempest config                                          # → "Change default provider" → local
+npm run build                                               # only needed from a git clone
+npx tempest                                                 # → "Change default provider" → local
 ```
 
 Tool-calling works on any local model (it's driven over text), so the Arsenal runs even on models without native function-calling.
@@ -123,6 +128,60 @@ docker compose exec app npm run cve:bench
 
 Full deployment guide: [docs/DOCKER.md](docs/DOCKER.md).
 
+## Updating from upstream
+
+If you installed from a release tarball or copied the tree instead of tracking `git pull`, use the built-in updater to sync with [github.com/elder-plinius/T3MP3ST](https://github.com/elder-plinius/T3MP3ST) without losing local secrets or bench output. It shows a numbered plan, asks **y/N** before changing anything, then runs `npm install`.
+
+```bash
+npm run update          # interactive sync from upstream main
+npm run update:dry      # preview only — no git or npm changes
+npm run update:hard     # hard reset to upstream/main (still restores protected paths)
+```
+
+Works on Windows (PowerShell), macOS, Linux, and WSL. Requires **git** and **npm** on your PATH.
+
+### Safety modes
+
+The updater is destructive **only when explicitly requested**:
+
+| Command | What it does | Local changes |
+|---|---|---|
+| `npm run update` | Default interactive sync | `git merge upstream/main`; protected paths backed up and restored |
+| `npm run update:dry` | Read-only preview | No git init, fetch, merge, reset, or `npm install`; safe on tarball installs |
+| `npm run update:hard` | Opt-in hard reset | `git reset --hard upstream/main`; protected paths still restored |
+
+All non-dry-run modes ask **y/N** before changing anything. Pass `--force` only in trusted automation. On the first-time path (no commits yet), the updater replaces the working tree with the upstream snapshot, but protected paths are backed up first and restored afterward.
+
+### Protected paths (inside the repo)
+
+Before replacing files, the updater backs up anything on disk that matches [`scripts/update-protected.txt`](scripts/update-protected.txt), then restores it after sync. **Only paths that exist locally are affected** — if you never created them, nothing happens.
+
+| Path | Why it's protected |
+|---|---|
+| `.env`, `.env.*` | API keys and local env overrides. `!.env.example` is an exception — the template is **not** protected so upstream can update it. |
+| `.keys.local` | One-off key paste file loaded by bench scripts (e.g. `VENICE_API_KEY`) without touching `.env`. |
+| `.keys.bounty.json` | HackerOne / Bugcrowd / similar platform credentials. |
+| `bench/cybench/corpus-stage/` | Large cloned Cybench corpus (not redistributed; expensive to re-download). |
+| `bench/cybench/service-stage/`, `bench/cybench/challenges/` | Per-run Cybench Docker staging and challenge trees (regenerable, but slow to rebuild). |
+| `bench/xbow/stage/`, `bench/xbow/challenges/` | XBOW/XBEN challenge staging (large third-party trees). |
+| `bench/wild-hunt/` | Cold-hunt findings, PoCs, disclosure drafts, and campaign results — pre-coordination vuln material. |
+| `bench/decomposition-results/` | White-box decomposition run JSON (may contain unreported analysis). |
+| `bench/refusal-frontier/` | Refusal-boundary probe artifacts (raw model responses). |
+| `bench/nyu/` | Staged NYU CTF content from `nyu-prep.mjs`. |
+| `docs/disclosures/` | Generated vendor disclosure packages (`disclosure-gen` output). |
+| `reports/` | Engagement and hunt reports (persistent output; same tree as Docker volume mounts in deployment setups). |
+| `evidence/` | PoCs, screenshots, and other finding evidence kept across updates. |
+
+Add your own patterns in `scripts/update-protected.local.txt` (optional local overlay; same glob syntax as the main manifest).
+
+### Never touched (outside the repo)
+
+These live outside the project tree — an update never reads or writes them:
+
+- `%APPDATA%\t3mp3st-nodejs\Config\config.json` (or the macOS/Linux `conf` store path) — saved by `npm run setup`
+- War Room browser **localStorage** on the War Room origin
+- Local agent auth (`~/.codex`, `%LOCALAPPDATA%\hermes`, etc.)
+
 ## What ships today
 
 The framework is an 8-operator kill chain, and this table won't blow smoke about it. **Recon is a live, tool-backed engine** — and the teeth are already real: 90.1% pass@1 on XBEN, 8/10 held-out post-cutoff CVEs pinned to exact file/line/CWE, and a coordinated-disclosure pipeline that's live enough to have drafts held for vendor coordination right now. What's *not* proven is the swarm. Each downstream operator — Exploiter, Infiltrator, Exfiltrator, Ghost — runs the **same real, tool-backed ReAct loop as recon** (real exploit tools, not stubs), but the headline numbers came from a single agent, not the coordinated 8-operator cell, and end-to-end swarm exploitation is unbenchmarked and still unreliable. The engine is real; the swarm is the part still earning its stripes. Loud where we've earned it, blunt about the rest.
@@ -132,7 +191,7 @@ The framework is an 8-operator kill chain, and this table won't blow smoke about
 | Re-derivable measurement (`verify-claims`) | ✅ Stable | every headline recomputes from committed artifacts |
 | Recon engine | ✅ Stable | drives nmap / DNS / HTTP / fingerprinting; every finding traces to real tool output |
 | Mission engine + War Room + Op Admiral | ✅ Stable | keyless through a connected local agent |
-| Arsenal, MCP server, HTTP API | ✅ Stable | 35 built-in tools by default; 83 with the opt-in `T3MP3ST_FULL_ARSENAL` (+48 adapters, with the dangerous post-ex drivers — metasploit, hydra — behind a human-approval gate) — both counts re-derive via `verify-claims`. `security_recon` over MCP |
+| Arsenal, MCP server, HTTP API | ✅ Stable | 35 built-in tools by default; 102 with the opt-in `T3MP3ST_FULL_ARSENAL` (+67 adapters, with dangerous/catalog-only drivers — metasploit, hydra, pacu, frida — behind narrow approved paths rather than generic execution) — both counts re-derive via `verify-claims`. `security_recon` over MCP |
 | Egress-scope containment | ✅ Stable (on by default) | once a mission target is set, built-in networked tools refuse off-scope public hosts — not the target/subdomains, not loopback/private (`SCOPE DENIED`) — a tightened default, not a bare tool runner |
 | Coordinated-disclosure pipeline | ✅ Stable | OSV novelty + live PoC + refuter panel + CVSS; drafts only, a human sends |
 | White-box source analysis | ⚠️ Experimental | Python-only regex ingest; multi-model decomposition costs more tokens, not fewer |
@@ -191,9 +250,12 @@ Deeper reading: [WALL_FORENSICS](docs/WALL_FORENSICS.md) (per-challenge misses),
 |---|---|
 | [FEATURES.md](FEATURES.md) | feature-by-feature status (`[x]` shipped / `[~]` partial / `[ ]` planned) |
 | [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | authority model, scope receipts, evidence and retest rules |
+| [VERIFIED_PROVENANCE](docs/VERIFIED_PROVENANCE.md) | how findings become tool-proven instead of model-asserted |
+| [CONTRIBUTION_RECEIPTS](docs/CONTRIBUTION_RECEIPTS.md) | PR receipt template for scope, run mode, model/harness labels, redaction, and verification |
 | [TEAM_PREVIEW](docs/TEAM_PREVIEW.md) | first-run path and review script |
 | [INSTALL_MATRIX](docs/INSTALL_MATRIX.md) | macOS / Linux readiness table |
 | [ARSENAL_ACTIVATION_PLAN](docs/ARSENAL_ACTIVATION_PLAN.md) | optional external-tool setup |
+| [PULL_REQUEST_DELIVERY](docs/PULL_REQUEST_DELIVERY.md) | contributor and maintainer checklist for scoped, reviewable PRs |
 | [CYBENCH](docs/CYBENCH.md) · [WALL_FORENSICS](docs/WALL_FORENSICS.md) · [INTEGRITY_LEDGER](docs/INTEGRITY_LEDGER.md) · [COGNITIVE_ARCHITECTURE](docs/COGNITIVE_ARCHITECTURE.md) | benchmark methodology |
 | [RELEASE_CHECKLIST](docs/RELEASE_CHECKLIST.md) | the gates a release must pass |
 

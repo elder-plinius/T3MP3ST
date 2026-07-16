@@ -1,0 +1,1 @@
+[{"RuleID":"aws-access-token","Description":"AWS Access Key AKIAIOSFODNN7EXAMPLE committed to source","File":"config/prod.env","StartLine":12,"Match":"REDACTED","Secret":"REDACTED","Commit":"abc1234","Author":"dev"}]
