@@ -159,9 +159,9 @@ check('VERIFY gate implemented', /VERIFY gate|never appeared in tool output/.tes
 check('REFLECT gate implemented', /REFLECT gate/.test(bench), 'forced mid-run pivot');
 
 // ── CLAIM 4: capability breadth ─────────────────────────────────────────────
-console.log('\nCLAIM 4 — capability: 83 tools, 8-operator kill-chain');
+console.log('\nCLAIM 4 — capability: 102 tools, 8-operator kill-chain');
 // DISTINCT tools = external-binary adapters (catalog.ts TOOL_ADAPTERS id:) + custom
-// built-in tools (index.ts BUILTIN_TOOLS top-level name:). NOT a name:/id: regex count
+// built-in/external tools (index.ts top-level name:). NOT a name:/id: regex count
 // (that double-counts each tool's id+name AND every parameter name).
 const catalogSrc = fs.existsSync(R('src/arsenal/catalog.ts')) ? fs.readFileSync(R('src/arsenal/catalog.ts'), 'utf8') : '';
 const indexSrc = fs.existsSync(R('src/arsenal/index.ts')) ? fs.readFileSync(R('src/arsenal/index.ts'), 'utf8') : '';

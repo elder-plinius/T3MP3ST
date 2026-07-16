@@ -164,7 +164,7 @@ The framework is an 8-operator kill chain, and this table won't blow smoke about
 | Re-derivable measurement (`verify-claims`) | ✅ Stable | every headline recomputes from committed artifacts |
 | Recon engine | ✅ Stable | drives nmap / DNS / HTTP / fingerprinting; every finding traces to real tool output |
 | Mission engine + War Room + Op Admiral | ✅ Stable | keyless through a connected local agent |
-| Arsenal, MCP server, HTTP API | ✅ Stable | 35 built-in tools by default; 83 with the opt-in `T3MP3ST_FULL_ARSENAL` (+48 adapters, with the dangerous post-ex drivers — metasploit, hydra — behind a human-approval gate) — both counts re-derive via `verify-claims`. `security_recon` over MCP |
+| Arsenal, MCP server, HTTP API | ✅ Stable | 35 built-in tools by default; 102 with the opt-in `T3MP3ST_FULL_ARSENAL` (+67 adapters, with dangerous/catalog-only drivers — metasploit, hydra, pacu, frida — behind narrow approved paths rather than generic execution) — both counts re-derive via `verify-claims`. `security_recon` over MCP |
 | Egress-scope containment | ✅ Stable (on by default) | once a mission target is set, built-in networked tools refuse off-scope public hosts — not the target/subdomains, not loopback/private (`SCOPE DENIED`) — a tightened default, not a bare tool runner |
 | Coordinated-disclosure pipeline | ✅ Stable | OSV novelty + live PoC + refuter panel + CVSS; drafts only, a human sends |
 | White-box source analysis | ⚠️ Experimental | Python-only regex ingest; multi-model decomposition costs more tokens, not fewer |

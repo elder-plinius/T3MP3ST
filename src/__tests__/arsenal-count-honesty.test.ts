@@ -11,7 +11,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // ARSENAL COUNT HONESTY — the "advertised = real, and nothing is silently dead".
 //
-// The arsenal advertises "83 tools". verify-claims defends that number by counting
+// The arsenal advertises "102 tools". verify-claims defends that number by counting
 // `id:`/`name:` source lines — a SOURCE-LINE count, which would keep passing even if
 // an entry became uncallable. This test locks the number to the REAL registered arrays
 // and, more importantly, pins the invariant that makes the count honest:
@@ -20,7 +20,8 @@ import {
 //   is EXPLICITLY gated by its execution mode (catalog_only / import_only).
 //
 // i.e. a tool can be counted-but-not-generically-callable ONLY on purpose (metasploit /
-// hydra reachable solely via the approval-gated post-ex drivers; bloodhound import-only),
+// hydra reachable solely via the approval-gated post-ex drivers; bloodhound import-only;
+// pacu/frida catalog-only until narrow approved runners exist),
 // never by a silent DEFAULT/mint slip. Sibling of no-phantom-tools / stub-honesty.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -33,16 +34,16 @@ const isGated = (a: ToolAdapter) =>
   a.execution === 'catalog_only' || a.execution === 'import_only';
 
 describe('arsenal count honesty (advertised = real registered surface)', () => {
-  it('the advertised "83 tools" is the real registered surface, not a source-line count', () => {
+  it('the advertised "102 tools" is the real registered surface, not a source-line count', () => {
     const total = TOOL_ADAPTERS.length + BUILTIN_TOOLS.length + EXTERNAL_TOOLS.length;
     // Locks the headline to code. If the arsenal grows/shrinks, update this AND the
     // README / verify-claims headline together — that is the point of the lock.
     expect(
       total,
-      `arsenal size drifted from the advertised 83 (adapters=${TOOL_ADAPTERS.length}, ` +
+      `arsenal size drifted from the advertised 102 (adapters=${TOOL_ADAPTERS.length}, ` +
         `built-ins=${BUILTIN_TOOLS.length}, externals=${EXTERNAL_TOOLS.length}) — ` +
         'update the README / verify-claims headline to match',
-    ).toBe(83);
+    ).toBe(102);
     expect(total).toBeGreaterThanOrEqual(80); // stays consistent with verify-claims' `>= 80` gate
   });
 
@@ -60,11 +61,12 @@ describe('arsenal count honesty (advertised = real registered surface)', () => {
     expect(wronglyGated, `gated adapters that are still generically callable: ${wronglyGated.join(', ')}`).toEqual([]);
   });
 
-  it('the gated set is exactly the documented post-ex / import tools (metasploit, hydra, bloodhound)', () => {
+  it('the gated set is exactly the documented post-ex / import tools', () => {
     const gated = TOOL_ADAPTERS.filter(isGated);
     // metasploit + hydra are catalog_only (callable only via the approval-gated hand-written
-    // post-ex drivers); bloodhound is import_only (collector output is imported, never run here).
-    expect(gated.map((a) => a.id).sort()).toEqual(['bloodhound', 'hydra', 'metasploit']);
+    // post-ex drivers); pacu/frida are catalog_only pending narrow approved runners; bloodhound is
+    // import_only (collector output is imported, never run here).
+    expect(gated.map((a) => a.id).sort()).toEqual(['bloodhound', 'frida', 'hydra', 'metasploit', 'pacu']);
     expect(TOOL_ADAPTERS.find((a) => a.id === 'bloodhound')?.execution).toBe('import_only');
     // Every gated adapter is genuinely off the generic surface.
     for (const a of gated) {

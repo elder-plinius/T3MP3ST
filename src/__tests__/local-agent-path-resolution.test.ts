@@ -11,9 +11,8 @@
  * These tests pin the resolver in isolation, the detector wiring, AND the two spawn call-sites
  * (runLocalAgent / localAgentChat) the fix rewired — all through the public API.
  *
- * POSIX-only by design: `resolveBin` short-circuits on win32 (Windows resolution — where.exe /
- * .cmd shims — is PR #18's domain, deliberately not duplicated here). The win32 case is asserted
- * via a platform stub so the boundary is documented and locked.
+ * POSIX-focused, with a small Windows boundary assertion: unresolved Windows shims fail closed
+ * instead of returning a bare name that would bypass the safe .cmd/.bat launch path.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'fs';
@@ -155,7 +154,7 @@ describe('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () 
     expect(resolveBin('definitely-not-a-real-cli-xyz')).toBe('definitely-not-a-real-cli-xyz');
   });
 
-  it('does NOT scan on win32 — returns the bare name (Windows resolution is PR #18\'s domain)', () => {
+  it('does NOT scan POSIX dirs on win32 — unresolved shims fail closed', () => {
     const home = scratch();
     putExe(join(home, '.local', 'bin'), 'faketool');
     process.env.T3MP3ST_AGENT_HOME = home;
@@ -163,7 +162,7 @@ describe('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () 
     const orig = Object.getOwnPropertyDescriptor(process, 'platform') || { value: process.platform, configurable: true };
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     try {
-      expect(resolveBin('faketool')).toBe('faketool');
+      expect(resolveBin('faketool')).toBeUndefined();
     } finally {
       Object.defineProperty(process, 'platform', orig);
     }

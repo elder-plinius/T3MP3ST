@@ -63,3 +63,5 @@ scripts/.export-denylist.local
 .aiwg/*
 !.aiwg/addons/
 !.aiwg/addons/**
+
+server.pid
