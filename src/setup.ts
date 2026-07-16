@@ -281,13 +281,14 @@ async function runSetup(): Promise<void> {
     'Welcome to T3MP3ST Setup',
     `This wizard will help you configure T3MP3ST for first use.
 
-You'll need an API key from one of these providers:
+You can use a local model with no API key, or add a key from one of these providers:
+• ${chalk.cyan('Local')} - Ollama / LM Studio / vLLM via TEMPEST_LOCAL_BASE_URL
 • ${chalk.cyan('OpenRouter')} (recommended) - Access multiple models
 • ${chalk.cyan('Anthropic')} - Direct Claude access
 • ${chalk.cyan('OpenAI')} - GPT models
 
 The setup will guide you through:
-1. Adding your API key(s)
+1. Adding API key(s), if you use a hosted provider
 2. Selecting your default provider and model
 3. Configuring basic settings`,
     'cyan'
@@ -365,12 +366,11 @@ async function setupApiKeys(): Promise<void> {
     {
       type: 'checkbox',
       name: 'providers',
-      message: 'Which API keys would you like to configure?',
+      message: 'Which hosted API keys would you like to configure? Leave empty to use a local model only.',
       choices: [
         {
           name: `OpenRouter ${hasApiKey('openrouter') ? chalk.green('(configured)') : chalk.yellow('(recommended)')}`,
           value: 'openrouter',
-          checked: !hasApiKey('openrouter'),
         },
         {
           name: `Venice ${hasApiKey('venice') ? chalk.green('(configured)') : ''}`,
@@ -409,21 +409,11 @@ async function setupApiKeys(): Promise<void> {
 async function setupProvider(): Promise<void> {
   const configuredProviders = [];
 
+  configuredProviders.push({ name: 'Local model (Ollama / LM Studio / vLLM, no API key)', value: 'local' });
   if (hasApiKey('openrouter')) configuredProviders.push({ name: 'OpenRouter', value: 'openrouter' });
   if (hasApiKey('venice')) configuredProviders.push({ name: 'Venice', value: 'venice' });
   if (hasApiKey('anthropic')) configuredProviders.push({ name: 'Anthropic', value: 'anthropic' });
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
-
-  if (configuredProviders.length === 0) {
-    showWarning('No API keys configured. Please add at least one API key first.');
-    return;
-  }
-
-  if (configuredProviders.length === 1) {
-    config.setDefaultProvider(configuredProviders[0].value as any);
-    showSuccess(`Default provider set to: ${configuredProviders[0].name}`);
-    return;
-  }
 
   const { provider } = await inquirer.prompt([
     {

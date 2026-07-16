@@ -212,6 +212,8 @@ import type {
   OperatorArchetype,
   CommandEvents,
   Finding,
+  ScanProgressEvent,
+  Task,
 } from './types/index.js';
 
 // Re-export commonly used types
@@ -271,6 +273,7 @@ import {
 
 const DEFAULT_AGENT_MAX_ITERATIONS = 15;
 const LOCAL_AGENT_MAX_ITERATIONS = Number(process.env.T3MP3ST_LOCAL_AGENT_MAX_ITERATIONS || 30);
+const MAX_PROGRESS_EVENTS = 300;
 
 /**
  * TEMPEST Command - Main orchestration controller
@@ -544,6 +547,40 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Setup event forwarding for an operator
    */
   private setupOperatorEvents(operator: OperatorAgent): void {
+    operator.on('task:started', ({ task }) => {
+      this.recordProgress('task_started', operator, task, `Started ${task.name}`);
+    });
+
+    operator.on('task:completed', ({ task, result }) => {
+      const findings = result.findings?.length ? ` Findings: ${result.findings.join(', ')}` : '';
+      this.recordProgress(
+        'task_completed',
+        operator,
+        task,
+        `${result.success === false ? 'Finished unsuccessfully' : 'Completed'} ${task.name}.${findings}`,
+        { success: result.success !== false }
+      );
+    });
+
+    operator.on('task:failed', ({ task, error }) => {
+      this.recordProgress('task_failed', operator, task, error, { success: false });
+    });
+
+    operator.on('agent:thinking', ({ task, content }) => {
+      this.recordProgress('thinking', operator, task, content);
+    });
+
+    operator.on('agent:tool_call', ({ task, name, args, source }) => {
+      this.recordProgress('tool_call', operator, task, `${name} ${JSON.stringify(args || {})}`, { toolName: name, source });
+    });
+
+    operator.on('agent:tool_result', ({ task, name, result, source }) => {
+      const detail = result.success
+        ? (result.output || 'Tool completed')
+        : (result.error || result.output || 'Tool failed');
+      this.recordProgress('tool_result', operator, task, detail, { toolName: name, success: result.success, source });
+    });
+
     operator.on('finding:discovered', ({ finding }) => {
       this.vault.addFinding(finding);
       this.emit('finding:discovered', { finding, operatorId: operator.id });
@@ -626,6 +663,34 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     operator.on('status:changed', ({ oldStatus: _oldStatus }) => {
       this.hooks.onOperatorStateChange?.({ id: operator.id }, operator.state);
     });
+  }
+
+  private recordProgress(
+    kind: ScanProgressEvent['kind'],
+    operator: OperatorAgent,
+    task: Task | undefined,
+    detail: string,
+    extra: Partial<Pick<ScanProgressEvent, 'toolName' | 'success' | 'source'>> = {}
+  ): void {
+    const compact = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const event: ScanProgressEvent = {
+      id: `progress-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      timestamp: Date.now(),
+      kind,
+      operatorId: operator.id,
+      callsign: operator.callsign,
+      archetype: operator.archetype,
+      taskId: task?.id,
+      taskName: task?.name,
+      detail: compact,
+      ...extra,
+    };
+
+    this.progressEvents.push(event);
+    if (this.progressEvents.length > MAX_PROGRESS_EVENTS) {
+      this.progressEvents.splice(0, this.progressEvents.length - MAX_PROGRESS_EVENTS);
+    }
+    this.emit('scan:progress', event);
   }
 
   /**
@@ -826,6 +891,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * CLI work; it only fires on truly-hung dispatches. Override via
    * T3MP3ST_TASK_TIMEOUT_MS.
    */
+  private progressEvents: ScanProgressEvent[] = [];
+
   /**
    * Resolve the dispatch timeout from the environment, falling back to the
    * provider-specific default. Guards against a non-numeric / non-positive override.
@@ -951,6 +1018,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
       // Auto-spawn an operator if none exists for this archetype
       if (!operator) {
+        if (this.llm.getProvider() === 'local-agent') continue;
         const allOps = this.cell.getAllOperators();
         const archetypeCount = allOps.filter(op => op.archetype === task.operatorType).length;
         // Spawn up to 3 operators per archetype for parallelism
@@ -1099,6 +1167,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Auto-spawn operators needed for a given kill chain phase
    */
   private autoSpawnForPhase(phase: KillChainPhase): void {
+    if (this.llm.getProvider() === 'local-agent') {
+      return;
+    }
     const phaseOperators: Record<string, OperatorArchetype[]> = {
       [KillChainPhase.RECON]: ['recon'],
       [KillChainPhase.WEAPONIZE]: ['scanner'],
@@ -1139,6 +1210,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.on('detection:triggered', (data) => broadcast('detection', data));
     this.on('mission:phase_changed', (data) => broadcast('phase_changed', data));
     this.on('approval:decision', (data) => broadcast('arsenal.approval', data));
+    this.on('scan:progress', (data) => broadcast('scan:progress', data));
     this.on('tick', (count) => {
       // Broadcast status every 5 ticks to avoid flooding
       if (typeof count === 'number' && count % 5 === 0) {
@@ -1232,8 +1304,19 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     opsec: ReturnType<OpsecController['getStats']>;
     activeMission: string | null;
     stallReason: string | null;
+    progress: ScanProgressEvent[];
+    tasks: Array<{
+      id: string;
+      name: string;
+      phase: string;
+      status: string;
+      operatorType: string;
+      assignedTo?: string;
+      result?: { success: boolean; output?: string; error?: string; findings?: string[] };
+    }>;
   } {
     const activeMission = this.mission.getActiveMission();
+    const taskQueue = this.mission.getTaskQueue();
 
     return {
       name: this.name,
@@ -1246,6 +1329,23 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       opsec: this.opsec.getStats(),
       activeMission: activeMission?.id || null,
       stallReason: this.stallReason,
+      progress: [...this.progressEvents],
+      tasks: activeMission
+        ? taskQueue.getForMission(activeMission.id).map(task => ({
+            id: task.id,
+            name: task.name,
+            phase: task.phase,
+            status: task.status,
+            operatorType: task.operatorType,
+            assignedTo: task.assignedTo,
+            result: task.result ? {
+              success: task.result.success,
+              output: task.result.output,
+              error: task.result.error,
+              findings: task.result.findings,
+            } : undefined,
+          }))
+        : [],
     };
   }
 

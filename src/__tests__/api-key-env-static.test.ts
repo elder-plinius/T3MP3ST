@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const configSource = readFileSync(join(process.cwd(), 'src/config/index.ts'), 'utf8');
+const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
 const setupScript = readFileSync(join(process.cwd(), 'scripts/setup-api.sh'), 'utf8');
 
 function sourceBlock(startMarker: string, endMarker: string): string {
@@ -31,6 +32,11 @@ describe('API key environment handling hardening', () => {
 
     expect(block).not.toContain("join(process.cwd(), '.env')");
     expect(block).toContain("join(homedir(), '.t3mp3st', '.env')");
+  });
+
+  it('the API server does not re-enable caller-cwd dotenv loading', () => {
+    expect(serverSource).not.toMatch(/from ['"]dotenv['"]/);
+    expect(serverSource).not.toMatch(/\bdotenv\.config\s*\(/);
   });
 
   it('setup-api.sh writes the same T3MP3ST-owned env file that ConfigManager reads', () => {

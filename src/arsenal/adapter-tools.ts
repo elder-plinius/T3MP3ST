@@ -25,6 +25,7 @@
 
 import type { ToolAdapter } from './catalog.js';
 import type { CustomTool, ToolContext, ToolResult } from '../types/index.js';
+import { parseToolOutput } from './parsers.js';
 
 // =============================================================================
 // INJECTED DEPENDENCIES
@@ -470,7 +471,16 @@ export function adapterToCustomTool(adapter: ToolAdapter, deps: AdapterToolDeps)
       };
     }
 
-    return { success: true, output: result.stdout };
+    // Populate the structured `findings` channel from the raw stdout when a parser is wired for
+    // this tool (parseToolOutput → [] otherwise). The raw stdout is ALWAYS kept as `output` — it
+    // is the evidence of record the agent loop stamps onto each finding and the live gate checks;
+    // the parser summarises it, never replaces it. A parse yielding nothing leaves findings unset.
+    const findings = parseToolOutput(adapter.id, result.stdout);
+    return {
+      success: true,
+      output: result.stdout,
+      ...(findings.length ? { findings } : {}),
+    };
   };
 
   return {

@@ -1,0 +1,58 @@
+apiVersion: ops.aiwg.io/v1
+kind: OpsCapability
+metadata:
+  name: t3mp3st-merge-train-flow
+  labels:
+    category: maintainer
+    repository: T3MP3ST
+  annotations:
+    blast-radius: "repository-wide; merges code into main and may close linked issues"
+spec:
+  description: Merge validated T3MP3ST PRs one at a time with current CI, SHA, review, and issue reconciliation checks.
+  version: "0.1.0"
+  inputs:
+    - name: pr_numbers
+      type: list
+      required: true
+      description: Ordered candidate PR numbers from a current queue audit.
+    - name: method
+      type: string
+      required: false
+      default: squash
+      description: squash, merge, or rebase.
+    - name: dry_run
+      type: boolean
+      required: false
+      default: true
+      description: When true, report the planned merge train without merging.
+  outputs:
+    - name: merged_prs
+      type: list
+      description: PRs merged with SHA, method, checks, and issue outcomes.
+    - name: stopped_before
+      type: list
+      description: PRs skipped or blocked with exact reason.
+    - name: refreshed_queue
+      type: list
+      description: Queue state after each merge or dry-run check.
+  target_requirements:
+    os: [linux, macos]
+    capabilities: [git, gh, npm]
+  agent: t3mp3st-release-integrator
+  idempotent: false
+  steps:
+    - name: confirm-audit
+      description: Require a current t3mp3st-queue-audit result or perform one before merging.
+    - name: verify-candidate
+      description: Re-read PR head SHA, merge state, review decision, and status checks immediately before action.
+    - name: confirm-public-input-threat-preflight
+      description: Confirm candidate PRs have current public-input threat assessment covering user-authored GitHub content and security-framework routing where required.
+    - name: merge-one
+      description: Merge exactly one PR when dry_run is false and all gates pass.
+    - name: reconcile
+      description: Check linked issues and main branch state after each merge.
+    - name: refresh
+      description: Refresh the open PR queue before the next candidate.
+  verification:
+    command: "gh pr list --repo elder-plinius/T3MP3ST --state open --limit 1 >/dev/null && git status --short --branch >/dev/null"
+    expect: "command exits 0"

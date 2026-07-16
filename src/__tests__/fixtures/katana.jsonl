@@ -1,0 +1,3 @@
+{"timestamp":"2026-01-01T00:00:00Z","request":{"method":"GET","endpoint":"https://target.example.com/"}}
+{"timestamp":"2026-01-01T00:00:01Z","request":{"method":"GET","endpoint":"https://target.example.com/about"}}
+{"timestamp":"2026-01-01T00:00:02Z","request":{"method":"GET","endpoint":"https://target.example.com/contact"}}

@@ -71,8 +71,8 @@ export interface AgentResult {
 
 export interface AgentEvents {
   'agent:step': AgentStep;
-  'agent:tool_call': { name: string; args: Record<string, unknown> };
-  'agent:tool_result': { name: string; result: ToolResult };
+  'agent:tool_call': { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
+  'agent:tool_result': { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'agent:thinking': { content: string };
   'agent:complete': AgentResult;
   'agent:error': { error: Error; step: number };
@@ -132,6 +132,39 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext, sharedContext) },
     ];
+
+    const bootstrapCall = this.getLocalReconBootstrap(task, target, toolDefs);
+    if (bootstrapCall) {
+      const toolStep = await this.executeTool(bootstrapCall, target, -1);
+      steps.push(toolStep);
+      seenCalls.set(
+        `${bootstrapCall.name}:${JSON.stringify(bootstrapCall.arguments || {})}`,
+        String(toolStep.toolResult?.output || toolStep.toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160)
+      );
+
+      if (toolStep.toolResult?.findings) {
+        const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
+        for (const tf of toolStep.toolResult.findings) {
+          allFindings.push({ ...tf, provenance: 'tool', toolName: bootstrapCall.name, toolOutput: out || tf.details });
+        }
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: 'Running an initial low-noise recon check before planning deeper actions.',
+        toolCalls: [bootstrapCall],
+      });
+      messages.push({
+        role: 'tool',
+        content: this.formatToolResult(toolStep.toolResult),
+        toolCallId: bootstrapCall.id,
+        name: bootstrapCall.name,
+      });
+      messages.push({
+        role: 'user',
+        content: 'Use the bootstrap observation above as your first tool observation. Continue through the normal ACTION CONTRACT: request another listed tool only if it will materially improve the evidence; otherwise provide the final recon debrief.',
+      });
+    }
 
     for (let i = 0; i < this.options.maxIterations; i++) {
       try {
@@ -298,6 +331,38 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     return result;
   }
 
+  private getLocalReconBootstrap(
+    task: Task,
+    target: Target | undefined,
+    tools: LLMToolDefinition[]
+  ): LLMToolCall | undefined {
+    if (this.llm.getProvider() !== 'local-agent') return undefined;
+    if (!target?.address) return undefined;
+    if (task.phase !== 'reconnaissance' && task.operatorType !== 'recon') return undefined;
+
+    const hasTool = (name: string) => tools.some((tool) => tool.name === name);
+    const taskName = task.name.toLowerCase();
+    const id = `local-agent-bootstrap-${Date.now()}`;
+
+    if (taskName.includes('dns') && hasTool('dns_lookup')) {
+      return { id, name: 'dns_lookup', arguments: { domain: target.address, type: 'A' } };
+    }
+
+    if (taskName.includes('port') && hasTool('port_scan')) {
+      return { id, name: 'port_scan', arguments: { target: target.address, ports: '80,443', timeout: 2000 } };
+    }
+
+    if ((taskName.includes('web') || taskName.includes('fingerprint')) && hasTool('header_analysis')) {
+      return { id, name: 'header_analysis', arguments: { url: `https://${target.address}` } };
+    }
+
+    if ((taskName.includes('content') || taskName.includes('discover')) && hasTool('robots_txt_fetch')) {
+      return { id, name: 'robots_txt_fetch', arguments: { url: `https://${target.address}` } };
+    }
+
+    return undefined;
+  }
+
   /**
    * Execute a single tool call via the Arsenal
    */
@@ -306,7 +371,8 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     target: Target | undefined,
     iteration: number
   ): Promise<AgentStep> {
-    this.emit('agent:tool_call', { name: toolCall.name, args: toolCall.arguments });
+    const source = iteration < 0 ? 'backend_seeded' : 'agent';
+    this.emit('agent:tool_call', { name: toolCall.name, args: toolCall.arguments, source });
 
     let toolResult: ToolResult;
     try {
@@ -330,7 +396,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       };
     }
 
-    this.emit('agent:tool_result', { name: toolCall.name, result: toolResult });
+    this.emit('agent:tool_result', { name: toolCall.name, result: toolResult, source });
 
     return {
       iteration,

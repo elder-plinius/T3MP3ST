@@ -22,6 +22,7 @@ import {
 import type { LLMBackbone } from '../llm/index.js';
 import type { Arsenal } from '../arsenal/index.js';
 import type { AgentLoop } from '../agent/index.js';
+import type { ToolResult } from '../types/index.js';
 import type { Target } from '../types/index.js';
 import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
@@ -36,6 +37,9 @@ export interface OperatorEvents {
   'task:completed': { task: Task; result: TaskResult };
   'task:failed': { task: Task; error: string };
   'task:decomposed': { parent: Task; subtasks: Task[]; reason: string };
+  'agent:thinking': { task: Task; content: string };
+  'agent:tool_call': { task: Task; name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
+  'agent:tool_result': { task: Task; name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'finding:discovered': { finding: Finding };
   'finding:gate-blocked': { finding: Finding; reasons: string[] };
   'credential:harvested': { credential: Credential };
@@ -422,11 +426,38 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     // Pass the white-box source excerpt (if any) so the model sees the target's
     // real source alongside the task; empty string keeps black-box behavior.
     if (this.agentLoop && this.llm) {
-      // [Phase-2] Register as live on the board and pull the shared situation report so this
-      // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
-      this.board?.heartbeat(this.id, 'hunting', task.name);
-      const sharedContext = this.board?.situationReport(this.id);
-      const result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext);
+      const onThinking = ({ content }: { content: string }): void => {
+        this.emit('agent:thinking', { task, content });
+      };
+      const onToolCall = ({ name, args, source }: { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' }): void => {
+        this.emit('agent:tool_call', { task, name, args, source });
+      };
+      const onToolResult = ({ name, result, source }: { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' }): void => {
+        this.emit('agent:tool_result', { task, name, result, source });
+      };
+      const canForwardAgentEvents =
+        typeof this.agentLoop.on === 'function' &&
+        typeof this.agentLoop.off === 'function';
+      if (canForwardAgentEvents) {
+        this.agentLoop.on('agent:thinking', onThinking);
+        this.agentLoop.on('agent:tool_call', onToolCall);
+        this.agentLoop.on('agent:tool_result', onToolResult);
+      }
+
+      let result;
+      try {
+        // [Phase-2] Register as live on the board and pull the shared situation report so this
+        // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
+        this.board?.heartbeat(this.id, 'hunting', task.name);
+        const sharedContext = this.board?.situationReport(this.id);
+        result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext);
+      } finally {
+        if (canForwardAgentEvents) {
+          this.agentLoop.off('agent:thinking', onThinking);
+          this.agentLoop.off('agent:tool_call', onToolCall);
+          this.agentLoop.off('agent:tool_result', onToolResult);
+        }
+      }
 
       // Convert agent findings to operator findings.
       // PROVENANCE-HONEST: only a tool-backed finding gets tool-output evidence (the raw
@@ -445,6 +476,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           phase: task.phase as KillChainPhase,
           cvss: finding.cvss,
           cve: finding.cve,
+          cwe: finding.cwe,
           evidence: toolBacked
             ? [{
                 type: 'output',
