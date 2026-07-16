@@ -5515,6 +5515,49 @@
                 <!-- Settings -->
                 <div class="page" id="page-settings">
                     <div class="settings-section">
+                        <h2 class="settings-title">🎛️ Universal API Config</h2>
+                        <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">Configure your LLM providers in one place — provider, key, base URL, model, and context cap — shared with the individual provider sections below (fully backward-compatible).</p>
+                        <div class="card">
+                            <div class="form-group">
+                                <label style="display:block; font-size:12px; color:#9fb0bd; margin-bottom:6px; font-weight:600;">API Provider</label>
+                                <select class="form-input" id="uacProvider" onchange="uacLoadProvider()">
+                                    <option value="openrouter">OpenRouter · OpenAI-compatible</option>
+                                    <option value="venice">Venice · OpenAI-compatible</option>
+                                    <option value="openai">OpenAI · OpenAI-compatible</option>
+                                    <option value="anthropic">Claude · Anthropic Messages API</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label style="display:block; font-size:12px; color:#9fb0bd; margin-bottom:6px; font-weight:600;">Base URL <span style="color:#6b7a85; font-weight:400;">— optional, blank uses the provider default</span></label>
+                                <input type="text" class="form-input" id="uacBaseUrl" placeholder="https://openrouter.ai/api/v1">
+                            </div>
+                            <div class="form-group">
+                                <label style="display:block; font-size:12px; color:#9fb0bd; margin-bottom:6px; font-weight:600;">API Key</label>
+                                <div class="api-key-input">
+                                    <input type="password" class="form-input" id="uacApiKey" placeholder="sk-...">
+                                    <button class="api-key-toggle" onclick="toggleApiKey('uacApiKey')">Show</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label style="display:block; font-size:12px; color:#9fb0bd; margin-bottom:6px; font-weight:600;">Model</label>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <select class="form-input" id="uacModel" style="flex:1;">
+                                        <option value="">— none selected —</option>
+                                    </select>
+                                    <button class="btn btn-secondary btn-sm" id="uacFetchBtn" onclick="uacFetchModels()">Fetch models</button>
+                                </div>
+                                <div class="form-hint" id="uacModelHint" style="margin-top:6px;"></div>
+                            </div>
+                            <div class="form-group">
+                                <label style="display:block; font-size:12px; color:#9fb0bd; margin-bottom:6px; font-weight:600;">Max Context Tokens <span style="color:#6b7a85; font-weight:400;">— optional</span></label>
+                                <input type="number" class="form-input" id="uacMaxTokens" placeholder="e.g. 200000" min="0" step="1000">
+                            </div>
+                            <div style="font-size:10.5px; color:#8a99a5; margin:2px 0 12px; line-height:1.5;">In-browser mission routing currently uses <b>OpenRouter</b> or <b>Venice</b> (or a connected local agent). Keys for other providers, custom base URLs, and the context cap are stored and used for model discovery and server-side / agent flows.</div>
+                            <button class="btn btn-primary btn-sm" onclick="uacSave()">Save config</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
                         <h2 class="settings-title">🔑 API Keys</h2>
 
                         <div class="card">
@@ -7386,6 +7429,7 @@ Correlating findings across agents, identifying patterns, producing actionable i
             if (page === 'operators' && typeof window.loadOperativesRoster === 'function') setTimeout(window.loadOperativesRoster, 80);
             if (page === 'evidence' && typeof window.hydrateFindings === 'function') setTimeout(window.hydrateFindings, 60);
             if (page === 'selfimprove' && typeof window.renderSelfImprove === 'function') setTimeout(window.renderSelfImprove, 60);
+            if (page === 'settings' && typeof window.uacInit === 'function') setTimeout(window.uacInit, 40);
         }
 
         document.querySelectorAll('.nav-item').forEach(i => i.addEventListener('click', () => navigateTo(i.dataset.page)));
@@ -8815,6 +8859,110 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
             const input = document.getElementById('fallbackModelInput');
             if (input) input.value = state.settings?.fallbackModel || 'nousresearch/hermes-3-llama-3.1-405b';
         }
+
+        // ── Universal API Config panel (#90) ────────────────────────────────────────────────
+        // One place to set the active provider's key / base URL / model / max-context. Reads and
+        // writes the SAME state.settings keys the individual provider sections use (${p}Key,
+        // selectedModel), so it is fully backward-compatible — nothing migrates, nothing is lost.
+        const UAC_DEFAULT_BASE = {
+            openrouter: 'https://openrouter.ai/api/v1',
+            venice: 'https://api.venice.ai/api/v1',
+            openai: 'https://api.openai.com/v1',
+            anthropic: 'https://api.anthropic.com',
+        };
+        function uacProvider() { return document.getElementById('uacProvider')?.value || 'openrouter'; }
+        // Model ids come from a provider's /models response (and the user can point Base URL at ANY
+        // endpoint), so they are untrusted. Build <option>s with the DOM API — value/textContent are
+        // injection-proof — never string-interpolated into innerHTML.
+        function uacSetModelOptions(selEl, ids, current) {
+            if (!selEl) return;
+            selEl.replaceChildren();
+            const none = document.createElement('option');
+            none.value = ''; none.textContent = '— none selected —';
+            selEl.appendChild(none);
+            for (const id of ids) {
+                const o = document.createElement('option');
+                o.value = id; o.textContent = id;
+                if (id && id === current) o.selected = true;
+                selEl.appendChild(o);
+            }
+        }
+        function uacLoadProvider() {
+            const p = uacProvider();
+            const s = state.settings || {};
+            const keyEl = document.getElementById('uacApiKey');
+            const baseEl = document.getElementById('uacBaseUrl');
+            if (keyEl) keyEl.value = s[p + 'Key'] || '';
+            if (baseEl) { baseEl.value = s[p + 'BaseUrl'] || ''; baseEl.placeholder = UAC_DEFAULT_BASE[p] || ''; }
+            const modelEl = document.getElementById('uacModel');
+            if (modelEl) {
+                const sel = s.selectedModel || '';
+                uacSetModelOptions(modelEl, sel ? [sel] : [], sel);
+            }
+            const hint = document.getElementById('uacModelHint'); if (hint) hint.textContent = '';
+        }
+        function uacInit() {
+            const sel = document.getElementById('uacProvider');
+            if (sel && state.settings && state.settings.activeProvider) sel.value = state.settings.activeProvider;
+            const mt = document.getElementById('uacMaxTokens');
+            if (mt) mt.value = (state.settings && state.settings.maxContextTokens) || '';
+            uacLoadProvider();
+        }
+        function uacSave() {
+            const p = uacProvider();
+            const s = state.settings || (state.settings = {});
+            s.activeProvider = p;
+            // Only write the key when the field is non-empty — mirrors saveApiKey's guard so a cleared
+            // field (or a select-all-delete) can't silently wipe a working stored key.
+            const keyVal = document.getElementById('uacApiKey')?.value?.trim() || '';
+            if (keyVal) s[p + 'Key'] = keyVal;
+            const base = document.getElementById('uacBaseUrl')?.value?.trim() || '';
+            if (base) s[p + 'BaseUrl'] = base; else delete s[p + 'BaseUrl'];
+            const model = document.getElementById('uacModel')?.value || '';
+            if (model) s.selectedModel = model;
+            const mtRaw = document.getElementById('uacMaxTokens')?.value;
+            const mt = mtRaw ? parseInt(mtRaw, 10) : 0;
+            if (Number.isFinite(mt) && mt > 0) s.maxContextTokens = mt; else delete s.maxContextTokens;
+            saveState();
+            // keep the individual-section input in sync so both views agree
+            const legacy = document.getElementById(p + 'Key'); if (legacy) legacy.value = s[p + 'Key'] || '';
+            if (typeof updatePreflightChecklist === 'function') updatePreflightChecklist();
+            if (typeof renderModels === 'function') renderModels();
+            toast(`${p} config saved`, 'success');
+        }
+        async function uacFetchModels() {
+            const p = uacProvider();
+            const btn = document.getElementById('uacFetchBtn');
+            const hint = document.getElementById('uacModelHint');
+            const key = document.getElementById('uacApiKey')?.value?.trim() || (state.settings && state.settings[p + 'Key']) || '';
+            const base = document.getElementById('uacBaseUrl')?.value?.trim() || '';
+            const orig = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = 'Fetching…'; }
+            if (hint) hint.textContent = '';
+            try {
+                const apiBase = (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API.baseUrl) || '';
+                const r = await fetch(apiBase + '/api/models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider: p, apiKey: key, baseUrl: base }),
+                    signal: AbortSignal.timeout(15000),   // never leave the button stuck on a hung/slow server
+                });
+                if (!r.ok) throw new Error('server returned HTTP ' + r.status);
+                const data = await r.json();
+                const models = (data && data.models) || [];
+                const sel = document.getElementById('uacModel');
+                const current = state.settings?.selectedModel || '';
+                uacSetModelOptions(sel, models.map(m => m.id).filter(id => typeof id === 'string'), current);
+                if (hint) hint.textContent = models.length
+                    ? `${models.length} models · ${data.source === 'live' ? 'live from provider' : 'built-in list — add a key/base URL for a live list'}`
+                    : 'No models returned';
+            } catch (e) {
+                if (hint) hint.textContent = 'Fetch failed: ' + e.message + ' — is the T3MP3ST server running?';
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+            }
+        }
+        window.uacInit = uacInit;
 
         function saveApiServerUrl() {
             const url = document.getElementById('apiServerUrl').value.trim().replace(/\/+$/, '');
