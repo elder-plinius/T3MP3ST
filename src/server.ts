@@ -6741,6 +6741,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
   provider: any;
   model: string;
   apiKey?: string;
+  baseUrl?: string;
   maxTokens: number;
   temperature: number;
   timeout: number;
@@ -6769,6 +6770,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
     provider: selectedProvider as any,
     model: model || baseConfig.model,
     apiKey: effectiveKey,
+    baseUrl: baseConfig.baseUrl,
     maxTokens: 8192,
     temperature: 0.4,
     timeout: readGeneralTimeoutEnv() ?? 300000, // General planning needs room (was a hardcoded 60s); override via env

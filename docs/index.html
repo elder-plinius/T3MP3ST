@@ -25836,8 +25836,8 @@ Be specific and actionable. Format as structured JSON.`;
     const bb = _admBackbone();
     try {
       // Op Admiral planning is a slow LLM call — cap it so a first-time user never gets a
-      // permanent "…drafting…" spinner if the model stalls (120s = generous but finite).
-      const r = await fetch('/api/admiral/launch', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(Object.assign({ brief: _admBrief('dry_run'), confirmed: false }, bb)), signal: AbortSignal.timeout(120000) });
+      // permanent "…drafting…" spinner if the model stalls (180s).
+      const r = await fetch('/api/admiral/launch', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(Object.assign({ brief: _admBrief('dry_run'), confirmed: false }, bb)), signal: AbortSignal.timeout(180000) });
       const d = await r.json();
       if (d.error) throw new Error(d.error);
       const plan = d.plan || d.directive || d;
