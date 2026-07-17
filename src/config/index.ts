@@ -162,8 +162,8 @@ const DEFAULT_SETTINGS: TempestSettings = {
   },
 
   deepseek: {
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
+    baseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-v4-pro',
   },
 
   codex: {
@@ -344,22 +344,22 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       maxOutput: 4096,
       capabilities: ['reasoning', 'code', 'analysis'],
     },
-    // DeepSeek (Dec 2025)
+    // DeepSeek (Jul 2026 — V4)
     {
-      id: 'deepseek/deepseek-r1',
-      name: 'DeepSeek R1',
+      id: 'deepseek/deepseek-v4-pro',
+      name: 'DeepSeek V4 Pro',
       provider: 'DeepSeek',
-      contextWindow: 64000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks'],
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
     },
     {
-      id: 'deepseek/deepseek-chat',
-      name: 'DeepSeek V3',
+      id: 'deepseek/deepseek-v4-flash',
+      name: 'DeepSeek V4 Flash',
       provider: 'DeepSeek',
-      contextWindow: 64000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis'],
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
     // Mistral
     {
@@ -504,20 +504,20 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   ],
   deepseek: [
     {
-      id: 'deepseek-chat',
-      name: 'DeepSeek V3 (native)',
+      id: 'deepseek-v4-pro',
+      name: 'DeepSeek V4 Pro (native)',
       provider: 'DeepSeek',
-      contextWindow: 64000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
     },
     {
-      id: 'deepseek-reasoner',
-      name: 'DeepSeek R1 (native)',
+      id: 'deepseek-v4-flash',
+      name: 'DeepSeek V4 Flash (native)',
       provider: 'DeepSeek',
-      contextWindow: 64000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks'],
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
   local: [

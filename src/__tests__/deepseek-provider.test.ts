@@ -11,8 +11,8 @@ describe('DeepSeek provider wiring (#62)', () => {
     process.env.DEEPSEEK_API_KEY = KEY;
     const cfg = config.getLLMConfig('deepseek');
     expect(cfg.provider).toBe('deepseek');
-    expect(cfg.baseUrl).toBe('https://api.deepseek.com/v1');
-    expect(cfg.model).toBe('deepseek-chat');
+    expect(cfg.baseUrl).toBe('https://api.deepseek.com');
+    expect(cfg.model).toBe('deepseek-v4-pro');
     expect(cfg.apiKey).toBe(KEY);
   });
 
@@ -26,7 +26,7 @@ describe('DeepSeek provider wiring (#62)', () => {
   it('surfaces native DeepSeek models and configured provider state', () => {
     process.env.DEEPSEEK_API_KEY = KEY;
     expect(AVAILABLE_MODELS.deepseek?.map(m => m.id)).toEqual(
-      expect.arrayContaining(['deepseek-chat', 'deepseek-reasoner']),
+      expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro']),
     );
     expect(config.getConfiguredProviders()).toContain('deepseek');
   });

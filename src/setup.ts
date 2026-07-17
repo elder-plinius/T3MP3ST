@@ -196,7 +196,7 @@ async function setupAnthropicKey(): Promise<boolean> {
 
 async function setupDeepSeekKey(): Promise<boolean> {
   console.log('');
-  showInfo('DeepSeek provides OpenAI-compatible chat and reasoning models.');
+    showInfo('DeepSeek provides OpenAI-compatible chat and reasoning models (V4 Flash / V4 Pro).');
   showInfo('Get your API key at: ' + chalk.underline('https://platform.deepseek.com/api_keys'));
   console.log('');
 
@@ -220,8 +220,8 @@ async function setupDeepSeekKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'deepseek',
-      model: 'deepseek-chat',
-      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-pro',
+      baseUrl: 'https://api.deepseek.com',
       apiKey,
       maxTokens: 10,
       temperature: 0,
