@@ -323,12 +323,15 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
     tempestCommand.stop();
   }
 
+  const baseConfig = config.getLLMConfig(provider as any, model);
+
   tempestCommand = new TempestCommand({
     name: missionName,
     llm: {
       provider: provider as any,
       model,
       apiKey,
+      baseUrl: baseConfig.baseUrl,
       maxTokens: 4096,
       temperature: 0.7,
     },
