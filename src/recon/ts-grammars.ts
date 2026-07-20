@@ -7,8 +7,8 @@
  * are async, but `parser.parse()` is sync, so the ingest path stays sync.
  *
  * Fail-open by design: if init throws (bad/missing wasm, version skew), the
- * registry is left empty and every file routes to the Python-regex `parseFile`
- * fallback — ingest never crashes a mission.
+ * registry is left empty. Python still routes to `parseFile`; non-Python files
+ * yield no blocks — ingest never crashes a mission.
  */
 import { Parser, Language, Query } from 'web-tree-sitter';
 import { createRequire } from 'module';
@@ -80,6 +80,7 @@ const SPECS: Record<string, { wasm: string; lang: string; query: string }> = {
     wasm: 'tree-sitter-c', lang: 'c',
     query: `
       (function_definition declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params)) @def
+      (function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params))) @def
     `,
   },
   '.cpp': {

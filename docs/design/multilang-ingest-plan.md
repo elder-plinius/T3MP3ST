@@ -215,10 +215,10 @@ describe('createMultiLangIngestConfig', () => {
 
 ## Risk Assessment (post-review)
 - ~~[High] async ripple~~ → **eliminated** by the sync + bootstrap-init architecture.
-- **[Med] grammar wasm sourcing/version** — owned `deps-assets`; pin versions; the fail-open init means a bad bundle degrades to Python, not a crash.
+- **[Med] grammar wasm sourcing/version** — owned `deps-assets`; pin versions; the fail-open init means a bad bundle preserves Python ingest while non-Python files yield `[]`, not a crash.
 - **[Med] cross-language call-graph** — `buildCallGraph` name-matching may mis-handle non-Python ids; guarded by the reachability assertion in the headline test.
 - **[Low] sink-regex FP** — guarded by `System.out`/`fileSystem` negatives.
-- **[Low] bootstrap race** — pre-init-completion ingest fail-opens to Python.
+- **[Low] bootstrap race** — pre-init-completion ingest preserves Python parsing while non-Python files yield `[]`.
 
 ## Rollout — gated phases (each can bounce back)
 1. **Build.** Branch `feat/multilang-ingest`; land the 12 nodes in manifest order (fleet: `start-fleet.sh`). I implement the 8 owned; cascade fills the 4 local.

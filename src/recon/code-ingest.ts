@@ -774,9 +774,9 @@ export function ingestRepository(config: IngestConfig): IngestResult {
     }
     processedFiles += 1;
     totalBytes += content.length;
-    // Multi-language dispatch: .py + unsupported/unloaded exts fall back to the
-    // regex parseFile; other languages use tree-sitter (grammars loaded at
-    // bootstrap). Stays sync — parseFileMultiLang does not await.
+    // Multi-language dispatch: .py uses the legacy regex parser; supported
+    // non-Python languages use tree-sitter and yield [] when their grammar is
+    // unavailable. Stays sync — parseFileMultiLang does not await.
     allBlocks.push(...parseFileMultiLang(path, content, extname(path).toLowerCase()));
     if (maxTotalBytes !== undefined && totalBytes >= maxTotalBytes) {
       truncated = true;

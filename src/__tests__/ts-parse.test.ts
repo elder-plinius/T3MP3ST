@@ -37,6 +37,21 @@ describe('parseFileMultiLang', () => {
     expect(blocks.find((b) => b.name === 'A' && b.kind === 'class')).toBeDefined();
   });
 
+  it('extracts C functions with pointer return types', () => {
+    const blocks = parseFileMultiLang(
+      'fetch.c',
+      'const char *fetch_url(const char *url) { return url; }\n',
+      '.c',
+    );
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        name: 'fetch_url',
+        kind: 'function',
+        params: ['url'],
+      }),
+    ]);
+  });
+
   it('.py routes to the regex parser (byte-identical)', () => {
     const src = 'def fetch(url):\n    return get(url)\n';
     expect(parseFileMultiLang('a.py', src, '.py')).toEqual(parseFile('a.py', src));

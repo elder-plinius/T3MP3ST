@@ -109,7 +109,7 @@ When installed, cxpak's `serve` endpoints supply genuinely better multi-language
 
 - **Grammar wasm sourcing/versioning** — confirm the collection package and language coverage at implementation time; pin versions.
 - **production caller swap** — the multilang config must be repointed at BOTH `whitebox.ts` `ingestRepository` callers (L125, L205); a regression test drives `ingestRepoToSourceContext` end-to-end so the feature can't silently no-op in production. *(The async ripple is designed out by the sync + bootstrap-init architecture.)*
-- **bootstrap race** — a mission firing before `initGrammars` resolves fail-opens to Python for that call; entrypoints `await` init before serving.
+- **bootstrap race** — a mission firing before `initGrammars` resolves still parses Python through `parseFile`; non-Python files yield `[]` for that call. Entrypoints `await` init before serving.
 - **Param extraction variance** across grammars — mitigated by falling back to slicing the signature line when the parameters node is absent.
 - **Bundle size** — mitigated by lazy-loading grammars per encountered extension rather than eager-loading all.
 
