@@ -18,7 +18,7 @@
 
 **A multi-agent offensive-security framework, built to turn the AI coding agent you already run into a zero-day hunter.**
 
-![scores: re-derivable](https://img.shields.io/badge/scores-re--derivable-brightgreen) &nbsp; ![verify-claims 24/24](https://img.shields.io/badge/verify--claims-24%2F24-brightgreen) &nbsp; ![PRs welcome](https://img.shields.io/badge/PRs-welcome-purple) &nbsp; ![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue)
+![scores: re-derivable](https://img.shields.io/badge/scores-re--derivable-brightgreen) &nbsp; ![verify-claims 27/27](https://img.shields.io/badge/verify--claims-27%2F27-brightgreen) &nbsp; ![PRs welcome](https://img.shields.io/badge/PRs-welcome-purple) &nbsp; ![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue)
 
 </div>
 
@@ -30,7 +30,7 @@ And it won't ask you to take its word for it. On **XBOW's own 104-challenge suit
 
 Three things set it apart:
 
-1. **Reproducible.** Every number in this README recomputes from committed data — `npm run verify-claims` re-derives all of them, 24/24 green. A claim that can't be reproduced doesn't ship. No trust-me numbers, ever.
+1. **Reproducible.** Every number in this README recomputes from committed data — `npm run verify-claims` re-derives all of them, 27/27 green. A claim that can't be reproduced doesn't ship. No trust-me numbers, ever.
 2. **Keyless.** The AI coding agent already on your machine is the backbone. No API keys, no second bill, no gatekeeper.
 3. **Honest about scope.** The [status table](#what-ships-today) marks exactly what's stable, experimental, or roadmap — because red-teaming shouldn't be a priesthood, and it damn sure shouldn't run on vibes.
 
@@ -231,6 +231,7 @@ Headline results. Each recomputes from the committed JSON with `npm run verify-c
 | **XBEN** — XBOW's 104-challenge suite, black-box | **pass@1 mean 90.1%** (Wilson-95 86.2–92.9), floor 91/104 · gpt-5.5 | XBOW self-reports 85% on the same suite; ours re-derives the graded verdict from committed artifacts (raw transcripts stripped for privacy) |
 | **XBEN** — white-box (reported separately) | pass@1 98.7%, best-ball 104/104 · gpt-5.5 | never blended with the black-box number |
 | **Cybench** — 40-task academic bench, Opus 4.8, no hints | **23/40 (58%) hint-free, single-run pass@1** (`verify-claims`-enforced) | not the raw-score record (Anthropic: 76.5% pass@10); every flag graded against the committed oracle |
+| **Cybench model matrix** — identical 15-task committed subset, pass@1 | **Opus 4.7 vs 4.8**, with per-task source receipts and separate failure/abstention/infrastructure outcomes | [rebuild and inspect the model/harness matrix](docs/MODEL_MATRIX.md); historical system comparison, not an isolated model ranking |
 | **CVE-Zero** — 10 real post-cutoff (2026) CVEs, **held-out**, 7 languages | **single-agent 8/10 exact file/line/CWE** (verified all-exact, stable) · **10/10 found** (full pack) | **memorization- & fitting-proof**: post-cutoff, and the hardened prompts were never tuned on these; `verify-claims` recomputes it. n=10, directional; the swarm's edge here is recall, not a coordination-beats-solo proof |
 
 **How to read these:**
@@ -257,6 +258,7 @@ Deeper reading: [WALL_FORENSICS](docs/WALL_FORENSICS.md) (per-challenge misses),
 | [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | authority model, scope receipts, evidence and retest rules |
 | [VERIFIED_PROVENANCE](docs/VERIFIED_PROVENANCE.md) | how findings become tool-proven instead of model-asserted |
 | [CONTRIBUTION_RECEIPTS](docs/CONTRIBUTION_RECEIPTS.md) | PR receipt template for scope, run mode, model/harness labels, redaction, and verification |
+| [MODEL_MATRIX](docs/MODEL_MATRIX.md) | Reproducible cross-model benchmark matrix and arbitrary variant-test model selection |
 | [TEAM_PREVIEW](docs/TEAM_PREVIEW.md) | first-run path and review script |
 | [INSTALL_MATRIX](docs/INSTALL_MATRIX.md) | macOS / Linux readiness table |
 | [ARSENAL_ACTIVATION_PLAN](docs/ARSENAL_ACTIVATION_PLAN.md) | optional external-tool setup |

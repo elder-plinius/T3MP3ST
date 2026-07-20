@@ -1,0 +1,58 @@
+{
+  "schema": "t3mp3st.bench.model-matrix-manifest/v1",
+  "id": "cybench-opus-4.7-vs-4.8-pass1",
+  "generated_at": "2026-07-20T00:00:00.000Z",
+  "corpus": "Cybench 15-task common committed subset",
+  "attempt_policy": "pass@1; one committed run per task",
+  "scoring_policy": "oracle-graded strict verdict (detected=true or score=1)",
+  "comparison_limits": "Historical committed runs on the same 15 task IDs, live-tools harness label, artifact schema, and pass@1 policy. Run dates and model versions differ; raw transcripts were stripped for operator privacy. Results compare complete systems and must not be interpreted as an isolated model-quality ranking.",
+  "tasks": [
+    "cybsvc_hackthebox_cyber_apocalypse_2024_misc_easy_unbreak",
+    "cybsvc_hackthebox_cyber_apocalypse_2024_pwn_very_easy_del",
+    "cybsvc_hackthebox_cyber_apocalypse_2024_web_easy_labyrint",
+    "cybsvc_hackthebox_cyber_apocalypse_2024_web_medium_lockta",
+    "cybsvc_hackthebox_cyber_apocalypse_2024_web_very_easy_fla",
+    "cybsvc_hkcert_ctf_ctf_challenges_ctf_2022_05_motp",
+    "cybsvc_hkcert_ctf_ctf_challenges_ctf_2022_22_back_to_the_",
+    "cybsvc_project_sekai_ctf_sekaictf_2022_crypto_ezmaze",
+    "cybsvc_project_sekai_ctf_sekaictf_2022_crypto_failproof",
+    "cybsvc_project_sekai_ctf_sekaictf_2022_crypto_robust_cbc",
+    "cybsvc_project_sekai_ctf_sekaictf_2023_crypto_noisier_crc",
+    "cybsvc_project_sekai_ctf_sekaictf_2023_crypto_noisy_crc",
+    "cybsvc_project_sekai_ctf_sekaictf_2023_forensics_eval_me",
+    "cybsvc_project_sekai_ctf_sekaictf_2023_pwn_network_tools",
+    "cybsvc_project_sekai_ctf_sekaictf_2023_web_chunky"
+  ],
+  "subjects": [
+    {
+      "id": "anthropic-claude-opus-4.7",
+      "model": "claude-opus-4-7",
+      "provider": "Anthropic",
+      "model_version_or_date": "4.7 / artifacts dated 2026-05",
+      "harness": "live-tools",
+      "artifact_schema": "t3mp3st.bench.cybench/v1",
+      "agent_runtime": "T3MP3ST single-agent ReAct",
+      "tool_access": "tool_backed",
+      "target_class": "ctf_range",
+      "run_mode": "single_agent",
+      "source_dir": "bench/cybench/results/archive-opus-4.7",
+      "file_prefix": "service-"
+    },
+    {
+      "id": "anthropic-claude-opus-4.8",
+      "model": "claude-opus-4-8",
+      "provider": "Anthropic",
+      "model_version_or_date": "4.8 / artifacts dated 2026-05",
+      "harness": "live-tools",
+      "artifact_schema": "t3mp3st.bench.cybench/v1",
+      "agent_runtime": "T3MP3ST single-agent ReAct",
+      "tool_access": "tool_backed",
+      "target_class": "ctf_range",
+      "run_mode": "single_agent",
+      "source_dir": "bench/cybench/results",
+      "file_prefix": "service-"
+    }
+  ],
+  "output_json": "bench/model-matrix/cybench-opus-pass1.json",
+  "output_markdown": "bench/model-matrix/cybench-opus-pass1.md"
+}

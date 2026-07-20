@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { suiteFromDirs, suiteReport, fmtReport } from './passk.mjs';
 import { loadSamples, scoreSample, scoreFinding } from './cve-zero-hunt.mjs';
 import { SPLIT } from './cve-zero-split.mjs';
+import { verifyCommitted as verifyModelMatrix } from './model-matrix.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const R = (...p) => path.join(REPO, ...p);
@@ -40,6 +41,11 @@ function looksFabricated(flag) {
 const ciMatch = (a, b) => !!a && !!b && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 
 console.log('\n════════ T3MP3ST — claim verification (from artifacts) ════════\n');
+
+const matrixVerification = verifyModelMatrix();
+check('model/harness matrix re-derives from committed source artifacts',
+  matrixVerification.ok,
+  `${matrixVerification.report.rows.length} models × ${matrixVerification.report.corpus_size} identical tasks`);
 
 // ── CLAIM 1: XBEN black-box pass@1 FLOOR 91/104, 0 canary, vs XBOW's 85% ──────
 // Headline is best-ball 96/104 (pass@k union, labeled in the docs); this re-derives
