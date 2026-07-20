@@ -188,6 +188,26 @@ const DEFAULT_SETTINGS: TempestSettings = {
   },
 };
 
+export function migrateLegacyDeepSeekSettings(
+  settings: TempestSettings['deepseek'],
+): TempestSettings['deepseek'] {
+  const migrated = { ...settings };
+
+  // DeepSeek retires these compatibility aliases on 2026-07-24. Only migrate
+  // the exact historical defaults; operator-selected model IDs and endpoints
+  // remain untouched.
+  if (migrated.defaultModel === 'deepseek-chat') {
+    migrated.defaultModel = 'deepseek-v4-flash';
+  } else if (migrated.defaultModel === 'deepseek-reasoner') {
+    migrated.defaultModel = 'deepseek-v4-pro';
+  }
+  if (migrated.baseUrl === 'https://api.deepseek.com/v1') {
+    migrated.baseUrl = 'https://api.deepseek.com';
+  }
+
+  return migrated;
+}
+
 // =============================================================================
 // MODEL REGISTRY
 // =============================================================================
@@ -573,6 +593,15 @@ class ConfigManager {
       projectName: 't3mp3st',
       defaults: DEFAULT_SETTINGS,
     });
+
+    const deepseek = this.config.get('deepseek');
+    const migratedDeepSeek = migrateLegacyDeepSeekSettings(deepseek);
+    if (
+      migratedDeepSeek.baseUrl !== deepseek.baseUrl ||
+      migratedDeepSeek.defaultModel !== deepseek.defaultModel
+    ) {
+      this.config.set('deepseek', migratedDeepSeek);
+    }
 
     this.loadEnvVariables();
   }
