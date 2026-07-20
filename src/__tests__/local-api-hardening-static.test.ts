@@ -99,6 +99,27 @@ describe('local API authorization hardening invariants', () => {
     expect(route).toMatch(/approvalIds/);
   });
 
+  it('Op Admiral routes keyless planning through the connected local agent', () => {
+    expect(uiSource).toMatch(/connectedAgent[\s\S]*t3mpPreferredAgent/);
+    expect(uiSource).toMatch(/connectedAgent \? 'local-agent'/);
+    expect(uiSource).toMatch(/provider === 'local-agent'[\s\S]*connectedAgent/);
+    expect(uiSource).toMatch(/\['codex', 'mock', 'local', 'local-agent'\]/);
+  });
+
+  it('Full Auto resumes with the exact approved receipt instead of minting another', () => {
+    const start = uiSource.indexOf('async function generalFullAuto(');
+    const end = uiSource.indexOf('/**\n         * REQUEST SITREP', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const fullAuto = uiSource.slice(start, end);
+    expect(fullAuto).toMatch(/approvalIds = \[\]/);
+    expect(fullAuto).toMatch(/approvalIds,/);
+    expect(fullAuto).toMatch(/resp\.status === 403 && data\.approval\?\.id/);
+    expect(fullAuto).toMatch(/generalFullAuto\(retryApprovalIds\)/);
+    expect(uiSource).toMatch(/__t3mpPendingApprovalRetry/);
+    expect(uiSource).toMatch(/__t3mpPendingApprovalReceiptIds\?\.includes\(id\)/);
+  });
+
   it('approval lookup requires explicit receipt ids and wildcard hosts require opt-in', () => {
     const findApproval = routeBlock('function findApproval(', 'function createApprovalRequest');
     const approvalMatches = sourceBlock('function approvalMatches(', 'function ensureExecTargetsWithinApprovedTarget');

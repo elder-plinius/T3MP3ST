@@ -7539,6 +7539,13 @@ Correlating findings across agents, identifying patterns, producing actionable i
             await T3MP3ST_API.post('/api/approvals/' + id + '/approve', {});
             await window.refreshReceiptsPage();
             if (window.toast) toast('Receipt approved: ' + id, 'success');
+            if (window.__t3mpPendingApprovalReceiptIds?.includes(id) && typeof window.__t3mpPendingApprovalRetry === 'function') {
+                const retry = window.__t3mpPendingApprovalRetry;
+                window.__t3mpPendingApprovalRetry = null;
+                window.__t3mpPendingApprovalReceiptIds = [];
+                retry();
+                return;
+            }
             if (receipt?.action === 'autonomous_execution' && window.__t3mpAdmiralPendingRetry && typeof window.retryPendingAdmiralLaunch === 'function') {
                 window.retryPendingAdmiralLaunch();
             }
@@ -7555,6 +7562,13 @@ Correlating findings across agents, identifying patterns, producing actionable i
             await Promise.all(pending.map(function(a){ return T3MP3ST_API.post('/api/approvals/' + a.id + '/approve', {}); }));
             await window.refreshReceiptsPage();
             if (window.toast) toast('Approved ' + pending.length + ' pending receipt(s)', pending.length ? 'success' : 'info');
+            if (pending.some(function(a){ return window.__t3mpPendingApprovalReceiptIds?.includes(a.id); }) && typeof window.__t3mpPendingApprovalRetry === 'function') {
+                const retry = window.__t3mpPendingApprovalRetry;
+                window.__t3mpPendingApprovalRetry = null;
+                window.__t3mpPendingApprovalReceiptIds = [];
+                retry();
+                return;
+            }
             if (pending.some(function(a){ return a.action === 'autonomous_execution'; }) && window.__t3mpAdmiralPendingRetry && typeof window.retryPendingAdmiralLaunch === 'function') {
                 window.retryPendingAdmiralLaunch();
             }
@@ -17139,14 +17153,21 @@ ACTION_INPUT: {"output":"Found confirmed SQLi on /login endpoint..."}`;
             }
             const apiKey = getApiKey();
             const savedProvider = localStorage.getItem('t3mp3st_general_provider');
-            const provider = savedProvider || (T3MP3ST_API?.connected && !T3MP3ST_API?.llmAvailable ? 'codex' : undefined);
-            const model = provider === 'codex' ? 'codex-default' : (provider ? (state.settings?.selectedModel || 'anthropic/claude-sonnet-4') : undefined);
+            const connectedAgent = (!apiKey && typeof window.t3mpPreferredAgent === 'function')
+                ? window.t3mpPreferredAgent()
+                : null;
+            const provider = savedProvider
+                || (connectedAgent ? 'local-agent' : undefined)
+                || (T3MP3ST_API?.connected && !T3MP3ST_API?.llmAvailable ? 'codex' : undefined);
+            const model = provider === 'local-agent'
+                ? connectedAgent
+                : (provider === 'codex' ? 'codex-default' : (provider ? (state.settings?.selectedModel || 'anthropic/claude-sonnet-4') : undefined));
             return { apiKey, provider, model };
         }
 
         function _generalNeedsApiKey(provider) {
             if (!provider) return false;
-            return !['codex', 'mock', 'local'].includes(provider);
+            return !['codex', 'mock', 'local', 'local-agent'].includes(provider);
         }
 
         function _generalCodexRequiresBackend(provider) {
@@ -18226,7 +18247,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
         /**
          * FULL AUTO — Plan + Execute in one shot
          */
-        async function generalFullAuto() {
+        async function generalFullAuto(approvalIds = []) {
             const directive = document.getElementById('generalDirective')?.value?.trim();
             if (!directive) { toast('Enter a directive for the Admiral', 'error'); return; }
 
@@ -18265,12 +18286,21 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 objective: directive, constraints, scopeHints, urgency, opsecPreference,
-                                apiKey, provider, model, ...(baseUrl ? { baseUrl } : {}),
+                                apiKey, provider, model, approvalIds, ...(baseUrl ? { baseUrl } : {}),
                             }),
                         });
 
                         const data = await resp.json();
                         if (!resp.ok || !data.success) {
+                            if (resp.status === 403 && data.approval?.id) {
+                                const retryApprovalIds = [...new Set([...approvalIds, data.approval.id])];
+                                window.__t3mpPendingApprovalReceiptIds = [data.approval.id];
+                                window.__t3mpPendingApprovalRetry = () => generalFullAuto(retryApprovalIds);
+                                addIntel('SCOPEGUARD', 'Full Auto receipt created — approve it in Scope Receipts to resume this operation', 'warning');
+                                toast('Approval required — approve the receipt to resume Full Auto', 'warning');
+                                navigateTo?.('receipts');
+                                return;
+                            }
                             if (data.plan || data.review || data.missionGate) {
                                 plan = _generalNormalizePlan(data.plan || {});
                                 if (data.review) plan.review = data.review;
