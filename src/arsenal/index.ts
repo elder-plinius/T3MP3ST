@@ -26,7 +26,7 @@ import type {
   RiskTier,
 } from '../types/index.js';
 import { ToolError, ToolErrorCategory } from '../types/index.js';
-import { validateToolArgs, buildJsonSchema } from '../validation/index.js';
+import { validateToolArgs, buildJsonSchema, assertSchemaDepth } from '../validation/index.js';
 
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -319,6 +319,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
    * Register a tool
    */
   register(tool: CustomTool): void {
+    assertSchemaDepth(tool.parameters ?? []);
     this.tools.set(tool.name, tool);
     this.emit('tool:registered', tool);
   }

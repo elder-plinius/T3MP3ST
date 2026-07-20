@@ -101,6 +101,15 @@ describe('validateToolArgs', () => {
       expect(errors[0].field).toBe('port');
     });
 
+    it('coerces a numeric string when a number is expected', () => {
+      const schema: ToolParameter[] = [
+        { name: 'port', type: 'number', description: 'Port', required: true },
+      ];
+      const args: Record<string, unknown> = { port: '8080' };
+      expect(validateToolArgs('test_tool', args, schema)).toEqual([]);
+      expect(args.port).toBe(8080);
+    });
+
     it('should return validation error for number when string expected', () => {
       const schema: ToolParameter[] = [
         { name: 'target', type: 'string', description: 'Target', required: true },

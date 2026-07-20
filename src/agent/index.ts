@@ -134,7 +134,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       tools: options?.tools ?? [],
       verboseToolOutput: options?.verboseToolOutput ?? true,
       maxToolOutputLength: options?.maxToolOutputLength ?? 4000,
-      maxConcurrency: options?.maxConcurrency ?? 5,
+      maxConcurrency: Math.max(1, options?.maxConcurrency ?? 5),
     };
   }
 

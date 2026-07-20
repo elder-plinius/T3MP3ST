@@ -46,6 +46,7 @@ function makeTask(): Task {
 function createMockLLM(responses: LLMResponse[]): LLMBackbone {
   let callIndex = 0;
   return {
+    getProvider: vi.fn().mockReturnValue('mock'),
     chat: vi.fn().mockImplementation(async () => {
       const response = responses[callIndex] || responses[responses.length - 1];
       callIndex++;

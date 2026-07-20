@@ -116,7 +116,12 @@ interface OllamaResponse {
   message?: {
     content?: string;
     /** Native function calls returned by the model (Ollama /api/chat with tools). */
-    tool_calls?: Array<{ function: { name: string; arguments: string } }>;
+    tool_calls?: Array<{
+      function: {
+        name: string;
+        arguments: string | Record<string, unknown>;
+      };
+    }>;
   };
   model?: string;
   prompt_eval_count?: number;
@@ -809,7 +814,11 @@ class LocalAdapter implements LLMProviderAdapter {
     if (!raw?.length) return undefined;
     return raw.map((tc, i) => {
       let args: Record<string, unknown> = {};
-      try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* keep empty */ }
+      if (tc.function.arguments && typeof tc.function.arguments === 'object') {
+        args = tc.function.arguments;
+      } else {
+        try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* keep empty */ }
+      }
       return {
         id: `ollama_${Date.now()}_${i}`,
         name: tc.function.name,
@@ -893,17 +902,33 @@ class LocalAdapter implements LLMProviderAdapter {
     }
 
     try {
-      const response = await fetch(url, {
+      const headers = {
+        'Content-Type': 'application/json',
+        // Local OpenAI-compatible servers usually ignore auth, but LM Studio & co.
+        // expect *some* bearer — send a dummy unless the operator set a real key.
+        ...(openaiWire ? { Authorization: `Bearer ${this.config.apiKey || 'local'}` } : {}),
+      };
+      const makeSignal = () => AbortSignal.timeout(this.config.timeout || 120000);
+      let response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Local OpenAI-compatible servers usually ignore auth, but LM Studio & co.
-          // expect *some* bearer — send a dummy unless the operator set a real key.
-          ...(openaiWire ? { Authorization: `Bearer ${this.config.apiKey || 'local'}` } : {}),
-        },
+        headers,
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(this.config.timeout || 120000),
+        signal: makeSignal(),
       });
+
+      // Some local/OpenAI-compatible servers reject the `tools` field instead
+      // of ignoring it. Retry once without native tools and remember that
+      // explicit rejection; an optimistic probe must not break text fallback.
+      if (!response.ok && tryNative && this.config.nativeTools !== true) {
+        delete requestBody.tools;
+        this.cacheProbeResult(false);
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+          signal: makeSignal(),
+        });
+      }
 
       if (!response.ok) {
         throw new Error(`Local LLM error: ${response.status}`);
@@ -922,9 +947,9 @@ class LocalAdapter implements LLMProviderAdapter {
           ? this.parseOpenAINativeToolCalls(data)
           : this.parseOllamaNativeToolCalls(data);
 
-        // Cache the probe result so subsequent calls don't re-probe.
-        // Only cache when we haven't already determined support for this model.
-        this.cacheProbeResult(!!nativeToolCalls);
+        // A returned native call proves support. Its absence does not prove
+        // lack of support—the model may legitimately answer without a tool.
+        if (nativeToolCalls) this.cacheProbeResult(true);
       }
 
       // Tool-calling over text: if the Arsenal was offered, parse the model's tool

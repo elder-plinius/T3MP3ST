@@ -109,45 +109,71 @@ describe('Ollama native wire (/api/chat)', () => {
     expect(res.finishReason).toBe('tool_calls');
   });
 
-  it('caches failed probe: second call omits native tools from request', async () => {
+  it('retries and caches an explicit native-tools rejection', async () => {
     let callIdx = 0;
     const spy = vi.fn(async (_url: string, init: { body: string }) => {
       const body = JSON.parse(init.body);
       if (callIdx === 0) {
-        // First call: native tools ARE sent (optimistic probe)
         expect(body.tools).toBeDefined();
         callIdx++;
         return {
-          ok: true,
-          json: async () => ({
-            model: 'cache-test-1',
-            message: {
-              role: 'assistant',
-              content: '```json\n{"tool_calls":[{"name":"test_tool","arguments":{"input":"first"}}]}\n```',
-            },
-          }),
+          ok: false,
+          status: 400,
+          json: async () => ({ error: 'tools unsupported' }),
         } as unknown as Response;
       }
-      // Second call: native tools NOT sent (cache says not supported)
       expect(body.tools).toBeUndefined();
       callIdx++;
       return {
         ok: true,
+        status: 200,
         json: async () => ({
           model: 'cache-test-1',
-          message: { role: 'assistant', content: '```json\n{"tool_calls":[{"name":"test_tool","arguments":{"input":"second"}}]}\n```' },
+          message: { role: 'assistant', content: '```json\n{"tool_calls":[{"name":"test_tool","arguments":{"input":"fallback"}}]}\n```' },
         }),
       } as unknown as Response;
     });
     global.fetch = spy as unknown as typeof fetch;
 
     const bb = localBackbone('cache-test-1');
-    const res1 = await bb.chatWithTools([{ role: 'user', content: 'first' }], TOOLS);
-    expect(res1.toolCalls).toBeDefined();
-
-    const res2 = await bb.chatWithTools([{ role: 'user', content: 'second' }], TOOLS);
-    expect(res2.toolCalls).toBeDefined();
+    const res = await bb.chatWithTools([{ role: 'user', content: 'first' }], TOOLS);
+    expect(res.toolCalls?.[0].arguments).toEqual({ input: 'fallback' });
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not mark native tools unsupported when a model answers without a call', async () => {
+    const spy = mockFetch({
+      model: 'test-model',
+      message: { role: 'assistant', content: 'No tool is needed.' },
+    });
+    global.fetch = spy as unknown as typeof fetch;
+
+    const bb = localBackbone('no-call-is-not-failure');
+    await bb.chatWithTools([{ role: 'user', content: 'answer directly' }], TOOLS);
+    await bb.chatWithTools([{ role: 'user', content: 'now use a tool' }], TOOLS);
+
+    expect(JSON.parse(spy.mock.calls[0][1].body).tools).toBeDefined();
+    expect(JSON.parse(spy.mock.calls[1][1].body).tools).toBeDefined();
+  });
+
+  it('accepts Ollama native arguments in their object wire shape', async () => {
+    const spy = mockFetch({
+      model: 'test-model',
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { function: { name: 'test_tool', arguments: { input: 'object-wire' } } },
+        ],
+      },
+    });
+    global.fetch = spy as unknown as typeof fetch;
+
+    const res = await localBackbone('object-args').chatWithTools(
+      [{ role: 'user', content: 'use it' }],
+      TOOLS,
+    );
+    expect(res.toolCalls?.[0].arguments).toEqual({ input: 'object-wire' });
   });
 
   it('caches successful probe: second call still sends native tools', async () => {

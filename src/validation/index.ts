@@ -6,14 +6,19 @@
  */
 
 import type { ToolParameter, ToolValidationError } from '../types/index.js';
+import { createRequire } from 'node:module';
 
 // Lazy-loaded AJV instance
 let ajv: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+const require = createRequire(import.meta.url);
 function getAjv(): any { // eslint-disable-line @typescript-eslint/no-explicit-any
   if (!ajv) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const AjvModule = require('ajv');
-    ajv = new AjvModule.default({ allErrors: true, strict: false });
+    ajv = new AjvModule.default({
+      allErrors: true,
+      strict: false,
+      useDefaults: true,
+    });
   }
   return ajv;
 }
@@ -217,6 +222,37 @@ export function assertSchemaDepth(params: ToolParameter[], maxDepth: number = MA
 // Compiled schema cache to avoid re-compiling the same schemas
 const compiledSchemas = new Map<string, ReturnType<typeof getAjv>['compile']>();
 
+function coerceModelScalars(
+  values: Record<string, unknown>,
+  schema: ToolParameter[],
+): void {
+  for (const param of schema) {
+    const value = values[param.name];
+    if (typeof value === 'string' && param.type === 'number') {
+      const trimmed = value.trim();
+      if (trimmed !== '' && Number.isFinite(Number(trimmed))) {
+        values[param.name] = Number(trimmed);
+      }
+    } else if (typeof value === 'string' && param.type === 'boolean') {
+      if (value === 'true') values[param.name] = true;
+      else if (value === 'false') values[param.name] = false;
+    } else if (value && typeof value === 'object' && !Array.isArray(value) && param.properties) {
+      coerceModelScalars(
+        value as Record<string, unknown>,
+        Object.entries(param.properties).map(([name, nested]) => ({ ...nested, name })),
+      );
+    } else if (Array.isArray(value) && param.items?.properties) {
+      const itemSchema = Object.entries(param.items.properties)
+        .map(([name, nested]) => ({ ...nested, name }));
+      for (const item of value) {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          coerceModelScalars(item as Record<string, unknown>, itemSchema);
+        }
+      }
+    }
+  }
+}
+
 /**
  * Validate tool arguments against a parameter schema.
  * Returns an array of validation errors (empty if valid).
@@ -235,6 +271,11 @@ export function validateToolArgs(
   if (!schema || schema.length === 0) {
     return [];
   }
+
+  // Local/text models commonly serialize numeric and boolean schema values as
+  // strings. Coerce only those safe directions; never stringify malformed
+  // numbers or objects to make an invalid call appear valid.
+  coerceModelScalars(args, schema);
 
   const jsonSchema = buildJsonSchema(schema);
   const schemaKey = JSON.stringify(jsonSchema);
