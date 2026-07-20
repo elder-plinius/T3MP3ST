@@ -9,6 +9,9 @@
 import { EventEmitter } from 'eventemitter3';
 import type { LLMBackbone } from '../llm/index.js';
 import type { Arsenal } from '../arsenal/index.js';
+import {
+  ToolError,
+} from '../types/index.js';
 import type {
   LLMMessage,
   LLMToolDefinition,
@@ -37,6 +40,39 @@ export interface AgentLoopOptions {
   verboseToolOutput?: boolean;
   /** Max characters per tool result before truncation (default: 4000) */
   maxToolOutputLength?: number;
+  /** Max concurrent tool executions per LLM response (default: 5) */
+  maxConcurrency?: number;
+}
+
+// =============================================================================
+// SEMAPHORE — lightweight concurrency limiter
+// =============================================================================
+
+class Semaphore {
+  private queue: (() => void)[] = [];
+  private running = 0;
+
+  constructor(private max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.running < this.max) {
+      this.running++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      // Keep running count the same — transfer the slot
+      next();
+    } else {
+      this.running--;
+    }
+  }
 }
 
 export interface AgentStep {
@@ -98,6 +134,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       tools: options?.tools ?? [],
       verboseToolOutput: options?.verboseToolOutput ?? true,
       maxToolOutputLength: options?.maxToolOutputLength ?? 4000,
+      maxConcurrency: Math.max(1, options?.maxConcurrency ?? 5),
     };
   }
 
@@ -197,23 +234,41 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
             toolCalls: response.toolCalls,
           });
 
-          // Execute each tool call
+          // Execute each tool call — independent calls from the same LLM response run
+          // concurrently, bounded by the semaphore. Scope/approval gates are checked
+          // per-call inside arsenal.execute() BEFORE the handler runs.
           const findingsBefore = allFindings.length;
-          for (const toolCall of response.toolCalls) {
-            // ANTI-STALL: a byte-identical repeat is almost always wasted — steer instead of re-running.
+          const semaphore = new Semaphore(this.options.maxConcurrency);
+          const toolSteps: AgentStep[] = new Array(response.toolCalls.length);
+
+          // Pre-check anti-stall for all calls, then execute concurrently
+          const callPromises = response.toolCalls.map(async (toolCall, idx) => {
             const callHash = `${toolCall.name}:${JSON.stringify(toolCall.arguments || {})}`;
-            let toolStep: AgentStep;
             if (seenCalls.has(callHash)) {
               const dup: ToolResult = {
                 success: false,
                 error: `Duplicate call — you already ran ${toolCall.name} with these exact arguments. ` +
                   `Prior result: ${seenCalls.get(callHash)}. Do NOT repeat it — change the arguments, pick a different tool, or move to your final debrief.`,
               };
-              toolStep = { iteration: i, type: 'tool_call', toolName: toolCall.name, toolArgs: toolCall.arguments, toolResult: dup, timestamp: Date.now() };
-            } else {
-              toolStep = await this.executeTool(toolCall, target, i);
-              seenCalls.set(callHash, String(toolStep.toolResult?.output || toolStep.toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160));
+              toolSteps[idx] = { iteration: i, type: 'tool_call', toolName: toolCall.name, toolArgs: toolCall.arguments, toolResult: dup, timestamp: Date.now() };
+              return;
             }
+
+            await semaphore.acquire();
+            try {
+              toolSteps[idx] = await this.executeTool(toolCall, target, i);
+              seenCalls.set(callHash, String(toolSteps[idx].toolResult?.output || toolSteps[idx].toolResult?.error || 'no output').replace(/\s+/g, ' ').slice(0, 160));
+            } finally {
+              semaphore.release();
+            }
+          });
+
+          await Promise.all(callPromises);
+
+          // Push results in original order and collect findings
+          for (let idx = 0; idx < response.toolCalls.length; idx++) {
+            const toolCall = response.toolCalls[idx];
+            const toolStep = toolSteps[idx];
             steps.push(toolStep);
 
             // Collect findings — tag with REAL tool provenance (the output that backs them)
@@ -381,19 +436,36 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
         parameters: toolCall.arguments,
       });
     } catch (err) {
-      // A bad/hallucinated tool name must NOT crash the loop. Return the callable set so the
-      // model self-corrects in-place instead of dying or looping on a tool that doesn't exist.
-      const available = this.arsenal
-        .getToolDefinitions(
-          this.options.toolCategories.length ? this.options.toolCategories : undefined,
-          this.options.tools.length ? this.options.tools : undefined
-        )
-        .map((t) => t.name);
-      toolResult = {
-        success: false,
-        error: `Tool "${toolCall.name}" is not available. Callable tools this run: ${available.join(', ') || '(none)'}. ` +
-          `Use one of these EXACT names — do not invent tools; if none fit, describe the capability you need in prose.`,
-      };
+      // ToolError carries a category — use it for structured feedback to the LLM.
+      if (err instanceof ToolError) {
+        toolResult = {
+          success: false,
+          error: JSON.stringify({
+            error: true,
+            category: err.category,
+            tool: toolCall.name,
+            message: `Tool execution failed: ${err.category}`,
+          }),
+        };
+      } else {
+        // A bad/hallucinated tool name must NOT crash the loop. Return the callable set so the
+        // model self-corrects in-place instead of dying or looping on a tool that doesn't exist.
+        const available = this.arsenal
+          .getToolDefinitions(
+            this.options.toolCategories.length ? this.options.toolCategories : undefined,
+            this.options.tools.length ? this.options.tools : undefined
+          )
+          .map((t) => t.name);
+        toolResult = {
+          success: false,
+          error: JSON.stringify({
+            error: true,
+            category: 'tool_not_found',
+            tool: toolCall.name,
+            message: `Tool "${toolCall.name}" is not available. Callable tools this run: ${available.join(', ') || '(none)'}. Use one of these EXACT names — do not invent tools; if none fit, describe the capability you need in prose.`,
+          }),
+        };
+      }
     }
 
     this.emit('agent:tool_result', { name: toolCall.name, result: toolResult, source });
@@ -496,10 +568,24 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   }
 
   /**
-   * Format a tool result for the LLM context
+   * Format a tool result for the LLM context.
+   * Structured JSON errors (from ToolError catches) are passed through as-is
+   * so the LLM receives the category without raw internals.
    */
   private formatToolResult(result?: ToolResult): string {
     if (!result) return 'No result returned.';
+
+    // Structured JSON error feedback — pass through directly
+    if (!result.success && result.error) {
+      try {
+        const parsed = JSON.parse(result.error);
+        if (parsed.error === true && parsed.category) {
+          return result.error;
+        }
+      } catch {
+        // Not JSON — fall through to normal formatting
+      }
+    }
 
     const parts: string[] = [];
     parts.push(`Success: ${result.success}`);

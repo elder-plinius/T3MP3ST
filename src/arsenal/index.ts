@@ -25,6 +25,8 @@ import type {
   LLMToolDefinition,
   RiskTier,
 } from '../types/index.js';
+import { ToolError, ToolErrorCategory } from '../types/index.js';
+import { validateToolArgs, buildJsonSchema, assertSchemaDepth } from '../validation/index.js';
 
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -317,6 +319,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
    * Register a tool
    */
   register(tool: CustomTool): void {
+    assertSchemaDepth(tool.parameters ?? []);
     this.tools.set(tool.name, tool);
     this.emit('tool:registered', tool);
   }
@@ -368,7 +371,13 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
   ): Promise<ToolResult> {
     const tool = this.tools.get(toolName);
     if (!tool) {
-      throw new Error(`Tool "${toolName}" not found`);
+      const err = new ToolError(
+        ToolErrorCategory.ToolNotFound,
+        `Tool "${toolName}" not found`,
+        toolName,
+      );
+      this.emit('tool:error', { tool: { name: toolName } as CustomTool, error: err });
+      throw err;
     }
 
     // Egress scope gate: deny out-of-scope network targets BEFORE the handler runs. A tool call
@@ -379,7 +388,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         success: false,
         error: `SCOPE DENIED: target '${blockedHost}' is not in the authorized scope — ${toolName} refused before execution. Only authorized / loopback / lab targets are permitted.`,
       };
-      this.emit('tool:error', { tool, error: new Error(denied.error) });
+      this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName) });
       return denied;
     }
 
@@ -390,7 +399,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     if (this.approval && isGatedRisk(tool.riskTier)) {
       const request: ApprovalRequest = {
         tool: toolName,
-        risk: tool.riskTier,
+        risk: tool.riskTier!,
         operator: context.operator,
         target: approvalTargetOf(context),
         action: describeToolAction(toolName, context),
@@ -398,8 +407,23 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       const decision = await this.approval.gate(request);
       if (!decision.allowed) {
         const denied: ToolResult = { success: false, error: `APPROVAL REQUIRED: ${decision.reason}` };
-        this.emit('tool:error', { tool, error: new Error(denied.error) });
+        this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName) });
         return denied;
+      }
+    }
+
+    // Validation gate: validate args against tool's parameter schema before handler runs.
+    if (tool.parameters && tool.parameters.length > 0) {
+      const validationErrors = validateToolArgs(toolName, context.parameters, tool.parameters);
+      if (validationErrors.length > 0) {
+        const fieldErrors = validationErrors.map(e => `${e.field}: ${e.message} (expected ${e.expected})`).join('; ');
+        const err = new ToolError(
+          ToolErrorCategory.ValidationError,
+          `Validation failed for "${toolName}": ${fieldErrors}`,
+          toolName,
+        );
+        this.emit('tool:error', { tool, error: err });
+        throw err;
       }
     }
 
@@ -429,12 +453,19 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         error: error instanceof Error ? error.message : String(error),
       }).error;
 
-      this.emit('tool:error', { tool, error: error as Error });
+      // If already a ToolError, re-throw as-is; otherwise wrap as ExecutionError
+      if (error instanceof ToolError) {
+        this.emit('tool:error', { tool, error });
+        throw error;
+      }
 
-      return {
-        success: false,
-        error: execution.error,
-      };
+      const wrappedErr = new ToolError(
+        ToolErrorCategory.ExecutionError,
+        `Tool "${toolName}" execution failed: ${execution.error}`,
+        toolName,
+      );
+      this.emit('tool:error', { tool, error: wrappedErr });
+      throw wrappedErr;
     }
   }
 
@@ -469,30 +500,15 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       tools = tools.filter(t => categories.includes(t.category));
     }
     return tools.map(tool => {
-      const properties: Record<string, { type: string; description?: string; enum?: string[]; default?: unknown }> = {};
-      const required: string[] = [];
-
-      for (const param of tool.parameters || []) {
-        properties[param.name] = {
-          type: param.type,
-          description: param.description,
-        };
-        if (param.default !== undefined) {
-          properties[param.name].default = param.default;
-        }
-        if (param.required) {
-          required.push(param.name);
-        }
-      }
+      // Use buildJsonSchema() for richer schema generation (enum, items, nested properties)
+      const schema = (tool.parameters && tool.parameters.length > 0)
+        ? buildJsonSchema(tool.parameters)
+        : { type: 'object' as const, properties: {} };
 
       return {
         name: tool.name,
         description: tool.description,
-        parameters: {
-          type: 'object' as const,
-          properties,
-          required: required.length > 0 ? required : undefined,
-        },
+        parameters: schema as LLMToolDefinition['parameters'],
       };
     });
   }
