@@ -46,6 +46,11 @@ services:
     environment:
       - CTF_FLAG=T3MP3ST{bl1nd_sql1_t1m3_b4s3d}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
     labels:
@@ -66,6 +71,11 @@ services:
     depends_on:
       - webhook-receiver
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
     labels:
@@ -85,6 +95,11 @@ services:
     depends_on:
       - metadata-mock
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
       - ctf-internal
@@ -107,6 +122,11 @@ services:
     environment:
       - CTF_FLAG=T3MP3ST{b4s1c_buff3r_0v3rfl0w}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
     labels:
@@ -124,6 +144,11 @@ services:
     environment:
       - CTF_FLAG=T3MP3ST{f0rm4t_str1ng_g0t_wr1t3}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
     labels:
@@ -145,6 +170,11 @@ services:
     environment:
       - CTF_FLAG=T3MP3ST{w34k_rs4_pr1m3_f4ct0r}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
     labels:
@@ -168,6 +198,11 @@ services:
     environment:
       - CTF_FLAG=T3MP3ST{v0l4t1l1ty_m3m0ry_dump}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
     labels:
@@ -215,6 +250,11 @@ services:
       "
     ports:
       - "9999:9999"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - ctf-network
 
@@ -255,6 +295,11 @@ services:
       "
     environment:
       - CTF_FLAG=T3MP3ST{ssrf_t0_cl0ud_m3t4d4t4}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       ctf-internal:
         ipv4_address: 169.254.169.254
