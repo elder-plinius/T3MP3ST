@@ -1296,7 +1296,7 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   private config: LLMConfig;
   constructor(config: LLMConfig) { this.config = config; }
   validateConfig(): { valid: boolean; error?: string } {
-    return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes)' };
+    return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes|kimi)' };
   }
   private formatPrompt(messages: LLMMessage[], options?: ChatOptions): string {
     const parts = [

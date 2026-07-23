@@ -583,6 +583,16 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       maxOutput: 8192,
       capabilities: ['reasoning', 'code', 'agents', 'local-cli'],
     },
+    {
+      id: 'kimi',
+      name: 'Kimi Code (local CLI)',
+      provider: 'LocalAgent',
+      // Kimi K3: 1M context (1,048,576) — https://openrouter.ai/moonshotai/kimi-k3
+      contextWindow: 1048576,
+      // Harness per-call output budget, same conservative default as claude/codex.
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'local-cli'],
+    },
   ],
 };
 
@@ -867,6 +877,11 @@ class ConfigManager {
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
+      case 'local-agent':
+        // Connected agent CLI (claude|codex|hermes|kimi) as backbone — keyless:
+        // auth is the CLI's own login, the agent id travels in `model`, no baseUrl.
+        actualModel = model || 'codex';
+        break;
       case 'mock':
         actualModel = 'mock-model';
         break;
@@ -895,16 +910,23 @@ class ConfigManager {
       maxTokens: this.config.get('maxTokens'),
       temperature: this.config.get('temperature'),
       // Local inference is far slower than cloud APIs, so it must not inherit the cloud-tuned
-      // default timeout: floor it at 120s (matching the frontend llmTimeoutFor) and let the
-      // operator override via TEMPEST_LOCAL_TIMEOUT for very slow reasoning models.
-      timeout: actualProvider === 'local'
-        ? ((): number => {
-            const parsed = Number(process.env.TEMPEST_LOCAL_TIMEOUT);
-            return Number.isFinite(parsed) && parsed > 0
-              ? parsed
-              : Math.max(Number(this.config.get('timeout')) || 0, 120000);
-          })()
-        : this.config.get('timeout'),
+      // default timeout. `local` floors at 120s (frontend llmTimeoutFor) with TEMPEST_LOCAL_TIMEOUT
+      // as the override. `local-agent` floors at 600s — each call is a full agent CLI round-trip
+      // (the dispatch default in localAgentChat), and this value is passed in as an explicit
+      // timeoutMs, so a lower floor would silently override that 600s. Operator knob:
+      // T3MP3ST_LOCAL_AGENT_TIMEOUT_MS.
+      timeout: ((): number => {
+        const configured = Number(this.config.get('timeout')) || 0;
+        if (actualProvider === 'local-agent') {
+          const parsed = Number(process.env.T3MP3ST_LOCAL_AGENT_TIMEOUT_MS);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : Math.max(configured, 600000);
+        }
+        if (actualProvider === 'local') {
+          const parsed = Number(process.env.TEMPEST_LOCAL_TIMEOUT);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : Math.max(configured, 120000);
+        }
+        return this.config.get('timeout');
+      })(),
       fallbackChain: this.buildFallbackChain(actualProvider),
     };
   }

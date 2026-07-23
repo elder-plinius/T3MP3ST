@@ -79,7 +79,7 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export type LocalAgentId = 'claude' | 'codex' | 'hermes';
+export type LocalAgentId = 'claude' | 'codex' | 'hermes' | 'kimi';
 
 /** Apply an authoritative bulk selection; single-agent connects remain additive. */
 export function syncLocalAgentSelection<T>(
@@ -163,6 +163,20 @@ const SPECS: AgentSpec[] = [
     authArtifacts: ['~/.hermes/.env', "~/.hermes/auth.json", localAppData('hermes/.env'), localAppData('hermes/auth.json')],
     oneShot: (p, m) => ['-z', p, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(m ? ['-m', m] : [])],
   },
+  {
+    id: 'kimi',
+    label: 'Kimi Code',
+    vendor: 'Moonshot AI',
+    bin: 'kimi',
+    blurb: 'Kimi Code agentic CLI (Kimi K3 subscription)',
+    invokeHint: 'kimi -p "<prompt>"',
+    versionArgs: ['--version'],
+    parseVersion: (o) => (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
+    // Device-code OAuth login (`kimi login`) creates ~/.kimi-code/credentials/
+    // (dir, perms 700). Presence-only — token bytes are never read.
+    authArtifacts: ['~/.kimi-code/credentials'],
+    oneShot: (p, m) => ['-p', p, '--output-format', 'text', ...(m ? ['-m', m] : [])],
+  },
 ];
 
 export function getSpec(id: string): AgentSpec | undefined {
@@ -212,6 +226,7 @@ const NEWLINE_RE = new RegExp('\\r?\\n');
 function wellKnownBinDirs(home: string): string[] {
   const dirs = [
     join(home, '.local', 'bin'),                       // Claude Code native installer, pipx, mise
+    join(home, '.kimi-code', 'bin'),                   // Kimi Code CLI
     join(home, '.local', 'share', 'mise', 'shims'),    // mise
     join(home, '.asdf', 'shims'),                      // asdf
     '/opt/homebrew/bin',                               // Homebrew (Apple Silicon)
@@ -474,6 +489,12 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
     workDir = mkdtempSync(join(tmpdir(), 't3mp3st-codexllm-'));
     outFile = join(workDir, 'reply.txt');
     args = ['exec', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'read-only', '--output-last-message', outFile, ...(model ? ['-m', model] : [])];
+  } else if (id === 'kimi') {
+    // kimi takes the prompt as the -p value; stdout carries ONLY the reply text
+    // (thinking bullets and the "To resume this session" trailer go to stderr),
+    // so no output filtering is needed. Verified against kimi-code @ ~/.kimi-code/bin.
+    args = ['-p', prompt, '--output-format', 'text', ...(model ? ['-m', model] : [])];
+    viaStdin = false;
   } else { // hermes — takes the prompt as an arg
     args = ['-z', prompt, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(model ? ['-m', model] : [])];
     viaStdin = false;
