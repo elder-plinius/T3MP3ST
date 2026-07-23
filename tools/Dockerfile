@@ -14,8 +14,7 @@
 FROM kalilinux/kali-rolling
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PIP_BREAK_SYSTEM_PACKAGES=1 \
-    PATH="/root/go/bin:/root/.foundry/bin:${PATH}"
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 # ── apt: reverse/crypto/pwn + web/recon + osint, plus build deps for the pip layer ──
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -50,7 +49,8 @@ RUN pip3 install --no-cache-dir pipx \
  && (pipx install mythril          || echo "WARN: mythril pipx install failed")
 
 # ── go: the "+" — ProjectDiscovery suite + dalfox (not in stock Kali apt) ──
-RUN go install github.com/projectdiscovery/httpx/cmd/httpx@latest        && \
+RUN export GOBIN=/usr/local/bin && \
+    go install github.com/projectdiscovery/httpx/cmd/httpx@latest        && \
     go install github.com/projectdiscovery/katana/cmd/katana@latest      && \
     go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest     && \
     go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
@@ -62,7 +62,8 @@ RUN go install github.com/projectdiscovery/httpx/cmd/httpx@latest        && \
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
     npm install -g solhint && \
     rm -rf /var/lib/apt/lists/* /root/.npm
-RUN curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup || \
+RUN curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup && \
+    cp /root/.foundry/bin/forge /root/.foundry/bin/cast /root/.foundry/bin/anvil /usr/local/bin/ 2>/dev/null || \
     echo "foundry install skipped (offline build) — re-run foundryup later"
 
 # nuclei templates (best-effort; the scan still runs without a fresh pull)
@@ -79,5 +80,8 @@ RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download
  && /opt/conda/bin/conda clean -afy \
  || echo "WARN: sage (conda-forge) install failed/skipped — crypto falls back to z3/sympy/fpylll"
 
+RUN useradd --create-home --shell /bin/bash operator && mkdir -p /work && chown operator:operator /work
+
+USER operator
 WORKDIR /work
 CMD ["bash"]
