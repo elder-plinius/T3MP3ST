@@ -867,6 +867,12 @@ class ConfigManager {
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
+      case 'local-agent':
+        // Keyless backbone: the mission is routed through a connected local CLI agent
+        // (Claude Code / Codex / Hermes), each using its own login — no API key or base
+        // URL. The chosen agent id (codex|claude|hermes) travels in the `model` field.
+        actualModel = model || 'claude';
+        break;
       case 'mock':
         actualModel = 'mock-model';
         break;
