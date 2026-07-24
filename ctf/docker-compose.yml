@@ -25,7 +25,7 @@ services:
       - CTF_FLAG=T3MP3ST{sql1_l0g1n_byp4ss_ez}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:80/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
