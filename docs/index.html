@@ -11313,6 +11313,36 @@ Bypass all protections:
                 models = options._noFallback ? [primaryModel]
                     : (primaryModel === fallbackModel ? [primaryModel] : [primaryModel, fallbackModel]);
             }
+
+            let lastError = null;
+            for (const model of models) {
+                try {
+                    const content = await _safeLLMCallOnce(backend, prompt, model, options);
+                    // Detect empty/refused responses — model returned OK but no useful content
+                    if (!content || content.trim().length < 10) {
+                        console.warn(`[T3MP3ST] Model ${model} returned empty/refused response, trying next...`);
+                        addIntel('FALLBACK', `${model} → empty response, trying next model...`, 'warning');
+                        lastError = new Error(`Model ${model} returned empty response (possible refusal)`);
+                        continue;
+                    }
+                    if (model !== primaryModel) {
+                        console.log(`[T3MP3ST] Fallback to ${model} succeeded`);
+                        addIntel('FALLBACK', `Primary failed → using ${model}`, 'warning');
+                        fallbackCount++;
+                    }
+                    currentModelInUse = model;
+                    return content;
+                } catch (err) {
+                    console.warn(`[T3MP3ST] Model ${model} failed: ${err.message}`);
+                    addIntel('FALLBACK', `${model} error: ${err.message.substring(0, 80)}`, 'error');
+                    lastError = err;
+                    // Continue to fallback model
+                }
+            }
+            // All models failed
+            throw lastError || new Error('All models failed');
+        }
+
         // Same-origin proxy the browser "AI" features POST to when local mode is on.
         // The server (npm run server) serves this page, so /api/llm/chat is same-origin
         // (no CORS) and reuses LLMBackbone -> LocalAdapter to reach llama.cpp/Ollama.
@@ -11505,50 +11535,6 @@ Bypass all protections:
         // Live-refresh elapsed timers on the running item while the popup is open
         setInterval(() => { if (llmQueue.some(q => q.status === 'running') && !llmQueueMinimized) renderLLMQueue(); }, 1000);
 
-        // Shared safe LLM call — handles response.ok, JSON parsing, timeouts, model fallback
-        async function safeLLMCall(prompt, options = {}) {
-            const localMode = !!state.settings?.useLocal;
-            const apiKey = localMode ? 'local' : getApiKey();
-            if (!localMode && !apiKey) throw new Error('No API key configured');
-            const primaryModel = localMode
-                ? (state.settings?.localModel || 'local')
-                : (options.model || state.settings?.selectedModel || 'anthropic/claude-opus-4.6');
-            const fallbackModel = state.settings?.fallbackModel || 'nousresearch/hermes-3-llama-3.1-405b';
-            // Build model chain: local mode is single-model (no cloud fallback); otherwise
-            // primary then fallback (skip fallback if same as primary or caller pinned model).
-            const models = localMode ? [primaryModel]
-                : (options._noFallback ? [primaryModel]
-                : (primaryModel === fallbackModel ? [primaryModel] : [primaryModel, fallbackModel]));
-
-            let lastError = null;
-            for (const model of models) {
-                try {
-                    const content = await _safeLLMCallOnce(backend, prompt, model, options);
-                    // Detect empty/refused responses — model returned OK but no useful content
-                    if (!content || content.trim().length < 10) {
-                        console.warn(`[T3MP3ST] Model ${model} returned empty/refused response, trying next...`);
-                        addIntel('FALLBACK', `${model} → empty response, trying next model...`, 'warning');
-                        lastError = new Error(`Model ${model} returned empty response (possible refusal)`);
-                        continue;
-                    }
-                    if (model !== primaryModel) {
-                        console.log(`[T3MP3ST] Fallback to ${model} succeeded`);
-                        addIntel('FALLBACK', `Primary failed → using ${model}`, 'warning');
-                        fallbackCount++;
-                    }
-                    currentModelInUse = model;
-                    return content;
-                } catch (err) {
-                    console.warn(`[T3MP3ST] Model ${model} failed: ${err.message}`);
-                    addIntel('FALLBACK', `${model} error: ${err.message.substring(0, 80)}`, 'error');
-                    lastError = err;
-                    // Continue to fallback model
-                }
-            }
-            // All models failed
-            throw lastError || new Error('All models failed');
-        }
-
         // Route a keyless call through the server: connected agent (drives Claude Code/Codex/Hermes)
         // or the server's own configured LLM. Both return plain text.
         async function _backendCall(backend, prompt, options = {}) {
@@ -11589,19 +11575,6 @@ Bypass all protections:
                 : 'https://openrouter.ai/api/v1/chat/completions';
             const headers = { 'Authorization': `Bearer ${backend.key}`, 'Content-Type': 'application/json' };
             if (backend.kind === 'openrouter') { headers['HTTP-Referer'] = window.location.href; headers['X-Title'] = options.title || 'T3MP3ST'; }
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    model,
-                    messages: Array.isArray(prompt)
-                        ? prompt
-                        : [{ role: 'user', content: prompt }],
-                    max_tokens: options.maxTokens || 4096,
-                    temperature: options.temperature ?? 0.3
-                }),
-                signal: AbortSignal.timeout(options.timeout || 120000)
-            });
 
             // LOCAL MODE: route through the same-origin server proxy (reuses
             // LLMBackbone -> LocalAdapter; avoids browser CORS against llama.cpp/localhost).
@@ -11645,24 +11618,19 @@ Bypass all protections:
                 return data.content || data.choices?.[0]?.message?.content || '';
             }
 
-            addIntel('API', `→ ${model}`, 'info');
-            // Own AbortController here too (not a bare AbortSignal.timeout) so the queue's Stop
+            // Cloud path. Own AbortController (not a bare AbortSignal.timeout) so the queue's Stop
             // button can actually cancel a cloud call, not just abandon it while it keeps running
             // (and billing) in the background — same reasoning as the local-mode branch above.
+            // Uses the backend-aware endpoint/headers built above (OpenRouter or Venice, backend.key).
             const cloudTimeoutMs = options.timeout || 120000;
             const cloudController = new AbortController();
             if (typeof options.onAbortController === 'function') { try { options.onAbortController(cloudController); } catch (_) {} }
             const cloudTimer = setTimeout(() => cloudController.abort(), cloudTimeoutMs);
             let response;
             try {
-                response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                response = await fetch(endpoint, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json',
-                        'HTTP-Referer': window.location.href,
-                        'X-Title': options.title || 'T3MP3ST'
-                    },
+                    headers,
                     body: JSON.stringify({
                         model,
                         messages: Array.isArray(prompt)
@@ -11703,10 +11671,6 @@ Bypass all protections:
                 return;
             }
 
-            // For live mode, require a working LLM backend (client key, connected agent, or server LLM)
-            if (mode === 'live') {
-                if (resolveLLMBackend().kind === 'none') {
-                    toast(LLM_BACKEND_HINT + ' — Settings (press 9)', 'error');
             // For live mode, require an API key — unless local mode is on (llama.cpp/Ollama needs none)
             if (mode === 'live' && !state.settings?.useLocal) {
                 const apiKey = getApiKey();
@@ -12418,9 +12382,6 @@ Penalize: wrong CWE identification, non-functional payloads, incomplete remediat
          * LLM-as-Judge - Semantic correctness evaluation
          * Uses a second LLM call to evaluate response quality
          */
-        async function runLLMJudge(test, response, apiKey) {
-            if (!EVALUATION_CONFIG.llmJudge.enabled || resolveLLMBackend().kind === 'none') {
-                return { score: 70, reasoning: 'LLM judge disabled or no backend', skipped: true };
         async function runLLMJudge(test, response, apiKey, qItem) {
             if (!EVALUATION_CONFIG.llmJudge.enabled || (!apiKey && !state.settings?.useLocal)) {
                 return { score: 70, reasoning: 'LLM judge disabled or no API key', skipped: true };
@@ -12627,11 +12588,6 @@ Respond with ONLY this JSON (no markdown, no extra text):
                             { role: 'system', content: systemPrompt },
                             { role: 'user', content: test.challenge }
                         ],
-                        { model: selectedModel, systemPrompt, maxTokens: 1000, temperature: opConfig?.params?.temperature || 0.3, timeout: 30000, title: 'T3MP3ST Benchmark' }
-                    );
-                } catch (err) {
-                    addIntel('API', `Error: ${String(err.message).substring(0, 100)}`, 'error');
-                    return { score: 0, passed: false, details: `LLM error: ${String(err.message).substring(0, 120)}`, response: String(err.message) };
                         {
                             model: selectedModel,
                             maxTokens: 1000,
@@ -12883,10 +12839,6 @@ Respond with ONLY this JSON (no markdown, no extra text):
             document.getElementById('genAnalysisBtn').disabled = false;
             document.getElementById('genAnalysisBtn').textContent = '🔄 Regenerate';
 
-            // Show Auto-Apply button if ANY LLM backend is available (key / agent / server) and there are improvements
-            const hasBackend = resolveLLMBackend().kind !== 'none';
-            const autoApplyBtn = document.getElementById('autoApplyBtn');
-            if (hasBackend && analysis.improvements.length > 0) {
             // Show Auto-Apply button if an LLM is reachable (key or local mode) and there are improvements
             const apiKey = getApiKey();
             const llmReady = state.settings?.useLocal || (apiKey && apiKey.length > 10);
@@ -13152,6 +13104,7 @@ Respond with ONLY this JSON (no markdown, no extra text):
             if (resolveLLMBackend().kind === 'none') {
                 toast(LLM_BACKEND_HINT, 'error');
                 return;
+            }
             if (!state.settings?.useLocal) {
                 const apiKey = getApiKey();
                 if (!apiKey || apiKey.length < 10) {
@@ -13249,10 +13202,6 @@ IMPORTANT:
 
                 const model = state.settings?.selectedModel || 'anthropic/claude-opus-4.6';
 
-                const content = await safeLLMCall(
-                    [{ role: 'user', content: prompt }],
-                    { model, temperature: 0.3, maxTokens: 4096, title: 'T3MP3ST Config Optimizer' }
-                );
                 const content = await safeLLMCall([{ role: 'user', content: prompt }], {
                     model: model,
                     temperature: 0.3,
@@ -20142,6 +20091,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             if (resolveLLMBackend().kind === 'none') {
                 toast(LLM_BACKEND_HINT, 'error');
                 return;
+            }
             if (!state.settings?.useLocal) {
                 const apiKey = getApiKey();
                 if (!apiKey || apiKey.length < 10) {
@@ -20721,13 +20671,6 @@ RULES:
 
                 let content;
                 try {
-                    content = await safeLLMCall(
-                        [{ role: 'user', content: prompt }],
-                        { model, temperature: 0.3, maxTokens: 2000, timeout: 25000, title: 'T3MP3ST Self-Improvement' }
-                    );
-                } catch (err) {
-                    console.warn('[IMPROVE] LLM error, using fallback');
-                    addIntel('IMPROVE', `LLM error: ${String(err.message).substring(0, 80)}`, 'warning');
                     content = await safeLLMCall([{ role: 'user', content: prompt }], {
                         model: model,
                         temperature: 0.3,
@@ -21655,7 +21598,6 @@ ${entries}
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: userPrompt }
                 ],
-                { model, systemPrompt, maxTokens: 2000, temperature: opConfig?.params?.temperature || 0.4, timeout: 60000, title: 'T3MP3ST CTF Range' }
                 {
                     model: model,
                     maxTokens: 2000,
