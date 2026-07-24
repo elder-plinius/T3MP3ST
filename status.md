@@ -25,6 +25,10 @@
 ## Known issues
 
 - `local-agent-path-resolution.test.ts` fails on this Mac (CLI in `~/.local/bin`); passes in CI — environment-specific, pre-existing on upstream `main`
+- **P2 deferred (Codex audit 2026-07-24, kimi adapter hardening, candidate single PR):**
+  - TODO F-1: extend `PROVIDER_ENV_TO_STRIP` to full `KIMI_MODEL_*` override family (current whitelist = 4 names)
+  - TODO F-2: `authState` must require regular file, not `existsSync` (directory named `kimi-code.json` false-positive) + test
+  - TODO F-3: normalize `KIMI_CODE_HOME` identically in `authState` (trims) and `childEnv` (forwards raw)
 - `.serena/` untracked (agent tooling state)
 
 **Обновлено:** 2026-07-24
