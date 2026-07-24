@@ -9,9 +9,8 @@ WORKDIR /app
 # Install dependencies
 RUN pip install flask flask-cors
 
-# Create vulnerable application
+# Create vulnerable application (self-contained: templates are inline via render_template_string)
 COPY app.py /app/
-COPY templates/ /app/templates/
 
 # Set environment variables
 ENV FLASK_APP=app.py
