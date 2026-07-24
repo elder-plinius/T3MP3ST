@@ -17,14 +17,14 @@
 
 ## Backlog
 
-- [ ] **P1** Enable GitHub Actions on fork (UI-only button on Actions tab — user action), then decide PR `kimi-local-agent` → `main` to fire CI
+- [x] **P1** GitHub Actions enabled on fork (user, 2026-07-24); PR [#1](https://github.com/LexorCrypto/T3MP3ST/pull/1) `kimi-local-agent` → `main` opened — **CI success** (run 30062926657, 59s)
 - [ ] **P2** Restore/hollow CTF challenges: sqli-blind, xss-stored, ssrf-metadata, format-string, rsa-weak, memory-dump (no build context in repo)
 - [ ] **P2** Optional arsenal: nuclei, semgrep, promptfoo (doctor warnings)
-- [ ] **P2** Decide whether to upstream the sqli-basic Dockerfile + healthcheck fix to elder-plinius
+- [x] **P2** Upstream fix proposed: PR [elder-plinius#116](https://github.com/elder-plinius/T3MP3ST/pull/116) (`ctf-sqli-basic-fix`, contribution receipt included)
 
 ## Known issues
 
-- GitHub Actions: 0 registered workflows on fork until enabled in UI
+- `local-agent-path-resolution.test.ts` fails on this Mac (CLI in `~/.local/bin`); passes in CI — environment-specific, pre-existing on upstream `main`
 - `.serena/` untracked (agent tooling state)
 
 **Обновлено:** 2026-07-24
