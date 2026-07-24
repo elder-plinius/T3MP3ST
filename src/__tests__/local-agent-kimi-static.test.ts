@@ -33,12 +33,22 @@ describe('kimi local-agent adapter', () => {
   it('ships a kimi spec with the verified one-shot argv and auth artifact', () => {
     const spec = block(agentSource, "id: 'kimi',", '];');
     expect(spec).toContain("bin: 'kimi'");
-    // Device-code OAuth login artifact (dir, perms 700) — presence-only detection.
-    expect(spec).toContain('~/.kimi-code/credentials');
+    // The exact top-level credential file (a dir with only credentials/mcp/ is NOT
+    // a provider login) + KIMI_CODE_HOME relocation support. Presence-only.
+    expect(spec).toContain('~/.kimi-code/credentials/kimi-code.json');
+    expect(spec).toContain("KIMI_CODE_HOME");
     // oneShot: kimi -p <prompt> --output-format text [-m model]
     expect(spec).toContain("'-p'");
     expect(spec).toContain("'--output-format', 'text'");
     expect(spec).toContain("'-m'");
+  });
+
+  it('strips the KIMI_MODEL_* credential channel and t3mp3st secrets from spawned env', () => {
+    const strip = block(agentSource, 'const PROVIDER_ENV_TO_STRIP = [', '];');
+    expect(strip).toContain("'KIMI_MODEL_NAME'");
+    expect(strip).toContain("'KIMI_MODEL_API_KEY'");
+    expect(strip).toContain("'TEMPEST_TARGET_HEADERS'");
+    expect(strip).toContain("'TEMPEST_LOCAL_API_KEY'");
   });
 
   it('drives the backbone chat path with kimi argv, never the hermes -z fallback', () => {
@@ -71,12 +81,11 @@ describe('kimi local-agent adapter', () => {
     expect(sw).toContain("case 'local-agent':");
   });
 
-  it('floors the local-agent timeout at the agent dispatch default (600s)', () => {
+  it('defaults the local-agent timeout to 600s with a true operator override', () => {
     // LLMConfig.timeout is passed as an explicit timeoutMs into localAgentChat,
-    // overriding its built-in 600s — so the config floor must match the agent
-    // dispatch default, with T3MP3ST_LOCAL_AGENT_TIMEOUT_MS as the operator knob.
-    // (A 120s floor here killed the first real white-box run: orchestrator
-    // planning prompts legitimately take minutes on an agent CLI.)
+    // overriding its built-in 600s — so the default here must be 600s, while
+    // T3MP3ST_LOCAL_AGENT_TIMEOUT_MS stays a genuine override (any positive value,
+    // including lower). (A 120s default here killed the first real white-box run.)
     expect(configSource).toContain("actualProvider === 'local-agent'");
     expect(configSource).toContain('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS');
     expect(configSource).toContain('600000');

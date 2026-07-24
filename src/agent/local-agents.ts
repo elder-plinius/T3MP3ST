@@ -25,6 +25,13 @@ const PROVIDER_ENV_TO_STRIP = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
   'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_BASE', 'OPENAI_ORGANIZATION',
   'OPENROUTER_API_KEY',
+  // Kimi Code's KIMI_MODEL_* family is an explicit CREDENTIAL channel: NAME+API_KEY
+  // synthesize a temp provider that overrides the CLI's own OAuth login — strip the
+  // whole override family so the spawned CLI stays on its native login like the others.
+  'KIMI_MODEL_NAME', 'KIMI_MODEL_API_KEY', 'KIMI_MODEL_BASE_URL', 'KIMI_MODEL_PROVIDER_TYPE',
+  // T3MP3ST's own secret-bearing config never belongs in a spawned agent CLI either:
+  // target credentials and the local-provider key are server-side only.
+  'TEMPEST_TARGET_HEADERS', 'TEMPEST_LOCAL_API_KEY',
 ];
 
 /**
@@ -69,8 +76,9 @@ const localAppData = (rel: string): string =>
  *   - point HOME (and USERPROFILE on Windows) at the agentHome() so the CLI finds that login even
  *     when t3mp3st itself runs with HOME redirected for app-config storage. Same home the detector
  *     used, so "detected as authed" and "actually authenticates when spawned" stay consistent.
+ * Exported for behavioral tests.
  */
-function childEnv(): NodeJS.ProcessEnv {
+export function childEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of PROVIDER_ENV_TO_STRIP) delete env[k];
   const home = agentHome();
@@ -106,6 +114,8 @@ interface AgentSpec {
   parseVersion: (out: string) => string;
   /** any-of: presence ⇒ authed. PRESENCE ONLY — contents are never read. */
   authArtifacts: string[];
+  /** CLI data-root env var that REPLACES the default home for auth detection (presence-only). */
+  authEnvHome?: { var: string; rel: string };
   /** macOS keychain fallback service name */
   keychainService?: string;
   /** build the argv for a headless one-shot prompt */
@@ -172,9 +182,12 @@ const SPECS: AgentSpec[] = [
     invokeHint: 'kimi -p "<prompt>"',
     versionArgs: ['--version'],
     parseVersion: (o) => (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
-    // Device-code OAuth login (`kimi login`) creates ~/.kimi-code/credentials/
-    // (dir, perms 700). Presence-only — token bytes are never read.
-    authArtifacts: ['~/.kimi-code/credentials'],
+    // Device-code OAuth login (`kimi login`) writes the provider credential file
+    // ~/.kimi-code/credentials/kimi-code.json (perms 600). Presence-only — the exact
+    // top-level file, not the dir (an empty dir or one holding only credentials/mcp/
+    // means NO provider login). KIMI_CODE_HOME relocates the whole data root.
+    authArtifacts: ['~/.kimi-code/credentials/kimi-code.json'],
+    authEnvHome: { var: 'KIMI_CODE_HOME', rel: 'credentials/kimi-code.json' },
     oneShot: (p, m) => ['-p', p, '--output-format', 'text', ...(m ? ['-m', m] : [])],
   },
 ];
@@ -309,7 +322,15 @@ function needsShell(resolvedBin: string): boolean {
   return isWin32() && /\.(cmd|bat)$/i.test(resolvedBin);
 }
 
-function authState(spec: AgentSpec): { authed: boolean; method?: string } {
+export function authState(spec: AgentSpec): { authed: boolean; method?: string } {
+  // A relocated CLI data root REPLACES the default home (per the CLI's own semantics):
+  // when the env var is set, only the relocated artifact counts.
+  if (spec.authEnvHome) {
+    const home = (process.env[spec.authEnvHome.var] || '').trim();
+    if (home) {
+      return existsSync(join(home, spec.authEnvHome.rel)) ? { authed: true, method: 'file' } : { authed: false };
+    }
+  }
   for (const a of spec.authArtifacts) {
     if (existsSync(expand(a))) return { authed: true, method: 'file' };
   }

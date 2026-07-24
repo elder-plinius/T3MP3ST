@@ -587,7 +587,8 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       id: 'kimi',
       name: 'Kimi Code (local CLI)',
       provider: 'LocalAgent',
-      // Kimi K3: 1M context (1,048,576) — https://openrouter.ai/moonshotai/kimi-k3
+      // Kimi K3: up to 1M context (1,048,576) — tier-dependent (some plans 256K);
+      // https://openrouter.ai/moonshotai/kimi-k3
       contextWindow: 1048576,
       // Harness per-call output budget, same conservative default as claude/codex.
       maxOutput: 8192,
@@ -911,10 +912,10 @@ class ConfigManager {
       temperature: this.config.get('temperature'),
       // Local inference is far slower than cloud APIs, so it must not inherit the cloud-tuned
       // default timeout. `local` floors at 120s (frontend llmTimeoutFor) with TEMPEST_LOCAL_TIMEOUT
-      // as the override. `local-agent` floors at 600s — each call is a full agent CLI round-trip
-      // (the dispatch default in localAgentChat), and this value is passed in as an explicit
-      // timeoutMs, so a lower floor would silently override that 600s. Operator knob:
-      // T3MP3ST_LOCAL_AGENT_TIMEOUT_MS.
+      // as the override. `local-agent` DEFAULTS to 600s — each call is a full agent CLI round-trip
+      // (matching the dispatch default in localAgentChat, which this value overrides as an explicit
+      // timeoutMs). T3MP3ST_LOCAL_AGENT_TIMEOUT_MS is a true operator override: any positive value
+      // wins (including lower, e.g. for a fast model) — 600s is the default, not a floor.
       timeout: ((): number => {
         const configured = Number(this.config.get('timeout')) || 0;
         if (actualProvider === 'local-agent') {
