@@ -241,6 +241,53 @@ async function setupDeepSeekKey(): Promise<boolean> {
   }
 }
 
+async function setupHuggingFaceKey(): Promise<boolean> {
+  console.log('');
+  showInfo('Hugging Face serves open models via its OpenAI-compatible Inference Providers router.');
+  showInfo('Get your token at: ' + chalk.underline('https://huggingface.co/settings/tokens'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your Hugging Face access token:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid access token';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  const spinner = ora('Testing access token...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'huggingface',
+      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      baseUrl: 'https://router.huggingface.co/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('Access token is valid!');
+
+    setApiKey('huggingface', apiKey);
+    showSuccess('Hugging Face access token saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('Access token validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupOpenAIKey(): Promise<boolean> {
   console.log('');
   showInfo('OpenAI provides access to GPT models.');
@@ -430,15 +477,17 @@ The setup will guide you through:
   const hasAnthropic = hasApiKey('anthropic');
   const hasOpenAI = hasApiKey('openai');
   const hasDeepSeek = hasApiKey('deepseek');
+  const hasHuggingFace = hasApiKey('huggingface');
   const hasLiteLLM = config.hasLiteLLMProxy();
 
-  if (hasOpenRouter || hasAnthropic || hasOpenAI || hasDeepSeek || hasLiteLLM) {
+  if (hasOpenRouter || hasAnthropic || hasOpenAI || hasDeepSeek || hasHuggingFace || hasLiteLLM) {
     console.log('');
     showInfo('Existing API keys detected:');
     if (hasOpenRouter) showSuccess('  OpenRouter: configured');
     if (hasAnthropic) showSuccess('  Anthropic: configured');
     if (hasOpenAI) showSuccess('  OpenAI: configured');
     if (hasDeepSeek) showSuccess('  DeepSeek: configured');
+    if (hasHuggingFace) showSuccess('  HuggingFace: configured');
     if (hasLiteLLM) showSuccess('  LiteLLM Proxy: configured');
     console.log('');
 
@@ -524,6 +573,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'deepseek',
         },
         {
+          name: `HuggingFace ${hasApiKey('huggingface') ? chalk.green('(configured)') : chalk.gray('(open models via HF router)')}`,
+          value: 'huggingface',
+        },
+        {
           name: `LiteLLM Proxy ${config.hasLiteLLMProxy() ? chalk.green('(configured)') : chalk.gray('(100+ providers via gateway)')}`,
           value: 'litellm',
         },
@@ -548,6 +601,9 @@ async function setupApiKeys(): Promise<void> {
       case 'deepseek':
         await setupDeepSeekKey();
         break;
+      case 'huggingface':
+        await setupHuggingFaceKey();
+        break;
       case 'litellm':
         await setupLiteLLMProxy();
         break;
@@ -564,6 +620,7 @@ async function setupProvider(): Promise<void> {
   if (hasApiKey('anthropic')) configuredProviders.push({ name: 'Anthropic', value: 'anthropic' });
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
   if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' });
+  if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
   if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   const { provider } = await inquirer.prompt([
@@ -596,6 +653,7 @@ function viewConfiguration(): void {
   console.log('    Anthropic: ' + (hasApiKey('anthropic') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    OpenAI: ' + (hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    DeepSeek: ' + (hasApiKey('deepseek') ? chalk.green('configured') : chalk.red('not set')));
+  console.log('    HuggingFace: ' + (hasApiKey('huggingface') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    LiteLLM Proxy: ' + (config.hasLiteLLMProxy() ? chalk.green('configured') : chalk.red('not set')));
   console.log('');
   console.log(chalk.cyan('  Config Path: ') + config.getConfigPath());

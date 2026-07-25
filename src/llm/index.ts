@@ -7,6 +7,7 @@
  * - LiteLLM (OpenAI-compatible AI gateway — 100+ providers via unified proxy)
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
+ * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -1290,11 +1291,22 @@ class CodexAdapter implements LLMProviderAdapter {
 }
 
 // Generic adapter that drives a CONNECTED local agent CLI (Claude Code / Codex / Hermes) as the LLM
-// backend — NO API key needed; each CLI uses its own login. The agent id travels in `config.model`.
+// backend — NO API key needed; each CLI uses its own login. The agent id travels in `config.model`,
+// optionally with an underlying model after a `::` separator ("claude::opus", "claude::claude-opus-4-8")
+// so the operator can pick WHICH model the local CLI runs (passed through as the CLI's --model/-m flag).
 class LocalAgentAdapter implements LLMProviderAdapter {
   name = 'local-agent';
   private config: LLMConfig;
   constructor(config: LLMConfig) { this.config = config; }
+  // Split "agentId[::model]" → { agentId, agentModel }. No separator = just the agent id (CLI default model).
+  private parseAgentSpec(): { agentId: string; agentModel?: string } {
+    const raw = this.config.model || 'codex';
+    const i = raw.indexOf('::');
+    if (i < 0) return { agentId: raw };
+    const agentId = raw.slice(0, i).trim() || 'codex';
+    const agentModel = raw.slice(i + 2).trim() || undefined;
+    return { agentId, agentModel };
+  }
   validateConfig(): { valid: boolean; error?: string } {
     return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes)' };
   }
@@ -1314,16 +1326,16 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     return parts.join('\n');
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
-    const agentId = this.config.model || 'codex';
+    const { agentId, agentModel } = this.parseAgentSpec();
     const prompt = this.formatPrompt(messages, options);
     const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
-    const content = (await localAgentChat(agentId, prompt, { timeoutMs })).trim();
+    const content = (await localAgentChat(agentId, prompt, { model: agentModel, timeoutMs })).trim();
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
     return {
       content,
-      model: `local-agent:${agentId}`,
+      model: `local-agent:${agentId}${agentModel ? '/' + agentModel : ''}`,
       finishReason: toolCalls?.length ? 'tool_calls' : 'stop',
       toolCalls,
     };
@@ -1459,6 +1471,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config); // Gemini via Google's OpenAI-compatible endpoint (baseUrl ends in /v1beta/openai)
       case 'deepseek':
         return new OpenAIAdapter(config); // DeepSeek native API is OpenAI-compatible
+      case 'huggingface':
+        return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1753,6 +1767,12 @@ export function createDeepSeekBackbone(apiKey?: string, model?: string): LLMBack
   return new LLMBackbone(llmConfig);
 }
 
+export function createHuggingFaceBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('huggingface', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1783,7 +1803,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -1803,6 +1823,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('deepseek')) {
     return createDeepSeekBackbone();
+  }
+  if (providers.includes('huggingface')) {
+    return createHuggingFaceBackbone();
   }
 
   // Default to mock if no API keys configured

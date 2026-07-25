@@ -5681,6 +5681,18 @@
                         </div>
 
                         <div class="card">
+                            <h4 style="margin-bottom: 12px; font-size: 14px;">Hugging Face Token</h4>
+                            <div class="form-group">
+                                <div class="api-key-input">
+                                    <input type="password" class="form-input" id="huggingfaceKey" placeholder="hf_...">
+                                    <button class="api-key-toggle" onclick="toggleApiKey('huggingfaceKey')">Show</button>
+                                </div>
+                                <div class="form-hint">Open models via the OpenAI-compatible Inference Providers router. Get a token from <a href="https://huggingface.co/settings/tokens" target="_blank" style="color: var(--accent);">huggingface.co/settings/tokens</a></div>
+                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="saveApiKey('huggingface')">Save</button>
+                        </div>
+
+                        <div class="card">
                             <h4 style="margin-bottom: 12px; font-size: 14px;">Anthropic API Key</h4>
                             <div class="form-group">
                                 <div class="api-key-input">
@@ -5779,7 +5791,7 @@
 
                     <div class="settings-section">
                         <h2 class="settings-title">🔌 Local Agents</h2>
-                        <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">Enlist agents you've already authed on this machine — <b style="color:#bcd;">no API keys needed</b>. T3MP3ST detects each CLI and can drive it as an operator. Tick several and connect them all at once.</p>
+                        <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">Enlist agents you've already authed on this machine — <b style="color:#bcd;">no API keys needed</b>. T3MP3ST detects each CLI (<b style="color:#bcd;">Claude Code</b> / Codex / Hermes) and drives it as your LLM backbone using its own login. Connect one, then hit <b style="color:#2fd6ff;">☆ Use</b> to pin it as the <b style="color:#2fd6ff;">★ active backbone</b> for missions and analysis — a pinned local model outranks any stored API key.</p>
                         <div id="localAgentsCard" style="padding: 18px 20px; background: linear-gradient(135deg, rgba(0,200,255,0.06), rgba(160,90,255,0.04)); border: 1px solid rgba(0,200,255,0.25); border-radius: 12px;">
                             <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
                                 <div style="font-size: 15px; font-weight: 800; color: #2fd6ff; letter-spacing: 0.4px; display:flex; align-items:center; gap:8px;">🔌 Connect Local Agents</div>
@@ -5787,6 +5799,15 @@
                             </div>
                             <div id="localAgentsList" style="display:grid; gap:8px; margin:14px 0 4px;">
                                 <div style="color:#5f7079; font-size:12px; padding:8px 0;">Detecting local agents…</div>
+                            </div>
+                            <!-- Claude Code model picker — only shown once Claude Code is connected -->
+                            <div id="claudeModelPicker" style="display:none; align-items:center; gap:10px; margin:10px 0 2px; padding:10px 12px; background:rgba(255,140,40,0.06); border:1px solid rgba(255,140,40,0.28); border-radius:8px; flex-wrap:wrap;">
+                                <span style="font-size:18px;">🟠</span>
+                                <div style="flex:1; min-width:160px;">
+                                    <div style="font-size:12.5px; font-weight:700; color:#ffd0a8;">Claude Code model</div>
+                                    <div style="font-size:10.5px; color:#a78b76;">Which local Claude model to run (passed to <code style="color:#ffb37a;">claude --model</code>)</div>
+                                </div>
+                                <select id="claudeModelSelect" onchange="setClaudeModel(this.value)" style="padding:8px 10px; font-size:12px; background:rgba(0,0,0,0.35); border:1px solid rgba(255,140,40,0.4); border-radius:6px; color:#ffe6d2; font-family:'JetBrains Mono',monospace; cursor:pointer; min-width:200px;"></select>
                             </div>
                             <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center;">
                                 <button id="localAgentsConnectAllBtn" onclick="connectSelectedLocalAgents()" style="padding:11px 22px; font-size:13px; font-weight:800; background:linear-gradient(135deg,#2fd6ff,#5b8cff); border:none; border-radius:8px; color:#001624; cursor:pointer; letter-spacing:0.4px; box-shadow:0 4px 14px rgba(0,200,255,0.28);">⚡ Connect Selected</button>
@@ -7230,6 +7251,11 @@ Correlating findings across agents, identifying patterns, producing actionable i
             { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'DeepSeek' },
             // Mistral
             { id: 'mistralai/mistral-large', name: 'Mistral Large', provider: 'Mistral' },
+            // Hugging Face — open models via the OpenAI-compatible Inference Providers router (full HF repo ids)
+            { id: 'meta-llama/Llama-3.3-70B-Instruct', name: 'Llama 3.3 70B Instruct (HF)', provider: 'HuggingFace' },
+            { id: 'Qwen/Qwen2.5-72B-Instruct', name: 'Qwen2.5 72B Instruct (HF)', provider: 'HuggingFace' },
+            { id: 'deepseek-ai/DeepSeek-R1', name: 'DeepSeek R1 (HF)', provider: 'HuggingFace' },
+            { id: 'mistralai/Mistral-Small-24B-Instruct-2501', name: 'Mistral Small 24B (HF)', provider: 'HuggingFace' },
             // Local
             { id: 'local/ollama', name: 'Local (Ollama)', provider: 'Local' }
         ];
@@ -7298,6 +7324,7 @@ Correlating findings across agents, identifying patterns, producing actionable i
             const veKey = document.getElementById('veniceKey');
             const anKey = document.getElementById('anthropicKey');
             const oaKey = document.getElementById('openaiKey');
+            const hfKey = document.getElementById('huggingfaceKey');
             if (orKey) orKey.value = state.settings.openrouterKey || '';
             if (veKey) veKey.value = state.settings.veniceKey || '';
             if (anKey) anKey.value = state.settings.anthropicKey || '';
@@ -7315,6 +7342,7 @@ Correlating findings across agents, identifying patterns, producing actionable i
             // typed; the server only ever returns a redacted form, so we repopulate from the
             // local cache. If the server has one set via TEMPEST_PROXY_URL, the badge shows it.
             setV('proxyUrl', localStorage.getItem('t3mp3st_proxy_url') || '');
+            if (hfKey) hfKey.value = state.settings.huggingfaceKey || '';
         }
 
         function saveState() {
@@ -8206,10 +8234,11 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
         function updatePreflightChecklist() {
             const operatorCount = state.operators.length;
             const targetCount = state.targets.length;
-            // "API key" preflight passes on a real key OR a connected keyless backend (agent / server LLM).
-            // Only OpenRouter feeds the client-side LLM path (getApiKey); a connected backend covers the rest.
-            // Anthropic/OpenAI keys aren't wired to the client path, so they don't count as "ready" here.
-            const hasApiKey = !!(state.settings?.openrouterKey)
+            // "API key" preflight passes on a real client key OR a connected keyless backend (agent / server LLM).
+            // The direct client-side LLM path (resolveLLMBackend) drives OpenRouter, Venice, and Hugging Face keys;
+            // a connected backend covers the rest. Anthropic/OpenAI keys aren't wired to the client path yet, so
+            // they don't count as "ready" here.
+            const hasApiKey = !!(state.settings?.openrouterKey || state.settings?.veniceKey || state.settings?.huggingfaceKey)
                 || (typeof window.t3mpHasBackend === 'function' && window.t3mpHasBackend());
             const toolCount = activeLoadout?.length || 0;
 
@@ -11257,21 +11286,32 @@ Bypass all protections:
         }
 
         // Resolve the active LLM backend for benchmarks/analysis, in priority order:
-        // OpenRouter key → Venice key → connected local agent (Claude Code/Codex/Hermes) → server LLM.
+        // OpenRouter key → Venice key → Hugging Face token → connected local agent (Claude Code/Codex/Hermes) → server LLM.
         // getApiKey() is left untouched for the many callers that read the OpenRouter key directly.
         function resolveLLMBackend() {
+            // An EXPLICITLY pinned local agent (e.g. Claude Code) is a deliberate operator choice —
+            // honor it above any stored API key. Only when it's actually usable (preferredAgent
+            // returns it) so we never route to a pinned-but-dead CLI.
+            const agentModelOf = (id) => (typeof window.t3mpAgentModel === 'function') ? window.t3mpAgentModel(id) : undefined;
+            const pin = (typeof window.t3mpActiveAgentPin === 'function') ? (window.t3mpActiveAgentPin() || '') : '';
+            if (pin) {
+                const pref = (typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
+                if (pref === pin) return { kind: 'agent', agentId: pin, agentModel: agentModelOf(pin) };
+            }
             const orKey = (state.settings?.openrouterKey || state.apiKey || '').trim();
             if (orKey.length >= 10) return { kind: 'openrouter', key: orKey };
             const veKey = (state.settings?.veniceKey || '').trim();
             if (veKey.length >= 10) return { kind: 'venice', key: veKey };
+            const hfKey = (state.settings?.huggingfaceKey || '').trim();
+            if (hfKey.length >= 10) return { kind: 'huggingface', key: hfKey };
             const agentId = (typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
-            if (agentId) return { kind: 'agent', agentId };
+            if (agentId) return { kind: 'agent', agentId, agentModel: agentModelOf(agentId) };
             if (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API && T3MP3ST_API.llmAvailable) return { kind: 'server' };
             return { kind: 'none' };
         }
         window.resolveLLMBackend = resolveLLMBackend;
 
-        const LLM_BACKEND_HINT = 'No LLM backend — add an OpenRouter or Venice key in Settings, or connect a local agent (Claude Code / Codex / Hermes)';
+        const LLM_BACKEND_HINT = 'No LLM backend — add an OpenRouter, Venice, or Hugging Face key in Settings, or connect a local agent (Claude Code / Codex / Hermes)';
 
         // Flatten a messages array (or string) to plain text for the agent/server endpoints.
         function promptToText(prompt) {
@@ -11286,6 +11326,16 @@ Bypass all protections:
 
         // Venice is OpenAI-compatible but rejects OpenRouter-style ids ("vendor/model") — map to a Venice model.
         function veniceModel(m) { return (!m || m.indexOf('/') >= 0) ? 'llama-3.3-70b' : m; }
+
+        // Hugging Face's router expects a full HF repo id (org/repo). OpenRouter-style ids
+        // ("anthropic/claude-...", "openai/...") aren't served there, so only pass through
+        // known HF repo ids from the model list; otherwise use a solid open-weights default.
+        const HF_DEFAULT_MODEL = 'meta-llama/Llama-3.3-70B-Instruct';
+        function huggingfaceModel(m) {
+            if (!m) return HF_DEFAULT_MODEL;
+            const known = MODELS.some(x => x.provider === 'HuggingFace' && x.id === m);
+            return known ? m : HF_DEFAULT_MODEL;
+        }
 
         // Shared safe LLM call — resolves the backend, then routes the call. Keyless backends
         // (connected agent / server LLM) run single-shot through the server; key backends
@@ -11309,6 +11359,8 @@ Bypass all protections:
             let models;
             if (backend.kind === 'venice') {
                 models = [veniceModel(options.model || state.settings?.selectedModel)];
+            } else if (backend.kind === 'huggingface') {
+                models = [huggingfaceModel(options.model || state.settings?.selectedModel)];
             } else {
                 models = options._noFallback ? [primaryModel]
                     : (primaryModel === fallbackModel ? [primaryModel] : [primaryModel, fallbackModel]);
@@ -11545,9 +11597,12 @@ Bypass all protections:
             // A bare '/api/...' would hit the Pages origin (404/CORS). Empty base = same-origin (stays relative).
             const base = (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API && T3MP3ST_API.baseUrl) || '';
             if (backend.kind === 'agent') {
+                // Prefer the operator's picked local model (e.g. Claude Code → opus/sonnet/haiku); fall
+                // back to options.model only when no local model is pinned for this agent.
+                const agentModel = (backend.agentModel != null && backend.agentModel !== '') ? backend.agentModel : options.model;
                 const res = await fetch(base + '/api/agents/local/dispatch', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: backend.agentId, prompt: text, model: options.model, timeoutMs: timeout }),
+                    body: JSON.stringify({ id: backend.agentId, prompt: text, model: agentModel, timeoutMs: timeout }),
                     signal: AbortSignal.timeout(timeout + 10000)
                 });
                 if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Agent dispatch ${res.status}: ${t.substring(0, 200)}`); }
@@ -11572,6 +11627,8 @@ Bypass all protections:
             addIntel('API', `→ ${model} (${backend.kind})`, 'info');
             const endpoint = backend.kind === 'venice'
                 ? 'https://api.venice.ai/api/v1/chat/completions'
+                : backend.kind === 'huggingface'
+                ? 'https://router.huggingface.co/v1/chat/completions'
                 : 'https://openrouter.ai/api/v1/chat/completions';
             const headers = { 'Authorization': `Bearer ${backend.key}`, 'Content-Type': 'application/json' };
             if (backend.kind === 'openrouter') { headers['HTTP-Referer'] = window.location.href; headers['X-Title'] = options.title || 'T3MP3ST'; }
@@ -19631,12 +19688,21 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     addIntel('BACKEND', `Local model mode — dispatching mission through local LLM (${model})`, 'success');
                     addMissionLog('info', `LLM backend: local (${model}) — no API key needed`);
                 } else {
-                    const agentBackend = (!apiKey && typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
-                    if (!apiKey && agentBackend) {
+                    // An EXPLICIT local-agent pin (e.g. Claude Code) outranks a stored API key — the operator
+                    // asked to run the mission on their local model, so honor that over any leftover key.
+                    const pin = (typeof window.t3mpActiveAgentPin === 'function') ? (window.t3mpActiveAgentPin() || '') : '';
+                    const pref = (typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
+                    const agentBackend = pin && pref === pin ? pin
+                        : (!apiKey ? pref : null);
+                    if (agentBackend) {
                         provider = 'local-agent';
-                        model = agentBackend; // the agent id (codex|claude|hermes) travels in `model`
-                        addIntel('BACKEND', `No API key — routing the mission through your connected agent: ${agentBackend.toUpperCase()}`, 'success');
-                        addMissionLog('info', `LLM backend: local agent (${agentBackend}) — no API key needed`);
+                        // The agent id (codex|claude|hermes) travels in `model`, optionally with the picked
+                        // underlying model after "::" (e.g. "claude::opus") so the mission runs THAT model.
+                        const agentModel = (typeof window.t3mpAgentModel === 'function') ? window.t3mpAgentModel(agentBackend) : undefined;
+                        model = agentModel ? `${agentBackend}::${agentModel}` : agentBackend;
+                        const shownModel = agentModel ? ` · model: ${agentModel}` : '';
+                        addIntel('BACKEND', `Routing the mission through your connected local agent: ${agentBackend.toUpperCase()}${shownModel}`, 'success');
+                        addMissionLog('info', `LLM backend: local agent (${agentBackend})${shownModel} — no API key needed`);
                     } else if (!apiKey) {
                         addIntel('BACKEND', 'No browser API key — using the server-configured LLM backend', 'success');
                         addMissionLog('info', 'LLM backend: server default — no browser API key sent');
@@ -26243,6 +26309,25 @@ Be specific and actionable. Format as structured JSON.`;
   let connectedIds = [];
   const pingStatus = {};   // id -> { ok, latencyMs, error } from a real round-trip
 
+  // Explicit operator choice of WHICH connected agent to drive as the LLM backbone. Persisted so
+  // a refresh keeps it. When set, preferredAgent() honors it over the codex→hermes→claude default
+  // order — this is how "use my local Claude from Claude Code" becomes a first-class, sticky choice.
+  function getActiveAgent(){ try { return localStorage.getItem('t3mp3st_active_agent') || ''; } catch(e) { return ''; } }
+  function setActiveAgentStored(id){ try { if (id) localStorage.setItem('t3mp3st_active_agent', id); else localStorage.removeItem('t3mp3st_active_agent'); } catch(e) {} }
+
+  // Which Claude model the local Claude Code CLI should run (passed through as its --model flag).
+  // '' = the CLI's own account default. Claude Code accepts the aliases opus/sonnet/haiku or a full id.
+  const CLAUDE_MODELS = [
+    { id: '',       label: 'Account default (Claude Code setting)' },
+    { id: 'opus',   label: 'Claude Opus (latest)' },
+    { id: 'sonnet', label: 'Claude Sonnet (latest)' },
+    { id: 'haiku',  label: 'Claude Haiku (latest, fast)' },
+  ];
+  function getClaudeModel(){ try { return localStorage.getItem('t3mp3st_claude_model') || ''; } catch(e) { return ''; } }
+  function setClaudeModelStored(m){ try { if (m) localStorage.setItem('t3mp3st_claude_model', m); else localStorage.removeItem('t3mp3st_claude_model'); } catch(e) {} }
+  // The underlying model to run for a given agent id — only Claude Code exposes a picker today.
+  function agentModelFor(id){ return id === 'claude' ? (getClaudeModel() || undefined) : undefined; }
+
   function pill(text, color) {
     const c = { green:['rgba(0,255,136,0.16)','#00ff88','rgba(0,255,136,0.4)'],
                 amber:['rgba(255,170,0,0.16)','#ffaa00','rgba(255,170,0,0.4)'],
@@ -26264,18 +26349,20 @@ Be specific and actionable. Format as structured JSON.`;
     else if (connected) { status='● Connected · unchecked'; color='amber'; }
     else { status='Detected'; color='cyan'; }
     const disabled = !a.ready;
-    const borderColor = stale ? 'rgba(255,80,80,0.4)' : live ? 'rgba(0,255,136,0.35)' : connected ? 'rgba(255,170,0,0.28)' : 'rgba(0,200,255,0.14)';
+    const isActive = connected && getActiveAgent() === a.id;
+    const borderColor = isActive ? 'rgba(0,200,255,0.6)' : stale ? 'rgba(255,80,80,0.4)' : live ? 'rgba(0,255,136,0.35)' : connected ? 'rgba(255,170,0,0.28)' : 'rgba(0,200,255,0.14)';
     const sub = !a.installed ? 'binary not found on PATH'
               : stale ? ('⚠ '+(ps.error ? ps.error.slice(0,70) : 'authentication failed — re-login this CLI'))
               : (a.invokeHint || a.bin);
-    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(255,255,255,0.025);border-radius:8px;border:1px solid '+borderColor+';">'
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:'+(isActive?'rgba(0,200,255,0.06)':'rgba(255,255,255,0.025)')+';border-radius:8px;border:1px solid '+borderColor+';">'
       + '<input type="checkbox" class="la-sel" data-id="'+a.id+'" '+(connected?'checked':'')+' '+(disabled?'disabled':'')+' style="accent-color:#2fd6ff;width:15px;height:15px;'+(disabled?'opacity:0.3;':'')+'">'
       + '<span style="font-size:18px;">'+(ICONS[a.id]||'🤖')+'</span>'
       + '<div style="flex:1;min-width:0;">'
-        + '<div style="font-size:13.5px;font-weight:700;color:#dde6ea;">'+a.label+' <span style="font-size:10.5px;color:#6b7a85;font-weight:500;">'+a.vendor+(a.version?' · v'+a.version:'')+'</span></div>'
+        + '<div style="font-size:13.5px;font-weight:700;color:#dde6ea;">'+a.label+' <span style="font-size:10.5px;color:#6b7a85;font-weight:500;">'+a.vendor+(a.version?' · v'+a.version:'')+'</span>'+(isActive?' <span style="font-size:9.5px;color:#2fd6ff;font-weight:700;">★ ACTIVE BACKBONE</span>':'')+'</div>'
         + '<div style="font-size:10.5px;color:'+(stale?'#ff8a8a':'#67767f')+';font-family:\'JetBrains Mono\',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+sub+'</div>'
       + '</div>'
       + pill(status, color)
+      + (connected ? '<button onclick="setActiveLocalAgent(\''+a.id+'\')" title="Drive this agent as the LLM backbone for missions and analysis" style="padding:6px 11px;font-size:11px;font-weight:700;background:'+(isActive?'linear-gradient(135deg,#2fd6ff,#5b8cff)':'rgba(255,255,255,0.06)')+';border:1px solid '+(isActive?'transparent':'rgba(0,200,255,0.3)')+';border-radius:6px;color:'+(isActive?'#001624':'#bcd')+';cursor:pointer;white-space:nowrap;">'+(isActive?'★ Active':'☆ Use')+'</button>' : '')
       + (a.ready ? '<button onclick="pingOneLocalAgent(\''+a.id+'\')" title="send a real one-shot to verify it actually responds (spends a little quota)" style="padding:6px 11px;font-size:11px;font-weight:600;background:rgba(255,255,255,0.06);border:1px solid rgba(0,200,255,0.3);border-radius:6px;color:#bcd;cursor:pointer;white-space:nowrap;">Test</button>' : '')
       + (a.ready ? '<button onclick="connectOneLocalAgent(\''+a.id+'\')" style="padding:6px 13px;font-size:11px;font-weight:700;background:'+(connected?'rgba(var(--brand-rgb),0.12)':'linear-gradient(135deg,#2fd6ff,#5b8cff)')+';border:'+(connected?'1px solid rgba(var(--brand-rgb),0.4)':'none')+';border-radius:6px;color:'+(connected?'var(--brand)':'#001624')+';cursor:pointer;white-space:nowrap;">'+(connected?'✓ Connected':'Connect')+'</button>' : '')
     + '</div>';
@@ -26311,7 +26398,27 @@ Be specific and actionable. Format as structured JSON.`;
     // fresh successful ping proves the local model is currently usable.
     window.__t3mpLiveAgents = live; window.__t3mpConnectedAgents = connectedIds.length;
     if (live > 0) { const nb = document.getElementById('noBackendNudge'); if (nb) nb.style.display = 'none'; }
+    renderClaudeModelPicker();
   }
+
+  // Populate + show the Claude Code model dropdown, but only when Claude Code is actually connected.
+  function renderClaudeModelPicker(){
+    const wrap = document.getElementById('claudeModelPicker');
+    const sel = document.getElementById('claudeModelSelect');
+    if (!wrap || !sel) return;
+    const claudeConnected = connectedIds.indexOf('claude') !== -1;
+    wrap.style.display = claudeConnected ? 'flex' : 'none';
+    if (!claudeConnected) return;
+    const cur = getClaudeModel();
+    sel.innerHTML = CLAUDE_MODELS.map(function(m){
+      return '<option value="'+m.id+'"'+(m.id === cur ? ' selected' : '')+'>'+m.label+'</option>';
+    }).join('');
+  }
+  window.setClaudeModel = function(m){
+    setClaudeModelStored(m);
+    const label = (CLAUDE_MODELS.find(function(x){ return x.id === m; }) || {}).label || (m || 'default');
+    if (window.toast) toast('Claude model → ' + label, 'success');
+  };
 
   // ── remember connected agents + silently re-establish them after a refresh ──
   function persistConnected(ids){ try { localStorage.setItem('t3mp3st_connected_agents', JSON.stringify(ids || [])); } catch(e) {} }
@@ -26361,6 +26468,9 @@ Be specific and actionable. Format as structured JSON.`;
       (data.results||[]).forEach(function(r){ if (r.ping) pingStatus[r.id] = { ok:r.ping.ok, latencyMs:r.ping.latencyMs, error:r.ping.error }; });
       render(lastDetected, (data.connected||[]).map(function(c){return c.id;}));
       persistConnected(connectedIds); // remember for silent auto-reconnect after refresh
+      // No backbone pinned yet? Adopt a freshly-connected agent as the active one so a single
+      // "Connect Claude Code" is enough to route missions through it (no extra click needed).
+      if (!getActiveAgent() && connectedIds.length) { setActiveAgentStored(connectedIds[0]); render(lastDetected); }
       const stale = (data.results||[]).filter(function(r){return r.ping && !r.ping.ok;}).length;
       const ok = (data.results||[]).filter(function(r){return r.status==='active';}).length;
       if (window.toast) toast(ok+' agent(s) connected'+(stale?' · '+stale+' failed live-check (re-login)':''), stale?'warning':'success');
@@ -26383,6 +26493,17 @@ Be specific and actionable. Format as structured JSON.`;
     connect(ids, true);
   };
   window.connectOneLocalAgent = function(id) { connect([id]); };
+
+  // Pin (or unpin) which connected agent drives missions + analysis as the LLM backbone.
+  // Clicking the active one again clears the pin (back to the auto codex→hermes→claude order).
+  window.setActiveLocalAgent = function(id) {
+    const next = (getActiveAgent() === id) ? '' : id;
+    setActiveAgentStored(next);
+    render(lastDetected);
+    const label = ((lastDetected || []).find(function(a){ return a.id === id; }) || {}).label || id;
+    if (window.toast) toast(next ? ('Backbone → ' + label + ' (local)') : 'Backbone pin cleared — auto-selecting', next ? 'success' : 'info');
+    if (typeof updatePreflightChecklist === 'function') { try { updatePreflightChecklist(); } catch(e) {} }
+  };
 
   // ── backend gate + Settings routing (agent auth now lives in Settings; the War Room only nudges) ──
   function hasBackend(){
@@ -26411,10 +26532,21 @@ Be specific and actionable. Format as structured JSON.`;
       var srv = window.__t3mpServerAgents.slice();
       pool = srv.filter(function(a){ return a.lastPing && a.lastPing.ok; }).map(function(a){ return a.id; });
     }
+    // Explicit operator pin wins over the default order — this is how "use my local Claude"
+    // sticks. Honor it whenever that agent is connected (or live in the pool); the live/health
+    // gate elsewhere still surfaces a warning if the pinned CLI has gone stale.
+    var pinned = getActiveAgent();
+    if (pinned && (pool.indexOf(pinned) >= 0 || connected.indexOf(pinned) >= 0)) return pinned;
     pool.sort(function(a,b){ return order.indexOf(a) - order.indexOf(b); });
     return pool[0] || null;
   }
   window.t3mpPreferredAgent = preferredAgent;
+  // The EXPLICIT operator pin (empty string = none). Callers use this to let a pinned local agent
+  // outrank stored API keys, so "use my local Claude" beats a leftover OpenRouter key.
+  window.t3mpActiveAgentPin = getActiveAgent;
+  // The chosen underlying model for a local agent (only Claude Code exposes a picker) — '' / undefined
+  // means the CLI's own default. Callers thread it through so missions/analysis run the picked model.
+  window.t3mpAgentModel = agentModelFor;
   window.nudgeToSettings = function(reason){
     const nb = document.getElementById('noBackendNudge');
     if (nb) { const m = document.getElementById('noBackendNudgeMsg'); if (m && reason) m.textContent = reason; nb.style.display = 'flex'; nb.scrollIntoView({block:'nearest'}); }

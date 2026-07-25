@@ -7848,7 +7848,11 @@ async function refreshConnectedLocalAgentHealth(force = false): Promise<void> {
 }
 
 async function requireLiveLocalAgent(model: string | undefined): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
-  const id = String(model || 'codex').trim();
+  // The mission model may be "agentId::underlyingModel" (e.g. "claude::opus") so the operator can pick
+  // WHICH model the local CLI runs — the connected-agent registry is keyed by the agent id alone, so
+  // validate against the part before "::".
+  const raw = String(model || 'codex').trim();
+  const id = raw.includes('::') ? raw.slice(0, raw.indexOf('::')).trim() || 'codex' : raw;
   const entry = connectedLocalAgents.get(id);
   if (!entry) return { ok: false, error: `local agent "${id}" is not connected — connect it in Settings first` };
 

@@ -11,7 +11,7 @@ import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -27,6 +27,7 @@ export interface TempestSettings {
     xai?: string;
     gemini?: string;
     deepseek?: string;
+    huggingface?: string;
     litellm?: string;
     local?: string;
   };
@@ -81,6 +82,12 @@ export interface TempestSettings {
 
   // DeepSeek — OpenAI-compatible API
   deepseek: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // Hugging Face — open models via the OpenAI-compatible Inference Providers router
+  huggingface: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -168,6 +175,16 @@ const DEFAULT_SETTINGS: TempestSettings = {
   deepseek: {
     baseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-pro',
+  },
+
+  // Hugging Face Inference Providers expose a unified OpenAI-compatible router at
+  // /v1. The OpenAIAdapter posts to `${baseUrl}/chat/completions`, so the base URL
+  // ends at /v1 → https://router.huggingface.co/v1/chat/completions. Model ids are
+  // the full HF repo id (e.g. meta-llama/Llama-3.3-70B-Instruct), optionally with a
+  // `:provider` suffix to pin a specific inference backend.
+  huggingface: {
+    baseUrl: 'https://router.huggingface.co/v1',
+    defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
   },
 
   codex: {
@@ -546,6 +563,43 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
+  // Full HF repo ids for the OpenAI-compatible Inference Providers router. Any model
+  // served by an HF inference provider can be passed via config/CLI/model arg — these
+  // are just curated, tool-capable defaults.
+  huggingface: [
+    {
+      id: 'meta-llama/Llama-3.3-70B-Instruct',
+      name: 'Llama 3.3 70B Instruct (Hugging Face)',
+      provider: 'HuggingFace',
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+    },
+    {
+      id: 'Qwen/Qwen2.5-72B-Instruct',
+      name: 'Qwen2.5 72B Instruct (Hugging Face)',
+      provider: 'HuggingFace',
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+    },
+    {
+      id: 'deepseek-ai/DeepSeek-R1',
+      name: 'DeepSeek R1 (Hugging Face)',
+      provider: 'HuggingFace',
+      contextWindow: 64000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks'],
+    },
+    {
+      id: 'mistralai/Mistral-Small-24B-Instruct-2501',
+      name: 'Mistral Small 24B Instruct (Hugging Face)',
+      provider: 'HuggingFace',
+      contextWindow: 32000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -633,7 +687,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -734,6 +788,7 @@ class ConfigManager {
       xai: 'XAI_API_KEY',
       gemini: 'GEMINI_API_KEY',
       deepseek: 'DEEPSEEK_API_KEY',
+      huggingface: 'HF_TOKEN',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -742,6 +797,16 @@ class ConfigManager {
     // an explicit flag so a normal operator's STORED key is NEVER silently disabled by an
     // empty exported env var (round-2 code-sweep regression fix).
     if (/^(1|true|yes|on)$/i.test((process.env.T3MP3ST_FORCE_UNCONFIGURED || '').trim())) return undefined;
+
+    // Hugging Face publishes its token under several well-known names; accept the
+    // canonical HF_TOKEN plus the common aliases so an operator's existing env works.
+    if (provider === 'huggingface') {
+      const hf = process.env.HF_TOKEN?.trim()
+        || process.env.HUGGINGFACE_API_KEY?.trim()
+        || process.env.HUGGINGFACE_TOKEN?.trim()
+        || process.env.HUGGINGFACEHUB_API_TOKEN?.trim();
+      if (hf) return hf;
+    }
 
     const envKey = process.env[envVarMap[provider]];
     if (envKey) return envKey;   // a non-empty env var wins; empty/unset falls through
@@ -791,6 +856,7 @@ class ConfigManager {
     if (this.hasLiteLLMProxy()) providers.push('litellm');
     if (this.hasApiKey('gemini')) providers.push('gemini');
     if (this.hasApiKey('deepseek')) providers.push('deepseek');
+    if (this.hasApiKey('huggingface')) providers.push('huggingface');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -864,6 +930,12 @@ class ConfigManager {
         baseUrl = this.config.get('deepseek').baseUrl;
         actualModel = model || this.config.get('deepseek').defaultModel;
         break;
+      case 'huggingface':
+        // Hugging Face Inference Providers router is OpenAI-compatible.
+        apiKey = this.getApiKey('huggingface');
+        baseUrl = this.config.get('huggingface').baseUrl;
+        actualModel = model || this.config.get('huggingface').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -923,7 +995,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -941,6 +1013,7 @@ class ConfigManager {
     add('xai');
     add('gemini');
     add('deepseek');
+    add('huggingface');
     return chain;
   }
 
@@ -966,6 +1039,9 @@ class ConfigManager {
         break;
       case 'deepseek':
         this.config.set('defaultModel', this.config.get('deepseek').defaultModel);
+        break;
+      case 'huggingface':
+        this.config.set('defaultModel', this.config.get('huggingface').defaultModel);
         break;
       case 'xai':
         this.config.set('defaultModel', this.config.get('xai').defaultModel);
@@ -1004,6 +1080,9 @@ class ConfigManager {
         break;
       case 'deepseek':
         this.config.set('deepseek', { ...this.config.get('deepseek'), defaultModel: model });
+        break;
+      case 'huggingface':
+        this.config.set('huggingface', { ...this.config.get('huggingface'), defaultModel: model });
         break;
       case 'xai':
         this.config.set('xai', { ...this.config.get('xai'), defaultModel: model });
@@ -1054,6 +1133,7 @@ class ConfigManager {
         xai: settings.apiKeys.xai ? '***REDACTED***' : undefined,
         gemini: settings.apiKeys.gemini ? '***REDACTED***' : undefined,
         deepseek: settings.apiKeys.deepseek ? '***REDACTED***' : undefined,
+        huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1101,6 +1181,11 @@ GEMINI_API_KEY=
 # DeepSeek API Key (direct DeepSeek API via its OpenAI-compatible endpoint)
 # Get your key at: https://platform.deepseek.com/api_keys
 DEEPSEEK_API_KEY=
+
+# Hugging Face access token (open models via the OpenAI-compatible Inference Providers router)
+# Get your token at: https://huggingface.co/settings/tokens
+# HUGGINGFACE_API_KEY / HUGGINGFACE_TOKEN are also accepted as aliases.
+HF_TOKEN=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).
