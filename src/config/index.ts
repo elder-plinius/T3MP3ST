@@ -867,6 +867,12 @@ class ConfigManager {
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
+      case 'local-agent':
+        // Connected local agent CLI (Claude Code / Codex / Hermes) used AS the LLM backend —
+        // keyless (each CLI uses its own login). The agent id (codex|claude|hermes) travels in
+        // `model`; default to 'codex' to match LocalAgentAdapter.chat (src/llm/index.ts).
+        actualModel = model || 'codex';
+        break;
       case 'mock':
         actualModel = 'mock-model';
         break;
@@ -978,6 +984,10 @@ class ConfigManager {
         break;
       case 'codex':
         this.config.set('defaultModel', this.config.get('codex').defaultModel);
+        break;
+      case 'local-agent':
+        // No stored provider block — default agent id is 'codex' (matches LocalAgentAdapter.chat).
+        this.config.set('defaultModel', 'codex');
         break;
       case 'local':
         this.config.set('defaultModel', process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3');
