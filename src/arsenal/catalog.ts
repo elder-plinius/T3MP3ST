@@ -595,7 +595,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['jsonl', 'report'],
     installHint: 'pipx install garak',
     commandHint: 'garak --model_type rest --model_name scoped-model',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'Model/agent probing must use scoped models and redacted transcripts.',
   },
   {

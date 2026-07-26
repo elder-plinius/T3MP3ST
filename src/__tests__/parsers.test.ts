@@ -104,7 +104,7 @@ describe('parseToolOutput — honesty contract (never fabricate, never throw)', 
 
   it('exposes exactly the wired parser ids', () => {
     expect([...PARSED_TOOL_IDS].sort()).toEqual(
-      ['dalfox', 'ffuf', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'trivy'],
+      ['dalfox', 'ffuf', 'garak', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'trivy'],
     );
   });
 });
@@ -225,5 +225,75 @@ describe('factory wiring: a minted adapter returns structured findings from real
     const res = await mint('nuclei', depsReturning('no findings here\n')).handler({ parameters: { url: 'https://target.example.com' } });
     expect(res.success).toBe(true);
     expect(res.findings).toBeUndefined();
+  });
+
+  it('garak reads its report FILE (not stdout) and surfaces structured findings + report-as-evidence', async () => {
+    const report = fixture('garak.report.jsonl');
+    const deps: AdapterToolDeps = {
+      isToolAvailable: async () => true,
+      // stdout is just progress noise; the real results are in the report file we read back.
+      runSubprocess: async () => ({ stdout: 'garak probing… [progress bars, no findings here]', stderr: '', exitCode: 0 }),
+      scopeOk: () => true,
+      mkReportPath: () => '/tmp/fake-garak-base',
+      readToolReport: async (p) => (p === '/tmp/fake-garak-base.report.jsonl' ? report : ''),
+    };
+    const res = await mint('garak', deps).handler({ parameters: { target: 'https://scoped-model.example' } });
+    expect(res.success).toBe(true);
+    expect(res.output).toBe(report);          // report FILE content kept as evidence, NOT the stdout noise
+    expect(res.findings).toHaveLength(2);      // parsed from the report file, not the progress-bar stdout
+    expect(res.findings?.some((f) => f.title.includes('dan.DAN'))).toBe(true);
+  });
+});
+
+describe('parseToolOutput — garak (LLM/agent red-team report.jsonl)', () => {
+  // The garak fixture is a report.jsonl: skip/log/completion records + non-JSON noise, four
+  // completed dan attempts (dan.DAN 2/2), four encoding attempts (DecodeMatch 1/4, DecodeApprox
+  // 0/4), and one status!=2 attempt that must NOT be counted.
+  const findingsByTitle = (): Map<string, ToolFinding> => {
+    const m = new Map<string, ToolFinding>();
+    for (const f of parseToolOutput('garak', fixture('garak.report.jsonl'))) m.set(f.title, f);
+    return m;
+  };
+
+  it('rolls attempts up into one finding per (probe × detector) with the right ASR + severity', () => {
+    const f = findingsByTitle();
+    // dan.DAN: 2/2 broken → 100% → critical
+    const dan = f.get('garak: dan.Dan_11_0 broke via dan.DAN (2/2, 100.0% ASR)');
+    expect(dan?.severity).toBe('critical');
+    // encoding.DecodeMatch: 1/4 broken → 25% → high
+    const enc = f.get('garak: encoding.InjectBase64 broke via encoding.DecodeMatch (1/4, 25.0% ASR)');
+    expect(enc?.severity).toBe('high');
+  });
+
+  it('emits ONLY probe×detector pairs that registered an attack success', () => {
+    const titles = [...findingsByTitle().keys()];
+    expect(titles).toHaveLength(2); // DecodeApprox (0/4) and the status!=2 attempt produce nothing
+    expect(titles.some((t) => t.includes('DecodeApprox'))).toBe(false);
+  });
+
+  it('never leaks probe transcript text into the finding (only names + counts)', () => {
+    for (const f of parseToolOutput('garak', fixture('garak.report.jsonl'))) {
+      expect(f.title + f.details).not.toContain('SECRET_PROMPT_XYZ');
+    }
+  });
+
+  it('honesty contract: empty / non-garak / garbled input yields [] (never a fabricated finding)', () => {
+    expect(parseToolOutput('garak', '')).toEqual([]);
+    expect(parseToolOutput('garak', 'not json at all\n{}\n')).toEqual([]);
+    expect(() => parseToolOutput('garak', '{"entry_type":"attempt"}')).not.toThrow();
+  });
+
+  it('a parsed garak finding passes the live provenance gate (provenance=tool)', () => {
+    const raw = fixture('garak.report.jsonl');
+    for (const tf of parseToolOutput('garak', raw)) {
+      const gate = gateLiveFinding({
+        id: 'finding-garak', title: tf.title, description: tf.details, severity: tf.severity,
+        targetId: 'target-1', operatorId: 'op-1', phase: KillChainPhase.RECON,
+        evidence: [{ type: 'output', content: raw.slice(0, 4000), timestamp: 1, metadata: { tool: 'garak' } }],
+        discoveredAt: 1,
+      });
+      expect(gate.passed, `garak finding "${tf.title}" should pass the gate`).toBe(true);
+      expect(gate.provenance).toBe('tool');
+    }
   });
 });

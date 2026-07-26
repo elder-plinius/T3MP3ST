@@ -327,7 +327,7 @@ describe('invocation-honesty guard — every mintable adapter is classified, non
   // red-team harnesses, device-runtime tools, project-scaffolded RE, or a target-executing debugger).
   const OPERATOR_DRIVEN = new Set([
     'prowler', 'scoutsuite', 'cloudfox', 'pmapper', 'aws-cli', 'az-cli', 'gcloud-cli',
-    'garak', 'promptfoo', 'foundry-forge', 'foundry-cast', 'openssl', 'afl-fuzz', 'ghidra',
+    'promptfoo', 'foundry-forge', 'foundry-cast', 'openssl', 'afl-fuzz', 'ghidra',
     'gdb', 'objection', 'drozer',
   ]);
   // KNOWN DEBT: the positional default is broken/degraded and these SHOULD get a template later.

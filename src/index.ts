@@ -224,6 +224,9 @@ export type { OpsecConfig, Finding, Credential, Target, DetectionEvent } from '.
 import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES, PHASE_ARCHETYPES, KILL_CHAIN_ORDER } from './operators/index.js';
 import { PackBoard } from './pack/board.js';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join as pathJoin } from 'node:path';
+import { readFile as fsReadFile, rm as fsRm } from 'node:fs/promises';
 import { MissionControl, TaskQueue } from './mission/index.js';
 import { TargetEnvironment } from './target/index.js';
 import { EvidenceVault } from './evidence/index.js';
@@ -424,6 +427,18 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         runSubprocess,
         isToolAvailable,
         scopeOk: (target: string) => scopeViolation(this.arsenal.getScope(), { parameters: { target } }) === null,
+        // For report-FILE tools (garak): a unique temp base, and a reader that consumes-then-deletes
+        // the report so probe transcripts never linger on disk (redacted-transcripts discipline).
+        mkReportPath: (adapterId: string) => pathJoin(tmpdir(), `t3mp3st-${adapterId}-${randomUUID()}`),
+        readToolReport: async (p: string): Promise<string> => {
+          try {
+            const content = await fsReadFile(p, 'utf8');
+            await fsRm(p, { force: true }).catch(() => {});
+            return content;
+          } catch {
+            return '';
+          }
+        },
       };
       const existing = new Set(this.arsenal.getAllTools().map((t) => t.name));
       this.arsenal.registerMany(buildAdapterTools(TOOL_ADAPTERS, deps, existing));

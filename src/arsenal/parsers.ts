@@ -291,6 +291,70 @@ function parseGrype(raw: string): ToolFinding[] {
   return out;
 }
 
+// ── garak : LLM/agent red-team probes (report.jsonl) ─────────────────────────
+// garak writes one JSON object per line. We roll the run up into ONE finding per
+// (probe × detector) that registered at least one attack success, reporting the
+// attack-success-rate. We faithfully summarise garak's OWN detector verdicts — a
+// parser summarises, it does not re-judge (detector false-positives are a downstream
+// concern, called out in the finding details so the operator transcript-verifies).
+// Only probe/detector names + counts are surfaced — never prompt/response text — so
+// no probe transcript leaks through the structured channel.
+const garakSev = (asr: number): Severity =>
+  asr >= 50 ? 'critical' : asr >= 20 ? 'high' : asr >= 5 ? 'medium' : 'low';
+
+function parseGarak(raw: string): ToolFinding[] {
+  const agg = new Map<string, { probe: string; detector: string; broken: number; total: number }>();
+  const evals: Record<string, unknown>[] = [];
+
+  for (const e of jsonl(raw)) {
+    const entryType = String(e.entry_type ?? '');
+    if (entryType === 'eval') { evals.push(e); continue; }
+    if (entryType !== 'attempt') continue;
+    if (num(e.status) !== 2) continue; // only completed attempts
+    const probe = String(e.probe_classname ?? e.probe ?? 'unknown');
+    for (const [detector, scoresRaw] of Object.entries(asObj(e.detector_results))) {
+      const scores = Array.isArray(scoresRaw) ? scoresRaw : [];
+      const key = `${probe}|${detector}`;
+      let a = agg.get(key);
+      if (!a) { a = { probe, detector, broken: 0, total: 0 }; agg.set(key, a); }
+      for (const s of scores) {
+        a.total += 1;
+        const n = num(s);
+        if (n !== undefined && n >= 0.5) a.broken += 1;
+      }
+    }
+  }
+
+  const out: ToolFinding[] = [];
+  const emit = (probe: string, detector: string, broken: number, total: number): void => {
+    if (broken <= 0 || total <= 0) return;
+    const asr = (100 * broken) / total;
+    out.push({
+      title: `garak: ${probe} broke via ${detector} (${broken}/${total}, ${asr.toFixed(1)}% ASR)`,
+      severity: garakSev(asr),
+      details:
+        `LLM/agent red-team probe. Attack-success-rate ${asr.toFixed(1)}% ` +
+        `(${broken}/${total} outputs flagged by detector '${detector}'; probe '${probe}'). ` +
+        `ASR reflects garak's automated detector verdict — verify transcripts before ` +
+        `acting; keyword-style detectors over-report on small/aligned models.`,
+    });
+  };
+
+  for (const { probe, detector, broken, total } of agg.values()) emit(probe, detector, broken, total);
+
+  // Fallback: some garak builds emit only aggregated 'eval' rollups (no per-attempt scores).
+  if (out.length === 0) {
+    for (const e of evals) {
+      const passed = num(e.passed);
+      const total = num(e.total ?? e.instances);
+      if (passed === undefined || total === undefined) continue;
+      emit(String(e.probe ?? 'unknown'), String(e.detector ?? 'detector'), total - passed, total);
+    }
+  }
+
+  return out;
+}
+
 const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   nuclei: parseNuclei,
   httpx: parseHttpx,
@@ -301,6 +365,7 @@ const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   gitleaks: parseGitleaks,
   trivy: parseTrivy,
   grype: parseGrype,
+  garak: parseGarak,
 };
 
 /** Adapter ids that have a structured output parser wired here. */

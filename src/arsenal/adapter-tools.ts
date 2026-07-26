@@ -57,6 +57,13 @@ export interface AdapterToolDeps {
    * Arsenal-level egress gate in execute() still applies at the engine boundary).
    */
   scopeOk?: (target: string) => boolean;
+  /**
+   * Mint a unique, writable base path for a tool that emits its report to a FILE (see
+   * ArgTemplate.reportFile) — e.g. a temp path. Omitted → such tools fall back to parsing stdout.
+   */
+  mkReportPath?: (adapterId: string) => string;
+  /** Read a tool's report file back (returns '' on any error; may delete it after). Paired with the above. */
+  readToolReport?: (path: string) => Promise<string>;
 }
 
 // =============================================================================
@@ -74,6 +81,13 @@ interface ArgTemplate {
   targetParam: string;
   defaultTimeoutMs: number;
   build: (target: string, params: Record<string, unknown>) => string[];
+  /**
+   * Tools that write their structured results to a FILE, not stdout (e.g. garak's report.jsonl).
+   * The handler mints a unique base path (via deps.mkReportPath), injects it into params as
+   * `__reportBase` for build() to point the tool at, and — given that base — this returns the actual
+   * file to read back and parse INSTEAD of stdout. Absent → the tool's stdout is parsed (the default).
+   */
+  reportFile?: (reportBase: string) => string;
 }
 
 const str = (v: unknown): string | undefined =>
@@ -121,6 +135,19 @@ const artifactPath = (target: string, params: Record<string, unknown>): string =
  * catalog put it and the Arsenal egress gate + optional scopeOk fence the target.
  */
 const ARG_TEMPLATES: Record<string, ArgTemplate> = {
+  // garak writes its structured results to <report_prefix>.report.jsonl (a FILE), not stdout — so we
+  // point --report_prefix at the handler-minted base and read that file back for parseGarak. Model +
+  // probe flags stay hardcoded; only the scoped model name (the target) is tunable. Model probing is
+  // slow, hence the long timeout.
+  garak: {
+    targetParam: 'target',
+    defaultTimeoutMs: 1_800_000,
+    reportFile: (base) => `${base}.report.jsonl`,
+    build: (target, params) => {
+      const base = str(params.__reportBase) ?? 'garak_run';
+      return ['--model_type', 'rest', '--model_name', target, '--report_prefix', base];
+    },
+  },
   nmap: {
     targetParam: 'target',
     defaultTimeoutMs: 120_000,
@@ -490,9 +517,18 @@ export function adapterToCustomTool(adapter: ToolAdapter, deps: AdapterToolDeps)
     // 4) Build argv from the per-adapter template and run the subprocess with a per-adapter timeout.
     //    A template may REFUSE a dangerous param (e.g. curl `-d @file` local-file read) by throwing —
     //    convert that into a clean failure result, never an unhandled rejection.
+    // A report-FILE tool (e.g. garak) writes its structured results to disk, not stdout. Mint a
+    // unique base path and hand it to the template via `__reportBase` so build() can point the tool
+    // at it; we read that file back after the run. No template.reportFile / no mkReportPath → the
+    // existing stdout path is used unchanged (zero behaviour change for every other adapter).
+    const reportBase = template.reportFile && deps.mkReportPath ? deps.mkReportPath(adapter.id) : undefined;
+    const buildParams: Record<string, unknown> = reportBase
+      ? { ...(context.parameters || {}), __reportBase: reportBase }
+      : context.parameters || {};
+
     let argv: string[];
     try {
-      argv = template.build(target ?? '', context.parameters || {});
+      argv = template.build(target ?? '', buildParams);
     } catch (err) {
       return { success: false, error: `${adapter.name}: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -506,14 +542,21 @@ export function adapterToCustomTool(adapter: ToolAdapter, deps: AdapterToolDeps)
       };
     }
 
-    // Populate the structured `findings` channel from the raw stdout when a parser is wired for
-    // this tool (parseToolOutput → [] otherwise). The raw stdout is ALWAYS kept as `output` — it
-    // is the evidence of record the agent loop stamps onto each finding and the live gate checks;
-    // the parser summarises it, never replaces it. A parse yielding nothing leaves findings unset.
-    const findings = parseToolOutput(adapter.id, result.stdout);
+    // Choose the stream to parse: a report-file tool's report.jsonl (read back from disk) when one is
+    // declared and available, else the tool's stdout. The CHOSEN stream is BOTH parsed AND kept as
+    // `output` — the evidence of record the agent loop stamps onto each finding and the live gate
+    // checks — so a finding is always backed by the exact bytes it was parsed from. The parser
+    // summarises that output, never replaces it; a parse yielding nothing leaves findings unset.
+    let evidence = result.stdout;
+    if (reportBase && template.reportFile && deps.readToolReport) {
+      const report = await deps.readToolReport(template.reportFile(reportBase));
+      if (report.trim()) evidence = report;
+    }
+
+    const findings = parseToolOutput(adapter.id, evidence);
     return {
       success: true,
-      output: result.stdout,
+      output: evidence,
       ...(findings.length ? { findings } : {}),
     };
   };
