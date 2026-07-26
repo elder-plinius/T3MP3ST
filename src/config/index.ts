@@ -939,6 +939,13 @@ class ConfigManager {
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
+      case 'local-agent':
+        // Connected local-agent CLI (Claude Code / Codex / Hermes) used AS the backbone — NO API
+        // key (each CLI uses its own login). The agent id travels in `model`, optionally with the
+        // chosen underlying model after "::" (e.g. "claude::opus"); LocalAgentAdapter parses it.
+        // Without this case the keyless mission path (provider:'local-agent') hit the default throw.
+        actualModel = model || 'codex';
+        break;
       case 'mock':
         actualModel = 'mock-model';
         break;

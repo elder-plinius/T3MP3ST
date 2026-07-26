@@ -100,9 +100,11 @@ describe('local API authorization hardening invariants', () => {
   });
 
   it('Op Admiral routes keyless planning through the connected local agent', () => {
-    expect(uiSource).toMatch(/connectedAgent[\s\S]*t3mpPreferredAgent/);
-    expect(uiSource).toMatch(/connectedAgent \? 'local-agent'/);
-    expect(uiSource).toMatch(/provider === 'local-agent'[\s\S]*connectedAgent/);
+    // Routing is now centralized on window.t3mpDispatchAgent (shared by mission/General/Admiral):
+    // it honors an explicit pin over a stored key and encodes the picked model as "agentId::model".
+    expect(uiSource).toMatch(/const dispatchAgent = \(typeof window\.t3mpDispatchAgent/);
+    expect(uiSource).toMatch(/dispatchAgent \? 'local-agent'/);
+    expect(uiSource).toMatch(/provider === 'local-agent'[\s\S]*dispatchAgent/);
     expect(uiSource).toMatch(/\['codex', 'mock', 'local', 'local-agent'\]/);
   });
 

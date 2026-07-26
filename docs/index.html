@@ -17159,14 +17159,17 @@ ACTION_INPUT: {"output":"Found confirmed SQLi on /login endpoint..."}`;
             }
             const apiKey = getApiKey();
             const savedProvider = localStorage.getItem('t3mp3st_general_provider');
-            const connectedAgent = (!apiKey && typeof window.t3mpPreferredAgent === 'function')
-                ? window.t3mpPreferredAgent()
-                : null;
-            const provider = savedProvider
-                || (connectedAgent ? 'local-agent' : undefined)
-                || (T3MP3ST_API?.connected && !T3MP3ST_API?.llmAvailable ? 'codex' : undefined);
+            // Centralized resolution: an explicit pin (e.g. Claude Code) outranks a stored key AND a
+            // remembered general-provider value, and the picked Claude model rides along as
+            // "agentId::model" — identical precedence to the mission path.
+            const dispatchAgent = (typeof window.t3mpDispatchAgent === 'function') ? window.t3mpDispatchAgent(apiKey) : null;
+            const explicitPin = (typeof window.t3mpActiveAgentPin === 'function') ? (window.t3mpActiveAgentPin() || '') : '';
+            const provider = (explicitPin && dispatchAgent) ? 'local-agent'
+                : (savedProvider
+                    || (dispatchAgent ? 'local-agent' : undefined)
+                    || (T3MP3ST_API?.connected && !T3MP3ST_API?.llmAvailable ? 'codex' : undefined));
             const model = provider === 'local-agent'
-                ? connectedAgent
+                ? (dispatchAgent ? dispatchAgent.model : (typeof window.t3mpPreferredAgent === 'function' ? window.t3mpPreferredAgent() : undefined))
                 : (provider === 'codex' ? 'codex-default' : (provider ? (state.settings?.selectedModel || 'anthropic/claude-sonnet-4') : undefined));
             return { apiKey, provider, model };
         }
@@ -19688,21 +19691,17 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     addIntel('BACKEND', `Local model mode — dispatching mission through local LLM (${model})`, 'success');
                     addMissionLog('info', `LLM backend: local (${model}) — no API key needed`);
                 } else {
-                    // An EXPLICIT local-agent pin (e.g. Claude Code) outranks a stored API key — the operator
-                    // asked to run the mission on their local model, so honor that over any leftover key.
-                    const pin = (typeof window.t3mpActiveAgentPin === 'function') ? (window.t3mpActiveAgentPin() || '') : '';
-                    const pref = (typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
-                    const agentBackend = pin && pref === pin ? pin
-                        : (!apiKey ? pref : null);
-                    if (agentBackend) {
+                    // Centralized agent resolution (shared with General + Admiral): an EXPLICIT pin
+                    // (e.g. Claude Code) outranks a stored key, and the picked model rides along as
+                    // "agentId::model" so the mission runs THAT model.
+                    const dispatchAgent = (typeof window.t3mpDispatchAgent === 'function') ? window.t3mpDispatchAgent(apiKey) : null;
+                    if (dispatchAgent) {
                         provider = 'local-agent';
-                        // The agent id (codex|claude|hermes) travels in `model`, optionally with the picked
-                        // underlying model after "::" (e.g. "claude::opus") so the mission runs THAT model.
-                        const agentModel = (typeof window.t3mpAgentModel === 'function') ? window.t3mpAgentModel(agentBackend) : undefined;
-                        model = agentModel ? `${agentBackend}::${agentModel}` : agentBackend;
-                        const shownModel = agentModel ? ` · model: ${agentModel}` : '';
-                        addIntel('BACKEND', `Routing the mission through your connected local agent: ${agentBackend.toUpperCase()}${shownModel}`, 'success');
-                        addMissionLog('info', `LLM backend: local agent (${agentBackend})${shownModel} — no API key needed`);
+                        model = dispatchAgent.model;
+                        const picked = dispatchAgent.model.includes('::') ? dispatchAgent.model.split('::')[1] : '';
+                        const shownModel = picked ? ` · model: ${picked}` : '';
+                        addIntel('BACKEND', `Routing the mission through your connected local agent: ${dispatchAgent.id.toUpperCase()}${shownModel}`, 'success');
+                        addMissionLog('info', `LLM backend: local agent (${dispatchAgent.id})${shownModel} — no API key needed`);
                     } else if (!apiKey) {
                         addIntel('BACKEND', 'No browser API key — using the server-configured LLM backend', 'success');
                         addMissionLog('info', 'LLM backend: server default — no browser API key sent');
@@ -26547,6 +26546,22 @@ Be specific and actionable. Format as structured JSON.`;
   // The chosen underlying model for a local agent (only Claude Code exposes a picker) — '' / undefined
   // means the CLI's own default. Callers thread it through so missions/analysis run the picked model.
   window.t3mpAgentModel = agentModelFor;
+  // CENTRALIZED backend agent resolution — the single source of truth every server-dispatch surface
+  // (missions, General, Admiral) uses, so pin precedence and model passthrough stay consistent:
+  //   • an EXPLICIT pin outranks a stored API key (the pin is a deliberate "use my local Claude");
+  //   • with no key and no pin, the auto-preferred connected agent is used;
+  //   • the returned `model` carries the picked underlying model as "agentId::model" (LocalAgentAdapter
+  //     parses it) so the selected Claude model is never dropped.
+  // Returns { id, model } or null when no local agent should drive this dispatch.
+  window.t3mpDispatchAgent = function(apiKey){
+    const key = (apiKey || '').trim();
+    const pin = getActiveAgent();
+    const pref = preferredAgent();
+    const agent = (pin && pref === pin) ? pin : (!key ? pref : null);
+    if (!agent) return null;
+    const am = agentModelFor(agent);
+    return { id: agent, model: am ? (agent + '::' + am) : agent };
+  };
   window.nudgeToSettings = function(reason){
     const nb = document.getElementById('noBackendNudge');
     if (nb) { const m = document.getElementById('noBackendNudgeMsg'); if (m && reason) m.textContent = reason; nb.style.display = 'flex'; nb.scrollIntoView({block:'nearest'}); }
@@ -26748,9 +26763,11 @@ Be specific and actionable. Format as structured JSON.`;
       };
     }
     const apiKey = (typeof getApiKey === 'function') ? (getApiKey() || '') : '';
-    const agent = (!apiKey && typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
+    // Centralized agent resolution: an explicit pin (e.g. Claude Code) outranks a stored key, and the
+    // picked Claude model rides along as "agentId::model" — identical precedence to the mission path.
+    const dispatchAgent = (typeof window.t3mpDispatchAgent === 'function') ? window.t3mpDispatchAgent(apiKey) : null;
     let provider, model;
-    if (!apiKey && agent) { provider = 'local-agent'; model = agent; }
+    if (dispatchAgent) { provider = 'local-agent'; model = dispatchAgent.model; }
     else if (apiKey && apiKey.startsWith('sk-ant-')) { provider = 'anthropic'; model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4').replace('anthropic/', ''); }
     else if (apiKey && apiKey.startsWith('sk-') && !apiKey.startsWith('sk-or-')) { provider = 'openai'; model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4'); }
     else if (apiKey) { provider = 'openrouter'; model = ((typeof state !== 'undefined' && state.settings && state.settings.selectedModel) || 'anthropic/claude-sonnet-4'); }

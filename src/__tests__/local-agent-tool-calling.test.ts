@@ -108,6 +108,32 @@ describe('local-agent backbone surfaces toolCalls (keyless-path fix)', () => {
       .chat([{ role: 'user', content: 'hello' }]);
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ timeoutMs: 900000 });
   });
+
+  // Model-argument passthrough (PR #127 review): the picked local model must reach the CLI's --model.
+  // The agent id + chosen model travel in a single "agentId::model" spec; the adapter must split it.
+  it('splits an "agentId::model" spec so the picked model reaches the CLI (--model)', async () => {
+    cli.mockResolvedValueOnce('done');
+    await new LLMBackbone({ provider: 'local-agent', model: 'claude::opus' } as never)
+      .chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[0]).toBe('claude');
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ model: 'opus' });
+  });
+
+  it('supports a full model id after "::" (e.g. claude::claude-opus-4-8)', async () => {
+    cli.mockResolvedValueOnce('done');
+    await new LLMBackbone({ provider: 'local-agent', model: 'claude::claude-opus-4-8' } as never)
+      .chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[0]).toBe('claude');
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ model: 'claude-opus-4-8' });
+  });
+
+  it('a bare agent id passes NO model (the CLI account default is used)', async () => {
+    cli.mockResolvedValueOnce('done');
+    await new LLMBackbone({ provider: 'local-agent', model: 'claude' } as never)
+      .chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[0]).toBe('claude');
+    expect(cli.mock.calls.at(-1)?.[2]?.model).toBeUndefined();
+  });
 });
 
 describe('codex backbone surfaces toolCalls (guards the CodexAdapter half of the fix)', () => {
