@@ -11,7 +11,7 @@ import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'opencode' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -28,6 +28,7 @@ export interface TempestSettings {
     gemini?: string;
     deepseek?: string;
     huggingface?: string;
+    opencode?: string;
     litellm?: string;
     local?: string;
   };
@@ -88,6 +89,12 @@ export interface TempestSettings {
 
   // Hugging Face — open models via the OpenAI-compatible Inference Providers router
   huggingface: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // OpenCode — OpenAI-compatible API
+  opencode: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -185,6 +192,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
   huggingface: {
     baseUrl: 'https://router.huggingface.co/v1',
     defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
+  },
+
+  opencode: {
+    baseUrl: 'https://opencode.ai/zen/go/v1',
+    defaultModel: 'deepseek-v4-pro',
   },
 
   codex: {
@@ -600,6 +612,16 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
+  opencode: [
+    {
+      id: 'deepseek-v4-pro',
+      name: 'DeepSeek V4 Pro (OpenCode)',
+      provider: 'OpenCode',
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -687,7 +709,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'opencode', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -789,6 +811,7 @@ class ConfigManager {
       gemini: 'GEMINI_API_KEY',
       deepseek: 'DEEPSEEK_API_KEY',
       huggingface: 'HF_TOKEN',
+      opencode: 'OPENCODE_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -857,6 +880,7 @@ class ConfigManager {
     if (this.hasApiKey('gemini')) providers.push('gemini');
     if (this.hasApiKey('deepseek')) providers.push('deepseek');
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
+    if (this.hasApiKey('opencode')) providers.push('opencode');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -936,6 +960,12 @@ class ConfigManager {
         baseUrl = this.config.get('huggingface').baseUrl;
         actualModel = model || this.config.get('huggingface').defaultModel;
         break;
+      case 'opencode':
+        // OpenCode — OpenAI-compatible API.
+        apiKey = this.getApiKey('opencode');
+        baseUrl = this.config.get('opencode').baseUrl;
+        actualModel = model || this.config.get('opencode').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -1002,7 +1032,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'opencode') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1021,6 +1051,7 @@ class ConfigManager {
     add('gemini');
     add('deepseek');
     add('huggingface');
+    add('opencode');
     return chain;
   }
 
@@ -1049,6 +1080,9 @@ class ConfigManager {
         break;
       case 'huggingface':
         this.config.set('defaultModel', this.config.get('huggingface').defaultModel);
+        break;
+      case 'opencode':
+        this.config.set('defaultModel', this.config.get('opencode').defaultModel);
         break;
       case 'xai':
         this.config.set('defaultModel', this.config.get('xai').defaultModel);
@@ -1090,6 +1124,9 @@ class ConfigManager {
         break;
       case 'huggingface':
         this.config.set('huggingface', { ...this.config.get('huggingface'), defaultModel: model });
+        break;
+      case 'opencode':
+        this.config.set('opencode', { ...this.config.get('opencode'), defaultModel: model });
         break;
       case 'xai':
         this.config.set('xai', { ...this.config.get('xai'), defaultModel: model });
@@ -1141,6 +1178,7 @@ class ConfigManager {
         gemini: settings.apiKeys.gemini ? '***REDACTED***' : undefined,
         deepseek: settings.apiKeys.deepseek ? '***REDACTED***' : undefined,
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
+        opencode: settings.apiKeys.opencode ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1193,6 +1231,10 @@ DEEPSEEK_API_KEY=
 # Get your token at: https://huggingface.co/settings/tokens
 # HUGGINGFACE_API_KEY / HUGGINGFACE_TOKEN are also accepted as aliases.
 HF_TOKEN=
+
+# OpenCode API Key (OpenAI-compatible endpoint)
+# Get your key at: https://opencode.ai
+OPENCODE_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).
