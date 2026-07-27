@@ -7573,9 +7573,10 @@ import { Admiral, briefToDirective, type ChatMsg, type MissionBrief } from './ad
  */
 app.post('/api/admiral/converse', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { messages, provider = 'openrouter', model, apiKey, baseUrl } = req.body as {
+    const { messages, provider, model, apiKey, baseUrl } = req.body as {
       messages: ChatMsg[]; provider?: string; model?: string; apiKey?: string; baseUrl?: string;
     };
+    const effectiveProvider = provider || config.getLLMConfig().provider || 'openrouter';
     if (!Array.isArray(messages) || messages.length === 0) {
       res.status(400).json({ error: 'messages[] required' });
       return;
@@ -7584,7 +7585,7 @@ app.post('/api/admiral/converse', async (req: Request, res: Response): Promise<v
     if (llm) {
       admiralLLM = llm;
     } else {
-      const cfg = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
+      const cfg = resolveGeneralLLMConfig(effectiveProvider, model, apiKey, baseUrl);
       admiralLLM = new LLMBackbone(cfg);
     }
     const admiral = new Admiral(admiralLLM);
@@ -7603,9 +7604,10 @@ app.post('/api/admiral/converse', async (req: Request, res: Response): Promise<v
  */
 app.post('/api/admiral/suggest', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { operatorPrompt, archetype, failureSignal, provider = 'openrouter', model, apiKey, baseUrl } = req.body as {
+    const { operatorPrompt, archetype, failureSignal, provider, model, apiKey, baseUrl } = req.body as {
       operatorPrompt?: string; archetype?: string; failureSignal?: string; provider?: string; model?: string; apiKey?: string; baseUrl?: string;
     };
+    const effectiveProvider = provider || config.getLLMConfig().provider || 'openrouter';
     let prompt = typeof operatorPrompt === 'string' ? operatorPrompt : '';
     if (!prompt && archetype) {
       const found = listOperatorPrompts().find((o) => o.archetype === archetype);
@@ -7618,7 +7620,7 @@ app.post('/api/admiral/suggest', async (req: Request, res: Response): Promise<vo
     let admiralLLM: LLMBackbone;
     if (llm) { admiralLLM = llm; }
     else {
-      const cfg = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
+      const cfg = resolveGeneralLLMConfig(effectiveProvider, model, apiKey, baseUrl);
       admiralLLM = new LLMBackbone(cfg);
     }
     const admiral = new Admiral(admiralLLM);
@@ -7638,9 +7640,10 @@ app.post('/api/admiral/suggest', async (req: Request, res: Response): Promise<vo
  */
 app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { brief, confirmed, provider = 'openrouter', model, apiKey, baseUrl } = req.body as {
+    const { brief, confirmed, provider, model, apiKey, baseUrl } = req.body as {
       brief: MissionBrief; confirmed?: boolean; provider?: string; model?: string; apiKey?: string; baseUrl?: string;
     };
+    const effectiveProvider = provider || config.getLLMConfig().provider || 'openrouter';
     if (!brief || !brief.objective || !brief.target) {
       res.status(400).json({ error: 'brief with objective + target required' });
       return;
@@ -7655,7 +7658,7 @@ app.post('/api/admiral/launch', async (req: Request, res: Response): Promise<voi
 
     let generalConfig;
     try {
-      generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
+      generalConfig = resolveGeneralLLMConfig(effectiveProvider, model, apiKey, baseUrl);
     } catch (error: any) {
       res.status(400).json({ error: error.message || 'API key required' });
       return;

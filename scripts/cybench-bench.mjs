@@ -141,6 +141,12 @@ function detectProvider(model) {
   if (process.env.OPENROUTER_API_KEY) return { provider: 'openrouter', apiKey: process.env.OPENROUTER_API_KEY };
   if (process.env.ANTHROPIC_API_KEY)  return { provider: 'anthropic',  apiKey: process.env.ANTHROPIC_API_KEY  };
   if (process.env.OPENAI_API_KEY)     return { provider: 'openai',     apiKey: process.env.OPENAI_API_KEY     };
+  if (process.env.XAI_API_KEY)        return { provider: 'xai',        apiKey: process.env.XAI_API_KEY        };
+  if (process.env.GOOGLE_API_KEY)     return { provider: 'gemini',     apiKey: process.env.GOOGLE_API_KEY     };
+  if (process.env.DEEPSEEK_API_KEY)   return { provider: 'deepseek',   apiKey: process.env.DEEPSEEK_API_KEY   };
+  if (process.env.LITELLM_API_KEY)    return { provider: 'litellm',    apiKey: process.env.LITELLM_API_KEY    };
+  if (process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN) return { provider: 'huggingface', apiKey: process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN };
+  if (process.env.OPENCODE_API_KEY)   return { provider: 'opencode',   apiKey: process.env.OPENCODE_API_KEY   };
   return null;
 }
 

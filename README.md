@@ -101,6 +101,14 @@ npm run verify-claims             # re-derives every headline from committed JSO
 
 Step-by-step operator usage lives in [Getting Started](docs/GETTING_STARTED.md). Library/SDK usage, the HTTP API, and MCP setup live in [docs/](docs/).
 
+To install all external pentest tools (nmap, nuclei, semgrep, etc.) in one shot:
+
+```bash
+bash scripts/install_tools.sh
+```
+
+See [Install Matrix](docs/INSTALL_MATRIX.md) for the full tool catalog.
+
 ### Docker
 
 Run T3MP3ST API server in a container (localhost only, not exposed externally):
@@ -296,7 +304,7 @@ Operators map to MITRE ATT&CK and Cyber Kill Chain phases (recon is live; later 
 | **Coordinator** | Command & Control | TA0011 | mission control, orchestration |
 | **Analyst** | Analysis | — | pattern analysis, reporting |
 
-**Providers:** OpenRouter, Venice, Anthropic, OpenAI, or a keyless local agent (Claude Code / Codex / Hermes). Set `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `ANTHROPIC_API_KEY`, or connect an agent in Settings.
+**Providers:** OpenRouter, Venice, Anthropic, OpenAI, DeepSeek, Hugging Face, OpenCode, or a keyless local agent (Claude Code / Codex / Hermes). Set `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `OPENCODE_API_KEY`, or connect an agent in Settings. The web UI's Universal API Config supports custom base URLs for any OpenAI-compatible provider.
 
 **Integrations:** `node dist/mcp-server.js` exposes `security_recon` to MCP-aware agents. `npm run server` starts the HTTP API (`POST /api/mission/start`, `GET /api/mission/status`, and more). Full reference in [docs/](docs/).
 

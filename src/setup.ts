@@ -288,6 +288,53 @@ async function setupHuggingFaceKey(): Promise<boolean> {
   }
 }
 
+async function setupOpenCodeKey(): Promise<boolean> {
+  console.log('');
+  showInfo('OpenCode is an OpenAI-compatible API provider.');
+  showInfo('Get your API key at: ' + chalk.underline('https://api.opencode.ai'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your OpenCode API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'opencode',
+      model: 'opencode/deepseek-v4-pro',
+      baseUrl: 'https://api.opencode.ai/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('opencode', apiKey);
+    showSuccess('OpenCode API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupOpenAIKey(): Promise<boolean> {
   console.log('');
   showInfo('OpenAI provides access to GPT models.');
@@ -463,6 +510,8 @@ You can use a local model with no API key, or add a key from one of these provid
 • ${chalk.cyan('Anthropic')} - Direct Claude access
 • ${chalk.cyan('OpenAI')} - GPT models
 • ${chalk.cyan('DeepSeek')} - OpenAI-compatible chat/reasoning models
+• ${chalk.cyan('HuggingFace')} - Open models via the HF Inference Providers router
+• ${chalk.cyan('OpenCode')} - OpenAI-compatible API
 • ${chalk.cyan('LiteLLM')} - AI gateway proxy (100+ providers)
 
 The setup will guide you through:
@@ -478,9 +527,10 @@ The setup will guide you through:
   const hasOpenAI = hasApiKey('openai');
   const hasDeepSeek = hasApiKey('deepseek');
   const hasHuggingFace = hasApiKey('huggingface');
+  const hasOpenCode = hasApiKey('opencode');
   const hasLiteLLM = config.hasLiteLLMProxy();
 
-  if (hasOpenRouter || hasAnthropic || hasOpenAI || hasDeepSeek || hasHuggingFace || hasLiteLLM) {
+  if (hasOpenRouter || hasAnthropic || hasOpenAI || hasDeepSeek || hasHuggingFace || hasOpenCode || hasLiteLLM) {
     console.log('');
     showInfo('Existing API keys detected:');
     if (hasOpenRouter) showSuccess('  OpenRouter: configured');
@@ -488,6 +538,7 @@ The setup will guide you through:
     if (hasOpenAI) showSuccess('  OpenAI: configured');
     if (hasDeepSeek) showSuccess('  DeepSeek: configured');
     if (hasHuggingFace) showSuccess('  HuggingFace: configured');
+    if (hasOpenCode) showSuccess('  OpenCode: configured');
     if (hasLiteLLM) showSuccess('  LiteLLM Proxy: configured');
     console.log('');
 
@@ -577,6 +628,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'huggingface',
         },
         {
+          name: `OpenCode ${hasApiKey('opencode') ? chalk.green('(configured)') : ''}`,
+          value: 'opencode',
+        },
+        {
           name: `LiteLLM Proxy ${config.hasLiteLLMProxy() ? chalk.green('(configured)') : chalk.gray('(100+ providers via gateway)')}`,
           value: 'litellm',
         },
@@ -604,6 +659,9 @@ async function setupApiKeys(): Promise<void> {
       case 'huggingface':
         await setupHuggingFaceKey();
         break;
+      case 'opencode':
+        await setupOpenCodeKey();
+        break;
       case 'litellm':
         await setupLiteLLMProxy();
         break;
@@ -621,6 +679,7 @@ async function setupProvider(): Promise<void> {
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
   if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' });
   if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
+  if (hasApiKey('opencode')) configuredProviders.push({ name: 'OpenCode', value: 'opencode' });
   if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   const { provider } = await inquirer.prompt([
@@ -654,6 +713,7 @@ function viewConfiguration(): void {
   console.log('    OpenAI: ' + (hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    DeepSeek: ' + (hasApiKey('deepseek') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    HuggingFace: ' + (hasApiKey('huggingface') ? chalk.green('configured') : chalk.red('not set')));
+  console.log('    OpenCode: ' + (hasApiKey('opencode') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    LiteLLM Proxy: ' + (config.hasLiteLLMProxy() ? chalk.green('configured') : chalk.red('not set')));
   console.log('');
   console.log(chalk.cyan('  Config Path: ') + config.getConfigPath());

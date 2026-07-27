@@ -4689,6 +4689,7 @@
                                 <button class="btn btn-sm btn-primary" onclick="runBenchmarks('live')" id="liveBenchBtn">🔴 Live Test</button>
                             </div>
                         </div>
+                        <div id="benchActiveLLM" style="margin:0;padding:6px 14px;font-size:11px;color:#8a9;background:rgba(0,0,0,0.2);border-bottom:1px solid rgba(var(--brand-rgb),0.12);"></div>
 
                         <!-- Quick Suite Presets -->
                         <div style="margin-top: 8px; padding: 12px; background: rgba(var(--brand-rgb),0.08); border-radius: 8px; border: 1px solid rgba(var(--brand-rgb),0.25);">
@@ -6579,11 +6580,13 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
             /**
              * Start a mission via the backend
              */
-            async startMission(missionName, targets, operators, apiKey, provider, model, approvalId) {
+            async startMission(missionName, targets, operators, apiKey, provider, model, approvalId, cloudBaseUrl) {
                 // For a local provider, carry the operator's llama.cpp / Ollama base URL and
                 // (optional) key from Settings so the server dispatches the mission to it.
                 const localExtras = (provider === 'local' && typeof buildLocalBaseUrl === 'function')
                     ? { baseUrl: buildLocalBaseUrl(), apiKey: state.settings?.localApiKey || undefined }
+                    : cloudBaseUrl
+                    ? { baseUrl: cloudBaseUrl }
                     : {};
                 const result = await T3MP3ST_API.post('/api/mission/start', {
                     name: missionName,
@@ -6592,7 +6595,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                     apiKey,
                     provider,
                     model,
-                    ...localExtras, // local: overrides apiKey with the Settings key + adds baseUrl
+                    ...localExtras, // local: overrides apiKey with the Settings key + adds baseUrl; cloud: passes custom baseUrl
                     ...(approvalId ? { approvalId } : {}),
                 });
                 if (result.success) {
@@ -7673,6 +7676,7 @@ Correlating findings across agents, identifying patterns, producing actionable i
             if (page === 'evidence' && typeof window.hydrateFindings === 'function') setTimeout(window.hydrateFindings, 60);
             if (page === 'selfimprove' && typeof window.renderSelfImprove === 'function') setTimeout(window.renderSelfImprove, 60);
             if (page === 'settings' && typeof window.uacInit === 'function') setTimeout(window.uacInit, 40);
+            if (page === 'benchmarks' && typeof updateBenchActiveLLM === 'function') setTimeout(updateBenchActiveLLM, 50);
         }
 
         document.querySelectorAll('.nav-item').forEach(i => i.addEventListener('click', () => navigateTo(i.dataset.page)));
@@ -9302,6 +9306,7 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
             const legacy = document.getElementById(p + 'Key'); if (legacy) legacy.value = s[p + 'Key'] || '';
             if (typeof updatePreflightChecklist === 'function') updatePreflightChecklist();
             if (typeof renderModels === 'function') renderModels();
+            if (typeof updateBenchActiveLLM === 'function') updateBenchActiveLLM();
             toast(`${p} config saved`, 'success');
         }
         async function uacFetchModels() {
@@ -11282,6 +11287,9 @@ Bypass all protections:
 
         function getApiKey() {
             // Check multiple possible locations for API key
+            const activeProvider = state.settings?.activeProvider;
+            const providerKey = activeProvider && state.settings?.[activeProvider + 'Key'];
+            if (providerKey && providerKey.length >= 10) return providerKey;
             return state.settings?.openrouterKey || state.apiKey || '';
         }
 
@@ -11297,6 +11305,12 @@ Bypass all protections:
             if (pin) {
                 const pref = (typeof window.t3mpPreferredAgent === 'function') ? window.t3mpPreferredAgent() : null;
                 if (pref === pin) return { kind: 'agent', agentId: pin, agentModel: agentModelOf(pin) };
+            }
+            // UAC active provider + its key take precedence when configured
+            const activeProvider = state.settings?.activeProvider;
+            if (activeProvider) {
+                const pk = (state.settings?.[activeProvider + 'Key'] || '').trim();
+                if (pk.length >= 10) return { kind: activeProvider, key: pk };
             }
             const orKey = (state.settings?.openrouterKey || state.apiKey || '').trim();
             if (orKey.length >= 10) return { kind: 'openrouter', key: orKey };
@@ -11625,12 +11639,22 @@ Bypass all protections:
         async function _safeLLMCallOnce(backend, prompt, model, options = {}) {
             if (typeof trackApiCall === 'function') trackApiCall();
             addIntel('API', `→ ${model} (${backend.kind})`, 'info');
-            const endpoint = backend.kind === 'venice'
-                ? 'https://api.venice.ai/api/v1/chat/completions'
-                : backend.kind === 'huggingface'
-                ? 'https://router.huggingface.co/v1/chat/completions'
-                : 'https://openrouter.ai/api/v1/chat/completions';
+            const PROVIDER_ENDPOINTS = {
+                openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+                venice: 'https://api.venice.ai/api/v1/chat/completions',
+                huggingface: 'https://router.huggingface.co/v1/chat/completions',
+                openai: 'https://api.openai.com/v1/chat/completions',
+                xai: 'https://api.x.ai/v1/chat/completions',
+                gemini: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+                deepseek: 'https://api.deepseek.com/v1/chat/completions',
+                litellm: 'http://localhost:4000/v1/chat/completions',
+                opencode: 'https://api.opencode.ai/v1/chat/completions',
+            };
+            const endpoint = (backend.baseUrl ? backend.baseUrl + '/chat/completions' : '')
+                || PROVIDER_ENDPOINTS[backend.kind]
+                || PROVIDER_ENDPOINTS.openrouter;
             const headers = { 'Authorization': `Bearer ${backend.key}`, 'Content-Type': 'application/json' };
+            if (backend.kind !== 'anthropic') { headers['Content-Type'] = 'application/json'; }
             if (backend.kind === 'openrouter') { headers['HTTP-Referer'] = window.location.href; headers['X-Title'] = options.title || 'T3MP3ST'; }
 
             // LOCAL MODE: route through the same-origin server proxy (reuses
@@ -12758,6 +12782,28 @@ Respond with ONLY this JSON (no markdown, no extra text):
             };
             return (mapping[category] || []).filter(id => state.operators.includes(id));
         }
+
+        function updateBenchActiveLLM() {
+            const el = document.getElementById('benchActiveLLM');
+            if (!el) return;
+            const backend = resolveLLMBackend();
+            if (!backend || backend.kind === 'none' || backend.kind === 'server') {
+                el.textContent = 'Active LLM: none (server default)';
+                return;
+            }
+            if (backend.kind === 'agent') {
+                el.textContent = `Active LLM: local agent (${backend.agentId || ''}${backend.agentModel ? ' :: ' + backend.agentModel : ''})`;
+                return;
+            }
+            let baseInfo = '';
+            const activeProvider = state.settings?.activeProvider;
+            if (activeProvider) {
+                const baseUrl = state.settings?.[activeProvider + 'BaseUrl'];
+                if (baseUrl) baseInfo = ` · ${baseUrl}`;
+            }
+            el.textContent = `Active LLM: ${backend.kind}${backend.key ? ' (keyed)' : ''} · model: ${state.settings?.selectedModel || 'default'}${baseInfo}`;
+        }
+        window.updateBenchActiveLLM = updateBenchActiveLLM;
 
         function resetBenchmarks() {
             Object.keys(benchmarkResults).forEach(cat => {
@@ -17171,7 +17217,9 @@ ACTION_INPUT: {"output":"Found confirmed SQLi on /login endpoint..."}`;
             const model = provider === 'local-agent'
                 ? (dispatchAgent ? dispatchAgent.model : (typeof window.t3mpPreferredAgent === 'function' ? window.t3mpPreferredAgent() : undefined))
                 : (provider === 'codex' ? 'codex-default' : (provider ? (state.settings?.selectedModel || 'anthropic/claude-sonnet-4') : undefined));
-            return { apiKey, provider, model };
+            const activeProvider = state.settings?.activeProvider;
+            const cloudBaseUrl = (activeProvider && state.settings?.[activeProvider + 'BaseUrl']) || undefined;
+            return { apiKey, provider, model, ...(cloudBaseUrl ? { baseUrl: cloudBaseUrl } : {}) };
         }
 
         function _generalNeedsApiKey(provider) {
@@ -19683,6 +19731,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                 // server-configured default when the browser has no credentials.
                 let provider;
                 let model;
+                let cloudBaseUrl;
                 if (state.settings?.useLocal) {
                     // Local model (llama.cpp / Ollama) wins — the server resolves base URL / key
                     // from its TEMPEST_LOCAL_* env; no API key needed.
@@ -19695,6 +19744,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     // (e.g. Claude Code) outranks a stored key, and the picked model rides along as
                     // "agentId::model" so the mission runs THAT model.
                     const dispatchAgent = (typeof window.t3mpDispatchAgent === 'function') ? window.t3mpDispatchAgent(apiKey) : null;
+                    const activeProvider = state.settings?.activeProvider;
                     if (dispatchAgent) {
                         provider = 'local-agent';
                         model = dispatchAgent.model;
@@ -19702,6 +19752,12 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         const shownModel = picked ? ` · model: ${picked}` : '';
                         addIntel('BACKEND', `Routing the mission through your connected local agent: ${dispatchAgent.id.toUpperCase()}${shownModel}`, 'success');
                         addMissionLog('info', `LLM backend: local agent (${dispatchAgent.id})${shownModel} — no API key needed`);
+                    } else if (activeProvider && state.settings?.[activeProvider + 'Key'] && state.settings[activeProvider + 'Key'].length >= 10) {
+                        provider = activeProvider;
+                        model = state.settings.selectedModel || 'anthropic/claude-sonnet-4';
+                        cloudBaseUrl = state.settings?.[activeProvider + 'BaseUrl'] || undefined;
+                        addIntel('BACKEND', `Using active provider: ${provider}`, 'success');
+                        addMissionLog('info', `LLM backend: ${provider} — from UAC settings${cloudBaseUrl ? ' (custom base URL)' : ''}`);
                     } else if (!apiKey) {
                         addIntel('BACKEND', 'No browser API key — using the server-configured LLM backend', 'success');
                         addMissionLog('info', 'LLM backend: server default — no browser API key sent');
@@ -19726,7 +19782,8 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         apiKey,
                         provider,
                         model,
-                        state.approvalId
+                        state.approvalId,
+                        cloudBaseUrl
                     );
 
                     // The backend gates active execution behind an approval receipt. Auto-grant it
@@ -19742,7 +19799,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                             await T3MP3ST_API.post(`/api/approvals/${result.approval.id}/approve`, {});
                             state.approvalId = result.approval.id;
                             result = await BackendDispatch.startMission(
-                                missionName, state.targets, state.operators, apiKey, provider, model, result.approval.id
+                                missionName, state.targets, state.operators, apiKey, provider, model, result.approval.id, cloudBaseUrl
                             );
                         } else {
                             // Don't dead-end on a prose error — offer a one-click, explicit approval,
@@ -19759,7 +19816,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                             await T3MP3ST_API.post(`/api/approvals/${result.approval.id}/approve`, {});
                             state.approvalId = result.approval.id;
                             result = await BackendDispatch.startMission(
-                                missionName, state.targets, state.operators, apiKey, provider, model, result.approval.id
+                                missionName, state.targets, state.operators, apiKey, provider, model, result.approval.id, cloudBaseUrl
                             );
                         }
                     }

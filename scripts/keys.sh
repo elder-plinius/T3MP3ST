@@ -34,6 +34,8 @@ KNOWN_KEYS=(
   REPLICATE_API_TOKEN
   GITHUB_TOKEN
   HF_TOKEN
+  DEEPSEEK_API_KEY
+  OPENCODE_API_KEY
 )
 
 # ---- helpers ---------------------------------------------------------------

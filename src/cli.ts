@@ -525,6 +525,7 @@ async function openSettings(): Promise<void> {
       console.log(chalk.cyan('  OpenAI:'), hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  DeepSeek:'), hasApiKey('deepseek') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  HuggingFace:'), hasApiKey('huggingface') ? chalk.green('configured') : chalk.red('not set'));
+      console.log(chalk.cyan('  OpenCode:'), hasApiKey('opencode') ? chalk.green('configured') : chalk.red('not set'));
       console.log('');
       break;
 
@@ -577,7 +578,7 @@ async function openSettings(): Promise<void> {
           type: 'list',
           name: 'keyProvider',
           message: 'Which provider?',
-          choices: ['openrouter', 'venice', 'anthropic', 'openai', 'deepseek', 'huggingface'],
+          choices: ['openrouter', 'venice', 'anthropic', 'openai', 'deepseek', 'huggingface', 'opencode'],
         },
       ]);
       const { apiKey } = await inquirer.prompt([
@@ -646,6 +647,7 @@ program
       [chalk.cyan('OpenAI API Key'), hasApiKey('openai') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
       [chalk.cyan('DeepSeek API Key'), hasApiKey('deepseek') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
       [chalk.cyan('HuggingFace API Key'), hasApiKey('huggingface') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
+      [chalk.cyan('OpenCode API Key'), hasApiKey('opencode') ? chalk.green('✓ Configured') : chalk.red('✗ Not set')],
       [chalk.cyan('Config Path'), config.getConfigPath()],
     );
 

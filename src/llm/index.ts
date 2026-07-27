@@ -8,6 +8,7 @@
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
  * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
+ * - OpenCode (OpenAI-compatible API)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -1473,6 +1474,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config); // DeepSeek native API is OpenAI-compatible
       case 'huggingface':
         return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
+      case 'opencode':
+        return new OpenAIAdapter(config); // OpenCode is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1773,6 +1776,12 @@ export function createHuggingFaceBackbone(apiKey?: string, model?: string): LLMB
   return new LLMBackbone(llmConfig);
 }
 
+export function createOpenCodeBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('opencode', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1803,7 +1812,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > OpenCode > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -1826,6 +1835,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('huggingface')) {
     return createHuggingFaceBackbone();
+  }
+  if (providers.includes('opencode')) {
+    return createOpenCodeBackbone();
   }
 
   // Default to mock if no API keys configured
