@@ -30,9 +30,9 @@ describe('getLLMConfig — local-agent case (keyless mission path is self-contai
     expect(cfg.model).toBe('claude::opus');
   });
 
-  it('defaults the agent id to codex when none is supplied (no throw)', () => {
+  it('preserves the established claude default when none is supplied (no throw)', () => {
     expect(() => config.getLLMConfig('local-agent')).not.toThrow();
-    expect(config.getLLMConfig('local-agent').model).toBe('codex');
+    expect(config.getLLMConfig('local-agent').model).toBe('claude');
   });
 });
 
@@ -56,6 +56,39 @@ function loadDispatchAgent(deps: {
   const funcExpr = uiSource.slice(fnStart, end) + '\n  }';
   const factory = new Function('getActiveAgent', 'preferredAgent', 'agentModelFor', `return (${funcExpr});`);
   return factory(deps.getActiveAgent, deps.preferredAgent, deps.agentModelFor) as (apiKey?: string) => { id: string; model: string } | null;
+}
+
+function loadIntegratedDispatch(deps: {
+  connectedIds: string[];
+  pingStatus: Record<string, { ok: boolean }>;
+  serverAgents?: Array<{ id: string; lastPing?: { ok: boolean } }>;
+  pinned: string;
+}) {
+  const start = uiSource.indexOf('function preferredAgent(){');
+  const marker = 'window.t3mpDispatchAgent = ';
+  const dispatchStart = uiSource.indexOf(marker, start);
+  const end = uiSource.indexOf('\n  };', dispatchStart);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(dispatchStart).toBeGreaterThan(start);
+  expect(end).toBeGreaterThan(dispatchStart);
+
+  const source = uiSource.slice(start, end + '\n  };'.length);
+  const windowState = { __t3mpServerAgents: deps.serverAgents };
+  const factory = new Function(
+    'connectedIds',
+    'pingStatus',
+    'window',
+    'getActiveAgent',
+    'agentModelFor',
+    `${source}; return window.t3mpDispatchAgent;`,
+  );
+  return factory(
+    deps.connectedIds,
+    deps.pingStatus,
+    windowState,
+    () => deps.pinned,
+    () => undefined,
+  ) as (apiKey?: string) => { id: string; model: string } | null;
 }
 
 describe('t3mpDispatchAgent — pin precedence + model passthrough (shared by mission/General/Admiral)', () => {
@@ -90,6 +123,24 @@ describe('t3mpDispatchAgent — pin precedence + model passthrough (shared by mi
     const fn = loadDispatchAgent({ getActiveAgent: () => 'claude', preferredAgent: () => 'codex', agentModelFor: () => undefined });
     // pinned claude is not the preferred (e.g. not live) and no key → falls back to preferred codex
     expect(fn('')!.id).toBe('codex');
+  });
+
+  it('does not let a connected-but-stale pin displace a working keyed provider', () => {
+    const fn = loadIntegratedDispatch({
+      connectedIds: ['claude'],
+      pingStatus: { claude: { ok: false } },
+      pinned: 'claude',
+    });
+    expect(fn('sk-or-working-provider')).toBeNull();
+  });
+
+  it('lets a live pin deliberately outrank a stored key', () => {
+    const fn = loadIntegratedDispatch({
+      connectedIds: ['claude'],
+      pingStatus: { claude: { ok: true } },
+      pinned: 'claude',
+    });
+    expect(fn('sk-or-working-provider')!.id).toBe('claude');
   });
 });
 

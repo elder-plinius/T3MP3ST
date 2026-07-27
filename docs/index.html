@@ -26531,11 +26531,11 @@ Be specific and actionable. Format as structured JSON.`;
       var srv = window.__t3mpServerAgents.slice();
       pool = srv.filter(function(a){ return a.lastPing && a.lastPing.ok; }).map(function(a){ return a.id; });
     }
-    // Explicit operator pin wins over the default order — this is how "use my local Claude"
-    // sticks. Honor it whenever that agent is connected (or live in the pool); the live/health
-    // gate elsewhere still surfaces a warning if the pinned CLI has gone stale.
+    // Explicit operator pin wins over the default order only while it is live. A remembered
+    // connection is not sufficient: routing a stale pin ahead of a working keyed provider makes
+    // General/Admiral dispatch fail even though a healthy fallback is available.
     var pinned = getActiveAgent();
-    if (pinned && (pool.indexOf(pinned) >= 0 || connected.indexOf(pinned) >= 0)) return pinned;
+    if (pinned && pool.indexOf(pinned) >= 0) return pinned;
     pool.sort(function(a,b){ return order.indexOf(a) - order.indexOf(b); });
     return pool[0] || null;
   }
