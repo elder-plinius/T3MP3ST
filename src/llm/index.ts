@@ -623,8 +623,9 @@ class OpenAIAdapter implements LLMProviderAdapter {
       throw new Error(validation.error);
     }
 
-    const baseUrl = this.config.baseUrl || 'https://api.openai.com/v1';
-    const url = `${baseUrl}/chat/completions`;
+    const baseUrl = this.config.baseUrl;
+    if (!baseUrl) throw new Error(`No baseUrl configured for provider '${this.config.provider}' — set it in UAC Settings or server config`);
+    const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
     const requestBody: Record<string, unknown> = {
       model: this.config.model,
@@ -1473,6 +1474,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config); // DeepSeek native API is OpenAI-compatible
       case 'huggingface':
         return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
+      case 'opencode':
+        return new OpenAIAdapter(config); // OpenCode is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1773,6 +1776,12 @@ export function createHuggingFaceBackbone(apiKey?: string, model?: string): LLMB
   return new LLMBackbone(llmConfig);
 }
 
+export function createOpenCodeBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('opencode', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1826,6 +1835,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('huggingface')) {
     return createHuggingFaceBackbone();
+  }
+  if (providers.includes('opencode')) {
+    return createOpenCodeBackbone();
   }
 
   // Default to mock if no API keys configured
