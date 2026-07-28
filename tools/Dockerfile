@@ -49,14 +49,18 @@ RUN pip3 install --no-cache-dir pipx \
  && (pipx install mythril          || echo "WARN: mythril pipx install failed")
 
 # ── go: the "+" — ProjectDiscovery suite + dalfox (not in stock Kali apt) ──
-RUN export GOBIN=/usr/local/bin && \
+# Stage first: the Python dependency layer already creates /usr/local/bin/httpx,
+# and `go install` refuses to overwrite a non-Go executable at GOBIN. `install`
+# deliberately replaces that console script with ProjectDiscovery httpx.
+RUN export GOBIN=/tmp/projectdiscovery-bin && \
     go install github.com/projectdiscovery/httpx/cmd/httpx@latest        && \
     go install github.com/projectdiscovery/katana/cmd/katana@latest      && \
     go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest     && \
     go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
     go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest   && \
     go install github.com/hahwul/dalfox/v2@latest                        && \
-    rm -rf /root/go/pkg /root/.cache/go-build
+    install -m 0755 "$GOBIN"/* /usr/local/bin/                           && \
+    rm -rf "$GOBIN" /root/go/pkg /root/.cache/go-build
 
 # ── npm + foundry: smart-contract "+" (solhint, forge/cast) ──
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
@@ -80,7 +84,10 @@ RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download
  && /opt/conda/bin/conda clean -afy \
  || echo "WARN: sage (conda-forge) install failed/skipped — crypto falls back to z3/sympy/fpylll"
 
-RUN useradd --create-home --shell /bin/bash operator && mkdir -p /work && chown operator:operator /work
+# Kali already defines the operator group; attach the runtime user to it.
+RUN useradd --gid operator --create-home --shell /bin/bash operator \
+ && mkdir -p /work \
+ && chown operator:operator /work
 
 USER operator
 WORKDIR /work
