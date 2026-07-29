@@ -15,6 +15,7 @@ import * as net from 'net';
 import * as dns from 'dns';
 import * as tls from 'tls';
 import { ApprovalController, isGatedRisk, type ApprovalRequest } from './approval.js';
+import { classifySubdomainTakeover, renderTakeoverReport } from './takeover.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -34,6 +35,7 @@ const dnsResolveMx = promisify(dns.resolveMx);
 const dnsResolveTxt = promisify(dns.resolveTxt);
 const dnsResolveNs = promisify(dns.resolveNs);
 const dnsReverse = promisify(dns.reverse);
+const dnsResolveCname = promisify(dns.resolveCname);
 
 import { CVE_DATABASE } from '../stubs/index.js';
 import type { CVEEntry } from '../stubs/index.js';
@@ -1884,6 +1886,81 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           error: `Reverse DNS lookup failed: ${errMsg}`,
         };
       }
+    },
+  },
+  // ── subdomain_takeover_check ────────────────────────────────────────────────────────────────
+  // HOW TO VERIFY (backend, no UI needed):
+  //   npm run build
+  //   node -e "import('./dist/arsenal/index.js').then(async m=>{const t=m.BUILTIN_TOOLS.find(x=>x.name==='subdomain_takeover_check');console.log((await t.handler({parameters:{target:process.argv[1]}})).output)})" blog.example.com
+  //   → resolves the live CNAME chain and prints a confirmed/potential/none verdict.
+  // The CONFIRMED path (dangling CNAME or an unclaimed-resource body fingerprint) is exercised
+  // end-to-end with DNS + fetch mocked in src/__tests__/subdomain-takeover.test.ts, and the pure
+  // decision matrix is covered there via classifySubdomainTakeover(). ONLY scan hosts you own or
+  // are authorized to test.
+  {
+    name: 'subdomain_takeover_check',
+    description: 'Detect a dangling / unclaimed subdomain (CNAME pointing at a de-provisioned third-party service such as S3, GitHub Pages, Heroku, Azure, Fastly). Resolves the CNAME and matches known takeover fingerprints.',
+    category: 'recon',
+    parameters: [
+      { name: 'target', type: 'string', description: 'Subdomain / hostname to check (e.g. blog.example.com)', required: true },
+      { name: 'timeout', type: 'number', description: 'Per-request timeout in ms', required: false, default: 8000 },
+    ],
+    handler: async (context) => {
+      // Normalize to a bare host: drop scheme, path, port, and a trailing FQDN dot (any of which
+      // would otherwise break the service fingerprint's host-suffix match).
+      const target = ((context.parameters.target as string) || context.target?.address || '')
+        .trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').replace(/\.$/, '').toLowerCase();
+      if (!target) return { success: false, error: 'No target specified' };
+      const timeout = (context.parameters.timeout as number) || 8000;
+
+      // 1) Resolve the CNAME chain. No CNAME → not a takeover candidate (takeovers are CNAME-based).
+      const chain: string[] = [];
+      let cname: string | null = null;
+      try {
+        const cnames = await dnsResolveCname(target);
+        if (cnames.length) { chain.push(...cnames); cname = cnames[cnames.length - 1]; }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // ENODATA/ENOTFOUND = no CNAME for this name; anything else is a real lookup failure.
+        if (!/ENODATA|ENOTFOUND|ENOTIMP|SERVFAIL/i.test(msg)) {
+          return { success: false, error: `CNAME lookup failed for ${target}: ${msg}` };
+        }
+      }
+
+      // 2) Does the CNAME target still resolve? A dangling (non-resolving) CNAME is a strong signal.
+      let cnameResolves = false;
+      if (cname) {
+        try { cnameResolves = (await dnsResolve4(cname)).length > 0; }
+        catch { try { cnameResolves = (await dnsResolve(cname, 'AAAA') as string[]).length > 0; } catch { cnameResolves = false; } }
+      }
+
+      // 3) Best-effort fetch of the live response to confirm an "unclaimed resource" fingerprint.
+      //    Never fatal — a takeover is often confirmable from DNS alone. Scope-gated by execute().
+      let body: string | undefined;
+      if (cname) {
+        for (const scheme of ['https', 'http']) {
+          try {
+            const resp = await targetFetch(`${scheme}://${target}`, { method: 'GET', signal: AbortSignal.timeout(timeout), redirect: 'manual' });
+            body = (await resp.text()).slice(0, 20000);
+            break;
+          } catch { /* try next scheme, then give up */ }
+        }
+      }
+
+      const verdict = classifySubdomainTakeover({ cname, cnameResolves, body });
+      const output = renderTakeoverReport(target, chain, verdict);
+
+      return {
+        success: true,
+        output,
+        findings: verdict.confidence === 'none' ? [] : [{
+          title: verdict.confidence === 'confirmed'
+            ? `Subdomain takeover${verdict.service ? ` (${verdict.service})` : ''}: ${target}`
+            : `Possible subdomain takeover${verdict.service ? ` (${verdict.service})` : ''}: ${target}`,
+          severity: verdict.severity,
+          details: verdict.reasons.join(' '),
+        }],
+      };
     },
   },
   {

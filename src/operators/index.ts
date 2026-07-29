@@ -78,7 +78,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Specialized in OSINT, network discovery, and asset enumeration',
     mitreTactics: ['TA0043'],
     primaryPhases: [KillChainPhase.RECON],
-    defaultTools: ['dns_lookup', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery'],
+    defaultTools: ['dns_lookup', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'subdomain_takeover_check', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery'],
     toolCategories: ['recon', 'web'],
     capabilities: ['osint', 'dns_enum', 'subdomain_discovery', 'port_scanning', 'service_detection'],
     techniques: ['T1595', 'T1592', 'T1589', 'T1590', 'T1591'],
