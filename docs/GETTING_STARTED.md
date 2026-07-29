@@ -4,7 +4,7 @@ T3MP3ST is a local offensive-security command center for authorized testing. It 
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 22.19 or newer
 - npm
 - git, if you want to update from upstream or contribute
 - Optional local model runtime: Ollama, LM Studio, vLLM, or another OpenAI-compatible local server
