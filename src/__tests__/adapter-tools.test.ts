@@ -10,6 +10,8 @@
  * All deps are injected fakes — no real binaries are spawned.
  */
 import { describe, it, expect } from 'vitest';
+import { access, stat } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import {
   adapterToCustomTool,
   buildAdapterTools,
@@ -19,6 +21,7 @@ import {
   type AdapterToolDeps,
   type SubprocessResult,
 } from '../arsenal/adapter-tools.js';
+import { createPrivateReportWorkspace } from '../arsenal/report-workspace.js';
 import { TOOL_ADAPTERS } from '../arsenal/catalog.js';
 import type { ToolAdapter } from '../arsenal/catalog.js';
 import type { CustomTool, ToolContext } from '../types/index.js';
@@ -51,6 +54,18 @@ function makeDeps(overrides: Partial<AdapterToolDeps> = {}): AdapterToolDeps & {
 }
 
 const ctx = (parameters: Record<string, unknown>): ToolContext => ({ parameters });
+
+describe('report-file workspace', () => {
+  it('uses a private 0700 directory and cleanup removes the complete workspace', async () => {
+    const workspace = await createPrivateReportWorkspace('garak');
+    const dir = dirname(workspace.reportBase);
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+    expect(dir).not.toBe('/tmp');
+
+    await workspace.cleanup();
+    await expect(access(dir)).rejects.toThrow();
+  });
+});
 
 describe('adapterToCustomTool — mint gate', () => {
   it('NEVER mints catalog_only / import_only adapters (metasploit, hydra, bloodhound → null)', () => {

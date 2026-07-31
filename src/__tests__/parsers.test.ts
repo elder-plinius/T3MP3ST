@@ -229,19 +229,77 @@ describe('factory wiring: a minted adapter returns structured findings from real
 
   it('garak reads its report FILE (not stdout) and surfaces structured findings + report-as-evidence', async () => {
     const report = fixture('garak.report.jsonl');
+    let cleaned = false;
     const deps: AdapterToolDeps = {
       isToolAvailable: async () => true,
       // stdout is just progress noise; the real results are in the report file we read back.
       runSubprocess: async () => ({ stdout: 'garak probing… [progress bars, no findings here]', stderr: '', exitCode: 0 }),
       scopeOk: () => true,
-      mkReportPath: () => '/tmp/fake-garak-base',
-      readToolReport: async (p) => (p === '/tmp/fake-garak-base.report.jsonl' ? report : ''),
+      createReportWorkspace: async () => ({
+        reportBase: '/private/run/report',
+        cleanup: async () => { cleaned = true; },
+      }),
+      readToolReport: async (p) => (p === '/private/run/report.report.jsonl' ? report : ''),
     };
     const res = await mint('garak', deps).handler({ parameters: { target: 'https://scoped-model.example' } });
     expect(res.success).toBe(true);
     expect(res.output).toBe(report);          // report FILE content kept as evidence, NOT the stdout noise
     expect(res.findings).toHaveLength(2);      // parsed from the report file, not the progress-bar stdout
     expect(res.findings?.some((f) => f.title.includes('dan.DAN'))).toBe(true);
+    expect(cleaned).toBe(true);
+  });
+
+  it.each([
+    ['non-zero exit', async () => ({ stdout: '', stderr: 'failed', exitCode: 2 })],
+    ['spawn/timeout error', async () => { throw new Error('timed out'); }],
+  ])('garak removes its private report workspace after %s', async (_label, runSubprocess) => {
+    let cleanupCalls = 0;
+    const deps: AdapterToolDeps = {
+      isToolAvailable: async () => true,
+      runSubprocess,
+      scopeOk: () => true,
+      createReportWorkspace: async () => ({
+        reportBase: '/private/run/report',
+        cleanup: async () => { cleanupCalls += 1; },
+      }),
+      readToolReport: async () => fixture('garak.report.jsonl'),
+    };
+    const res = await mint('garak', deps).handler({ parameters: { target: 'https://scoped-model.example' } });
+    expect(res.success).toBe(false);
+    expect(cleanupCalls).toBe(1);
+  });
+
+  it('garak removes its private report workspace when reading the report fails', async () => {
+    let cleanupCalls = 0;
+    const deps: AdapterToolDeps = {
+      isToolAvailable: async () => true,
+      runSubprocess: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+      scopeOk: () => true,
+      createReportWorkspace: async () => ({
+        reportBase: '/private/run/report',
+        cleanup: async () => { cleanupCalls += 1; },
+      }),
+      readToolReport: async () => { throw new Error('read failed'); },
+    };
+    const res = await mint('garak', deps).handler({ parameters: { target: 'https://scoped-model.example' } });
+    expect(res.success).toBe(false);
+    expect(cleanupCalls).toBe(1);
+  });
+
+  it('garak refuses to run without private workspace and report-reader dependencies', async () => {
+    let spawned = false;
+    const deps: AdapterToolDeps = {
+      isToolAvailable: async () => true,
+      runSubprocess: async () => {
+        spawned = true;
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+      scopeOk: () => true,
+    };
+    const res = await mint('garak', deps).handler({ parameters: { target: 'https://scoped-model.example' } });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/private report workspace/);
+    expect(spawned).toBe(false);
   });
 });
 
