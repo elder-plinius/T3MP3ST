@@ -23,7 +23,7 @@ const DEFAULT_MODEL_LIST_TIMEOUT_MS = 15_000;
 
 // Pseudo-providers with no remote model list (CLI-driven or in-process).
 const NO_REMOTE_LIST = new Set(['codex', 'mock', 'local-agent']);
-const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'local']);
+const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'nanogpt', 'local']);
 const DIRECT_REMOTE_LIST = new Set(['anthropic', 'openrouter']);
 
 const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');

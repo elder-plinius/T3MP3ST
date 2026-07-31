@@ -30,6 +30,11 @@ describe('redactString — URL userinfo (basic-auth) scrub', () => {
     expect(redactString('token=abc123def456ghi')).toBe('token=[redacted]');
     expect(redactString('Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9')).toContain('Bearer [redacted]');
   });
+
+  it('redacts NanoGPT sk-nano keys', () => {
+    expect(redactString('NanoGPT key: sk-nano-12345678-1234-1234-1234-123456789abc'))
+      .toBe('NanoGPT key: [redacted]');
+  });
 });
 
 describe('redactSecrets — approval-audit record shape', () => {

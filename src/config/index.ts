@@ -11,7 +11,7 @@ import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -28,6 +28,7 @@ export interface TempestSettings {
     gemini?: string;
     deepseek?: string;
     huggingface?: string;
+    nanogpt?: string;
     litellm?: string;
     local?: string;
   };
@@ -88,6 +89,12 @@ export interface TempestSettings {
 
   // Hugging Face — open models via the OpenAI-compatible Inference Providers router
   huggingface: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // NanoGPT — OpenAI-compatible text API
+  nanogpt: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -185,6 +192,13 @@ const DEFAULT_SETTINGS: TempestSettings = {
   huggingface: {
     baseUrl: 'https://router.huggingface.co/v1',
     defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
+  },
+
+  // NanoGPT's canonical OpenAI-compatible base. The OpenAIAdapter appends
+  // /chat/completions and provider-models appends /models.
+  nanogpt: {
+    baseUrl: 'https://nano-gpt.com/api/v1',
+    defaultModel: 'minimax/minimax-m2.7',
   },
 
   codex: {
@@ -600,6 +614,18 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
+  // NanoGPT's catalog is dynamic; this documented model is only a fail-open
+  // fallback for the UI when GET /api/v1/models is unavailable.
+  nanogpt: [
+    {
+      id: 'minimax/minimax-m2.7',
+      name: 'MiniMax M2.7 (NanoGPT)',
+      provider: 'NanoGPT',
+      contextWindow: 204800,
+      maxOutput: 131072,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -687,7 +713,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -789,6 +815,7 @@ class ConfigManager {
       gemini: 'GEMINI_API_KEY',
       deepseek: 'DEEPSEEK_API_KEY',
       huggingface: 'HF_TOKEN',
+      nanogpt: 'NANOGPT_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -857,6 +884,7 @@ class ConfigManager {
     if (this.hasApiKey('gemini')) providers.push('gemini');
     if (this.hasApiKey('deepseek')) providers.push('deepseek');
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
+    if (this.hasApiKey('nanogpt')) providers.push('nanogpt');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -936,6 +964,12 @@ class ConfigManager {
         baseUrl = this.config.get('huggingface').baseUrl;
         actualModel = model || this.config.get('huggingface').defaultModel;
         break;
+      case 'nanogpt':
+        // NanoGPT's canonical /api/v1 surface is OpenAI-compatible.
+        apiKey = this.getApiKey('nanogpt');
+        baseUrl = this.config.get('nanogpt').baseUrl;
+        actualModel = model || this.config.get('nanogpt').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -1002,7 +1036,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1021,6 +1055,7 @@ class ConfigManager {
     add('gemini');
     add('deepseek');
     add('huggingface');
+    add('nanogpt');
     return chain;
   }
 
@@ -1049,6 +1084,9 @@ class ConfigManager {
         break;
       case 'huggingface':
         this.config.set('defaultModel', this.config.get('huggingface').defaultModel);
+        break;
+      case 'nanogpt':
+        this.config.set('defaultModel', this.config.get('nanogpt').defaultModel);
         break;
       case 'xai':
         this.config.set('defaultModel', this.config.get('xai').defaultModel);
@@ -1090,6 +1128,9 @@ class ConfigManager {
         break;
       case 'huggingface':
         this.config.set('huggingface', { ...this.config.get('huggingface'), defaultModel: model });
+        break;
+      case 'nanogpt':
+        this.config.set('nanogpt', { ...this.config.get('nanogpt'), defaultModel: model });
         break;
       case 'xai':
         this.config.set('xai', { ...this.config.get('xai'), defaultModel: model });
@@ -1141,6 +1182,7 @@ class ConfigManager {
         gemini: settings.apiKeys.gemini ? '***REDACTED***' : undefined,
         deepseek: settings.apiKeys.deepseek ? '***REDACTED***' : undefined,
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
+        nanogpt: settings.apiKeys.nanogpt ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1193,6 +1235,10 @@ DEEPSEEK_API_KEY=
 # Get your token at: https://huggingface.co/settings/tokens
 # HUGGINGFACE_API_KEY / HUGGINGFACE_TOKEN are also accepted as aliases.
 HF_TOKEN=
+
+# NanoGPT API Key (direct OpenAI-compatible API)
+# Docs and key management: https://docs.nano-gpt.com/authentication
+NANOGPT_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).

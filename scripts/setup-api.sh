@@ -22,9 +22,10 @@ echo "Choose your LLM provider:"
 echo "  1) OpenRouter (recommended - access to all models)"
 echo "  2) Anthropic (Claude direct)"
 echo "  3) OpenAI (GPT models)"
+echo "  4) NanoGPT (direct OpenAI-compatible API)"
 echo ""
 
-read -r -p "Enter choice [1-3]: " choice
+read -r -p "Enter choice [1-4]: " choice
 
 case $choice in
     1)
@@ -55,6 +56,16 @@ case $choice in
         {
             printf 'OPENAI_API_KEY=%s\n' "$api_key"
             printf 'LLM_PROVIDER=openai\n'
+        } > "$ENV_FILE"
+        ;;
+    4)
+        echo ""
+        echo "Get your NanoGPT API key at: https://nano-gpt.com/api"
+        read -rsp "Enter your NanoGPT API key: " api_key
+        echo ""
+        {
+            printf 'NANOGPT_API_KEY=%s\n' "$api_key"
+            printf 'LLM_PROVIDER=nanogpt\n'
         } > "$ENV_FILE"
         ;;
     *)

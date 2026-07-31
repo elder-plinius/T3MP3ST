@@ -5620,6 +5620,7 @@
                                     <option value="openrouter">OpenRouter · OpenAI-compatible</option>
                                     <option value="venice">Venice · OpenAI-compatible</option>
                                     <option value="openai">OpenAI · OpenAI-compatible</option>
+                                    <option value="nanogpt">NanoGPT · OpenAI-compatible</option>
                                     <option value="anthropic">Claude · Anthropic Messages API</option>
                                 </select>
                             </div>
@@ -9242,6 +9243,7 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
             openrouter: 'https://openrouter.ai/api/v1',
             venice: 'https://api.venice.ai/api/v1',
             openai: 'https://api.openai.com/v1',
+            nanogpt: 'https://nano-gpt.com/api/v1',
             anthropic: 'https://api.anthropic.com',
         };
         function uacProvider() { return document.getElementById('uacProvider')?.value || 'openrouter'; }

@@ -582,7 +582,7 @@ class AnthropicAdapter implements LLMProviderAdapter {
 
 class OpenAIAdapter implements LLMProviderAdapter {
   name = 'openai';
-  private config: LLMConfig;
+  protected config: LLMConfig;
 
   constructor(config: LLMConfig) {
     this.config = config;
@@ -680,6 +680,24 @@ class OpenAIAdapter implements LLMProviderAdapter {
         : undefined,
       finishReason: data.choices[0]?.finish_reason,
     };
+  }
+}
+
+// =============================================================================
+// NANOGPT ADAPTER
+// =============================================================================
+
+class NanoGPTAdapter extends OpenAIAdapter {
+  name = 'nanogpt';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'NanoGPT API key is required. Set NANOGPT_API_KEY. Docs: https://docs.nano-gpt.com/authentication',
+      };
+    }
+    return { valid: true };
   }
 }
 
@@ -1473,6 +1491,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config); // DeepSeek native API is OpenAI-compatible
       case 'huggingface':
         return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
+      case 'nanogpt':
+        return new NanoGPTAdapter(config);
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1773,6 +1793,12 @@ export function createHuggingFaceBackbone(apiKey?: string, model?: string): LLMB
   return new LLMBackbone(llmConfig);
 }
 
+export function createNanoGPTBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('nanogpt', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1803,7 +1829,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -1826,6 +1852,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('huggingface')) {
     return createHuggingFaceBackbone();
+  }
+  if (providers.includes('nanogpt')) {
+    return createNanoGPTBackbone();
   }
 
   // Default to mock if no API keys configured

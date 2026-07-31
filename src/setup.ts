@@ -288,6 +288,53 @@ async function setupHuggingFaceKey(): Promise<boolean> {
   }
 }
 
+async function setupNanoGPTKey(): Promise<boolean> {
+  console.log('');
+  showInfo('NanoGPT provides a direct OpenAI-compatible API with a live model catalog.');
+  showInfo('Get your API key at: ' + chalk.underline('https://nano-gpt.com/api'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your NanoGPT API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'nanogpt',
+      model: 'minimax/minimax-m2.7',
+      baseUrl: 'https://nano-gpt.com/api/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('nanogpt', apiKey);
+    showSuccess('NanoGPT API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupOpenAIKey(): Promise<boolean> {
   console.log('');
   showInfo('OpenAI provides access to GPT models.');
@@ -577,6 +624,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'huggingface',
         },
         {
+          name: `NanoGPT ${hasApiKey('nanogpt') ? chalk.green('(configured)') : chalk.gray('(direct OpenAI-compatible API)')}`,
+          value: 'nanogpt',
+        },
+        {
           name: `LiteLLM Proxy ${config.hasLiteLLMProxy() ? chalk.green('(configured)') : chalk.gray('(100+ providers via gateway)')}`,
           value: 'litellm',
         },
@@ -604,6 +655,9 @@ async function setupApiKeys(): Promise<void> {
       case 'huggingface':
         await setupHuggingFaceKey();
         break;
+      case 'nanogpt':
+        await setupNanoGPTKey();
+        break;
       case 'litellm':
         await setupLiteLLMProxy();
         break;
@@ -621,6 +675,7 @@ async function setupProvider(): Promise<void> {
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
   if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' });
   if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
+  if (hasApiKey('nanogpt')) configuredProviders.push({ name: 'NanoGPT', value: 'nanogpt' });
   if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   const { provider } = await inquirer.prompt([

@@ -43,6 +43,21 @@ describe('listProviderModels — OpenAI-compatible providers', () => {
     expect(models.map((m) => m.id)).toEqual(['llama-3.3-70b']);
     expect(f.mock.calls[0][0]).toBe('https://api.venice.ai/api/v1/models');
   });
+
+  it('uses NanoGPT canonical /api/v1/models with Bearer authentication', async () => {
+    const f = fakeFetch({ data: [{ id: 'minimax/minimax-m2.7' }] });
+    const models = await listProviderModels('nanogpt', {
+      baseUrl: 'https://nano-gpt.com/api/v1',
+      apiKey: 'sk-nano-test-key',
+      fetchImpl: f,
+    });
+
+    expect(models.map((m) => m.id)).toEqual(['minimax/minimax-m2.7']);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://nano-gpt.com/api/v1/models');
+    expect((init as { headers: Record<string, string> }).headers.Authorization)
+      .toBe('Bearer sk-nano-test-key');
+  });
 });
 
 describe('listProviderModels — Anthropic wire', () => {

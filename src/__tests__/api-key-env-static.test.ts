@@ -5,6 +5,9 @@ import { join } from 'path';
 const configSource = readFileSync(join(process.cwd(), 'src/config/index.ts'), 'utf8');
 const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
 const setupScript = readFileSync(join(process.cwd(), 'scripts/setup-api.sh'), 'utf8');
+const localAgentsSource = readFileSync(join(process.cwd(), 'src/agent/local-agents.ts'), 'utf8');
+const setupSource = readFileSync(join(process.cwd(), 'src/setup.ts'), 'utf8');
+const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8');
 
 function sourceBlock(startMarker: string, endMarker: string): string {
   const start = configSource.indexOf(startMarker);
@@ -58,9 +61,22 @@ describe('API key environment handling hardening', () => {
   it('exportConfig redacts every supported provider key slot', () => {
     const block = exportConfigBlock();
 
-    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'deepseek', 'huggingface', 'litellm']) {
+    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'deepseek', 'huggingface', 'nanogpt', 'litellm']) {
       expect(block).toContain(`${provider}: settings.apiKeys.${provider} ? '***REDACTED***' : undefined`);
     }
+  });
+
+  it('documents NanoGPT and strips its key before spawning local agent CLIs', () => {
+    const block = envTemplateBlock();
+
+    expect(block).toContain('NANOGPT_API_KEY=');
+    expect(setupScript).toContain("printf 'NANOGPT_API_KEY=%s\\n'");
+    expect(setupScript).toContain('LLM_PROVIDER=nanogpt');
+    expect(localAgentsSource).toContain("'NANOGPT_API_KEY'");
+    expect(setupSource).toContain("provider: 'nanogpt'");
+    expect(setupSource).toContain("setApiKey('nanogpt', apiKey)");
+    expect(uiSource).toContain('<option value="nanogpt">NanoGPT · OpenAI-compatible</option>');
+    expect(uiSource).toContain("nanogpt: 'https://nano-gpt.com/api/v1'");
   });
 
   it('ConfigManager uses env keys in-memory and does not persist imported env keys', () => {

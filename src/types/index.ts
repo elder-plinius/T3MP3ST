@@ -6,7 +6,7 @@
 // LLM CONFIGURATION
 // =============================================================================
 
-export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'codex' | 'mock' | 'local' | 'local-agent';
+export type LLMProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'codex' | 'mock' | 'local' | 'local-agent';
 
 export interface LLMConfig {
   provider: LLMProvider;
