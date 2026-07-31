@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dockerfile = fs.readFileSync(path.join(here, '..', 'tools', 'Dockerfile'), 'utf8');
+const smokeScript = fs.readFileSync(path.join(here, 'check-tools-image.sh'), 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -48,6 +49,11 @@ check(
 );
 check('image runtime user is operator', /^USER operator$/m.test(dockerfile));
 check('image runtime workdir is /work', /^WORKDIR \/work$/m.test(dockerfile));
+check(
+  'tools smoke avoids a login shell whose logout hook can mask success',
+  /docker run .* "\$IMAGE" bash -c '/.test(smokeScript) &&
+    !/docker run .* "\$IMAGE" bash -lc '/.test(smokeScript),
+);
 
 console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'}: ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

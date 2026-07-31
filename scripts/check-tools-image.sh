@@ -17,7 +17,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "Checking tools image: $IMAGE"
-docker run --rm --platform linux/amd64 "$IMAGE" bash -lc '
+docker run --rm --platform linux/amd64 "$IMAGE" bash -c '
   set -e
   fail=0
   for c in radare2 gdb objdump upx; do
