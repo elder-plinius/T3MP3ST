@@ -1290,6 +1290,45 @@ class CodexAdapter implements LLMProviderAdapter {
   }
 }
 
+// Claude Code's `--output-format json` envelope (requested only for agentId 'claude', see
+// localAgentChat in local-agents.ts). Carries REAL per-call token accounting straight from the
+// CLI — input/output tokens plus the prompt-cache creation/read tokens from Claude Code's own
+// bootstrap (CLAUDE.md, skills, MCP tool manifests), which a text-length estimate has no way to
+// see and which measured 4-25k tokens on a single trivial call in testing.
+interface ClaudeJsonEnvelope {
+  result?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+}
+
+/** Parse the envelope; null (not thrown) on anything unexpected so the caller can fall back. */
+function parseClaudeJsonEnvelope(raw: string): { content: string; usage: LLMResponse['usage'] } | null {
+  let json: ClaudeJsonEnvelope;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof json.result !== 'string') return null;
+  const u = json.usage || {};
+  const promptTokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+  const completionTokens = u.output_tokens || 0;
+  return { content: json.result, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
+}
+
+// Character-based fallback ONLY — used when the real envelope can't be parsed (older CLI,
+// unexpected output shape). Rough on purpose: the goal is to give AgentLoop's budget check SOME
+// number instead of a permanently-zero one, not to be precise.
+function estimateUsage(promptText: string, completionText: string): LLMResponse['usage'] {
+  const promptTokens = Math.ceil(promptText.length / 4);
+  const completionTokens = Math.ceil(completionText.length / 4);
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
 // Generic adapter that drives a CONNECTED local agent CLI (Claude Code / Codex / Hermes) as the LLM
 // backend — NO API key needed; each CLI uses its own login. The agent id travels in `config.model`,
 // optionally with an underlying model after a `::` separator ("claude::opus", "claude::claude-opus-4-8")
@@ -1329,7 +1368,13 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     const { agentId, agentModel } = this.parseAgentSpec();
     const prompt = this.formatPrompt(messages, options);
     const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
-    const content = (await localAgentChat(agentId, prompt, { model: agentModel, timeoutMs })).trim();
+    const raw = (await localAgentChat(agentId, prompt, { model: agentModel, timeoutMs })).trim();
+    // Claude requests --output-format json (see local-agents.ts) so this parses to REAL usage.
+    // Anything else (parse failure, or a non-claude agent) falls back to the raw text — claude
+    // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
+    const parsed = agentId === 'claude' ? parseClaudeJsonEnvelope(raw) : null;
+    const content = parsed ? parsed.content : raw;
+    const usage = parsed ? parsed.usage : (agentId === 'claude' ? estimateUsage(prompt, raw) : undefined);
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
@@ -1338,6 +1383,7 @@ class LocalAgentAdapter implements LLMProviderAdapter {
       model: `local-agent:${agentId}${agentModel ? '/' + agentModel : ''}`,
       finishReason: toolCalls?.length ? 'tool_calls' : 'stop',
       toolCalls,
+      usage,
     };
   }
 }

@@ -469,7 +469,10 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
   let outFile: string | null = null;
   let workDir: string | null = null;
   if (id === 'claude') {
-    args = ['-p', '--output-format', 'text', ...(model ? ['--model', model] : [])];
+    // json (not text): the envelope carries REAL per-call token usage (input/output tokens
+    // plus prompt-cache creation/read) that LocalAgentAdapter.chat() parses to drive
+    // AgentLoop's token budget check. text mode reports no usage at all.
+    args = ['-p', '--output-format', 'json', ...(model ? ['--model', model] : [])];
   } else if (id === 'codex') {
     workDir = mkdtempSync(join(tmpdir(), 't3mp3st-codexllm-'));
     outFile = join(workDir, 'reply.txt');
