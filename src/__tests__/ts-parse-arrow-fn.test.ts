@@ -162,6 +162,19 @@ describe('typed parameters (TS dialects)', () => {
   });
 });
 
+describe('JSX (.tsx)', () => {
+  it('extracts an arrow-bound React component and its handler', () => {
+    const src =
+      'const Panel = ({ url }: Props) => {\n' +
+      '  const onSubmit = (e) => fetch(url);\n' +
+      '  return <form onSubmit={onSubmit} />;\n' +
+      '};\n';
+    const blocks = parseFileMultiLang('p.tsx', src, '.tsx');
+    expect(blocks.map((b) => b.name).sort()).toEqual(['Panel', 'onSubmit']);
+    expect(blocks.find((b) => b.name === 'onSubmit')!.params).toEqual(['e']);
+  });
+});
+
 describe('arrow-bound definitions reach the security pipeline (#141 headline)', () => {
   function repo(): string {
     const root = mkdtempSync(join(tmpdir(), 'arrowfn-'));

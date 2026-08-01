@@ -24,6 +24,43 @@ export interface GrammarEntry {
 }
 
 /**
+ * A JS/TS function *value* — arrow or function-expression — in the three param
+ * shapes the grammars expose: a parenthesized list, a single un-parenthesized
+ * arrow parameter (`x => …`), and a function expression (named or not). Every
+ * branch binds `@params`, so the caller always gets the parameter names the
+ * risky-parameter heuristic keys on.
+ */
+const JS_FN_VALUE = `[(arrow_function parameters: (formal_parameters) @params)
+                      (arrow_function parameter: (identifier) @params)
+                      (function_expression parameters: (formal_parameters) @params)]`;
+
+/**
+ * The JS/TS shapes that bind a name to a function value. Declarations alone miss
+ * these, which is idiomatic modern JS/TS — `const f = () => …`,
+ * `module.exports.handler = …`, route tables, class-field handlers — so their
+ * sinks went unranked (issue #141). Property-assigned and object-literal forms
+ * are named by the property, consistent with how `method_definition` is named:
+ * it is the name the call graph and the entry-point heuristic match on.
+ *
+ * Deliberately NOT matched — no direct name-to-function binding, and guessing
+ * one is worse than honest absence: HOC-wrapped definitions
+ * (`const h = withAuth(async (req) => …)`, value is a `call_expression`) and
+ * anonymous callbacks (`app.get('/x', (req, res) => …)`).
+ *
+ * The class-field node differs by dialect — `field_definition` with a `property`
+ * field (js) vs `public_field_definition` with a `name` field (ts/tsx) — so both
+ * are parameters.
+ */
+const jsNamedFnValues = (fieldNode: string, fieldNameLabel: string): string => `
+      (variable_declarator name: (identifier) @name value: ${JS_FN_VALUE}) @def
+      (assignment_expression
+        left: [(identifier) @name (member_expression property: (property_identifier) @name)]
+        right: ${JS_FN_VALUE}) @def
+      (pair key: (property_identifier) @name value: ${JS_FN_VALUE}) @def
+      (${fieldNode} ${fieldNameLabel}: (property_identifier) @name value: ${JS_FN_VALUE}) @def
+`;
+
+/**
  * Per-extension spec: which prebuilt wasm (from tree-sitter-wasms) and the
  * tree-sitter query capturing function/method/class definitions. Every pattern
  * binds `@name` (the identifier) and `@def` (the whole definition node);
@@ -43,7 +80,7 @@ const SPECS: Record<string, { wasm: string; lang: string; query: string }> = {
       (function_declaration name: (identifier) @name parameters: (formal_parameters) @params) @def
       (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params) @def
       (class_declaration name: (identifier) @name) @def
-    `,
+    ` + jsNamedFnValues('field_definition', 'property'),
   },
   '.ts': {
     wasm: 'tree-sitter-typescript', lang: 'ts',
@@ -51,7 +88,7 @@ const SPECS: Record<string, { wasm: string; lang: string; query: string }> = {
       (function_declaration name: (identifier) @name parameters: (formal_parameters) @params) @def
       (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params) @def
       (class_declaration name: (type_identifier) @name) @def
-    `,
+    ` + jsNamedFnValues('public_field_definition', 'name'),
   },
   '.tsx': {
     wasm: 'tree-sitter-tsx', lang: 'ts',
@@ -59,7 +96,7 @@ const SPECS: Record<string, { wasm: string; lang: string; query: string }> = {
       (function_declaration name: (identifier) @name parameters: (formal_parameters) @params) @def
       (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params) @def
       (class_declaration name: (type_identifier) @name) @def
-    `,
+    ` + jsNamedFnValues('public_field_definition', 'name'),
   },
   '.go': {
     wasm: 'tree-sitter-go', lang: 'go',

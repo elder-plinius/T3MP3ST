@@ -16,12 +16,13 @@
  * or code imported from outside the scan scope, is invisible. Do NOT describe this as
  * "any repo" or "any language".
  *
- * KNOWN v1 EXTRACTION LIMITS (fail-safe — these shapes are silently NOT extracted or
+ * KNOWN EXTRACTION LIMITS (fail-safe — these shapes are silently NOT extracted or
  * under-linked, never mis-extracted; all strictly better than the prior Python-only
  * ingest, and tracked as follow-ups):
- *   - JS/TS: only `function`/`method`/`class` declarations are captured. Arrow-function
- *     and function-expression definitions (`const f = () => …`) are not — idiomatic in
- *     modern TS, so their sinks may go unranked.
+ *   - JS/TS: declarations plus name-bound function values (`const f = () => …`,
+ *     `obj.f = …`, `{ f: … }`, class-field arrows) are captured. Definitions with no
+ *     name-to-function binding are not: HOC-wrapped values (`const h = withAuth(fn)`)
+ *     and anonymous callbacks (`app.get('/x', (req, res) => …)`).
  *   - C++: only free functions are captured. In-class and out-of-line (`Class::method`)
  *     member methods are not — a materially narrower C++ story than "full support".
  *   - Entry-point elevation for non-Python code relies on name heuristics only; no
