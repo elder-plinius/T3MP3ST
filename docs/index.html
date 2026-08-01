@@ -26365,7 +26365,8 @@ Be specific and actionable. Format as structured JSON.`;
       + pill(status, color)
       + (connected ? '<button onclick="setActiveLocalAgent(\''+a.id+'\')" title="Drive this agent as the LLM backbone for missions and analysis" style="padding:6px 11px;font-size:11px;font-weight:700;background:'+(isActive?'linear-gradient(135deg,#2fd6ff,#5b8cff)':'rgba(255,255,255,0.06)')+';border:1px solid '+(isActive?'transparent':'rgba(0,200,255,0.3)')+';border-radius:6px;color:'+(isActive?'#001624':'#bcd')+';cursor:pointer;white-space:nowrap;">'+(isActive?'★ Active':'☆ Use')+'</button>' : '')
       + (a.ready ? '<button onclick="pingOneLocalAgent(\''+a.id+'\')" title="send a real one-shot to verify it actually responds (spends a little quota)" style="padding:6px 11px;font-size:11px;font-weight:600;background:rgba(255,255,255,0.06);border:1px solid rgba(0,200,255,0.3);border-radius:6px;color:#bcd;cursor:pointer;white-space:nowrap;">Test</button>' : '')
-      + (a.ready ? '<button onclick="connectOneLocalAgent(\''+a.id+'\')" style="padding:6px 13px;font-size:11px;font-weight:700;background:'+(connected?'rgba(var(--brand-rgb),0.12)':'linear-gradient(135deg,#2fd6ff,#5b8cff)')+';border:'+(connected?'1px solid rgba(var(--brand-rgb),0.4)':'none')+';border-radius:6px;color:'+(connected?'var(--brand)':'#001624')+';cursor:pointer;white-space:nowrap;">'+(connected?'✓ Connected':'Connect')+'</button>' : '')
+      + (connected ? '<button onclick="disconnectLocalAgent(\''+a.id+'\')" title="Disconnect this agent and remove its saved reconnect preference" style="padding:6px 13px;font-size:11px;font-weight:700;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.4);border-radius:6px;color:#ff8a8a;cursor:pointer;white-space:nowrap;">Disconnect</button>'
+                   : (a.ready ? '<button onclick="connectOneLocalAgent(\''+a.id+'\')" style="padding:6px 13px;font-size:11px;font-weight:700;background:linear-gradient(135deg,#2fd6ff,#5b8cff);border:none;border-radius:6px;color:#001624;cursor:pointer;white-space:nowrap;">Connect</button>' : ''))
     + '</div>';
   }
 
@@ -26494,6 +26495,22 @@ Be specific and actionable. Format as structured JSON.`;
     connect(ids, true);
   };
   window.connectOneLocalAgent = function(id) { connect([id]); };
+
+  window.disconnectLocalAgent = async function(id) {
+    try {
+      const data = await api('/api/agents/local/disconnect', { id: id });
+      delete pingStatus[id];
+      const ids = Array.isArray(data.connected) ? data.connected : connectedIds.filter(function(x){ return x !== id; });
+      if (getActiveAgent() === id) setActiveAgentStored('');
+      persistConnected(ids);
+      render(lastDetected, ids);
+      if (window.toast) toast(id+' disconnected', 'success');
+      if (typeof window.refreshSystemStatus === 'function') window.refreshSystemStatus();
+      if (typeof updatePreflightChecklist === 'function') { try { updatePreflightChecklist(); } catch(e) {} }
+    } catch(e) {
+      if (window.toast) toast('Disconnect failed: '+e.message, 'error');
+    }
+  };
 
   // Pin (or unpin) which connected agent drives missions + analysis as the LLM backbone.
   // Clicking the active one again clears the pin (back to the auto codex→hermes→claude order).

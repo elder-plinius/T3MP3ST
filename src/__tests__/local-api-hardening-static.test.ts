@@ -108,6 +108,14 @@ describe('local API authorization hardening invariants', () => {
     expect(uiSource).toMatch(/\['codex', 'mock', 'local', 'local-agent'\]/);
   });
 
+  it('Settings can disconnect a local agent without silently reconnecting it', () => {
+    expect(uiSource).toMatch(/onclick="disconnectLocalAgent\(\\'/);
+    expect(uiSource).toContain("api('/api/agents/local/disconnect', { id: id })");
+    expect(uiSource).toContain("if (getActiveAgent() === id) setActiveAgentStored('')");
+    expect(uiSource).toContain('persistConnected(ids)');
+    expect(uiSource).toContain('delete pingStatus[id]');
+  });
+
   it('Full Auto resumes with the exact approved receipt instead of minting another', () => {
     const start = uiSource.indexOf('async function generalFullAuto(');
     const end = uiSource.indexOf('/**\n         * REQUEST SITREP', start);
