@@ -1305,8 +1305,8 @@ interface ClaudeJsonEnvelope {
   };
 }
 
-/** Parse the envelope; null (not thrown) on anything unexpected so the caller can fall back. */
-function parseClaudeJsonEnvelope(raw: string): { content: string; usage: LLMResponse['usage'] } | null {
+/** Parse the envelope; invalid usage is omitted so the caller can retain content and estimate. */
+function parseClaudeJsonEnvelope(raw: string): { content: string; usage?: LLMResponse['usage'] } | null {
   let json: ClaudeJsonEnvelope;
   try {
     json = JSON.parse(raw);
@@ -1315,8 +1315,14 @@ function parseClaudeJsonEnvelope(raw: string): { content: string; usage: LLMResp
   }
   if (typeof json.result !== 'string') return null;
   const u = json.usage || {};
-  const promptTokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
-  const completionTokens = u.output_tokens || 0;
+  const tokenValues = [u.input_tokens, u.output_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens];
+  if (!tokenValues.some((v) => v !== undefined)
+      || tokenValues.some((v) => v !== undefined && (!Number.isFinite(v) || v < 0))) {
+    return { content: json.result };
+  }
+  const promptTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  const completionTokens = u.output_tokens ?? 0;
+  if (promptTokens + completionTokens === 0) return { content: json.result };
   return { content: json.result, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
 }
 
@@ -1374,7 +1380,9 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
     const parsed = agentId === 'claude' ? parseClaudeJsonEnvelope(raw) : null;
     const content = parsed ? parsed.content : raw;
-    const usage = parsed ? parsed.usage : (agentId === 'claude' ? estimateUsage(prompt, raw) : undefined);
+    const usage = agentId === 'claude'
+      ? (parsed?.usage ?? estimateUsage(prompt, parsed?.content ?? raw))
+      : undefined;
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;

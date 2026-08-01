@@ -34,6 +34,7 @@ const TOOLS = [{
   parameters: { type: 'object' as const, properties: { target: { type: 'string' } }, required: ['target'] },
 }];
 const localBackbone = () => new LLMBackbone({ provider: 'local-agent', model: 'codex' } as never);
+const claudeBackbone = () => new LLMBackbone({ provider: 'local-agent', model: 'claude' } as never);
 const codexBackbone = () => new LLMBackbone({ provider: 'codex', model: 'codex-default' } as never);
 
 describe('parseTextToolCalls — happy path + drift tolerance', () => {
@@ -133,6 +134,64 @@ describe('local-agent backbone surfaces toolCalls (keyless-path fix)', () => {
       .chat([{ role: 'user', content: 'hello' }]);
     expect(cli.mock.calls.at(-1)?.[0]).toBe('claude');
     expect(cli.mock.calls.at(-1)?.[2]?.model).toBeUndefined();
+  });
+});
+
+describe('Claude local-agent usage accounting (#139)', () => {
+  it('extracts content and aggregates real input, output, and cache token usage', async () => {
+    cli.mockResolvedValueOnce(JSON.stringify({
+      result: 'done',
+      usage: {
+        input_tokens: 11,
+        output_tokens: 7,
+        cache_creation_input_tokens: 13,
+        cache_read_input_tokens: 17,
+      },
+    }));
+
+    const res = await claudeBackbone().chat([{ role: 'user', content: 'hello' }]);
+
+    expect(res.content).toBe('done');
+    expect(res.usage).toEqual({ promptTokens: 41, completionTokens: 7, totalTokens: 48 });
+  });
+
+  it.each([
+    ['missing', { result: 'fallback' }],
+    ['empty', { result: 'fallback', usage: {} }],
+    ['zero', { result: 'fallback', usage: { input_tokens: 0, output_tokens: 0 } }],
+    ['malformed', { result: 'fallback', usage: { input_tokens: 'many', output_tokens: 2 } }],
+    ['negative', { result: 'fallback', usage: { input_tokens: -1, output_tokens: 2 } }],
+  ])('retains envelope content and estimates when usage is %s', async (_case, envelope) => {
+    cli.mockResolvedValueOnce(JSON.stringify(envelope));
+
+    const res = await claudeBackbone().chat([{ role: 'user', content: 'hello' }]);
+
+    expect(res.content).toBe('fallback');
+    expect(res.usage?.promptTokens).toBeGreaterThan(0);
+    expect(res.usage?.completionTokens).toBe(Math.ceil('fallback'.length / 4));
+    expect(res.usage?.totalTokens).toBe((res.usage?.promptTokens || 0) + (res.usage?.completionTokens || 0));
+  });
+
+  it('estimates usage and preserves raw content when the CLI does not return JSON', async () => {
+    cli.mockResolvedValueOnce('plain reply');
+
+    const res = await claudeBackbone().chat([{ role: 'user', content: 'hello' }]);
+
+    expect(res.content).toBe('plain reply');
+    expect(res.usage?.totalTokens).toBeGreaterThan(0);
+  });
+
+  it('parses tool calls from the JSON result rather than the envelope', async () => {
+    cli.mockResolvedValueOnce(JSON.stringify({
+      result: '{"tool_calls":[{"name":"nmap_scan","arguments":{"target":"x"}}]}',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    }));
+
+    const res = await claudeBackbone().chatWithTools([{ role: 'user', content: 'scan' }], TOOLS as never);
+
+    expect(res.toolCalls?.[0]?.name).toBe('nmap_scan');
+    expect(res.finishReason).toBe('tool_calls');
+    expect(res.usage?.totalTokens).toBe(15);
   });
 });
 
