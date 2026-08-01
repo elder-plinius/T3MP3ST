@@ -20,9 +20,10 @@
  * under-linked, never mis-extracted; all strictly better than the prior Python-only
  * ingest, and tracked as follow-ups):
  *   - JS/TS: declarations plus name-bound function values (`const f = () => …`,
- *     `obj.f = …`, `{ f: … }`, class-field arrows) are captured. Definitions with no
- *     name-to-function binding are not: HOC-wrapped values (`const h = withAuth(fn)`)
- *     and anonymous callbacks (`app.get('/x', (req, res) => …)`).
+ *     `obj.f = …`, `{ f: … }`, class-field arrows incl. `#private`) are captured.
+ *     Definitions with no name-to-function binding are not: HOC-wrapped values
+ *     (`const h = withAuth(fn)`) and anonymous callbacks
+ *     (`app.get('/x', (req, res) => …)`).
  *   - C++: only free functions are captured. In-class and out-of-line (`Class::method`)
  *     member methods are not — a materially narrower C++ story than "full support".
  *   - Entry-point elevation for non-Python code relies on name heuristics only; no

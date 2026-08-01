@@ -49,7 +49,9 @@ const JS_FN_VALUE = `[(arrow_function parameters: (formal_parameters) @params)
  *
  * The class-field node differs by dialect — `field_definition` with a `property`
  * field (js) vs `public_field_definition` with a `name` field (ts/tsx) — so both
- * are parameters.
+ * are parameters. A `#private` field uses a different identifier node in both
+ * dialects; it is captured too (name keeps the `#`), since a sink in a private
+ * handler is exactly as dangerous as one in a public handler.
  */
 const jsNamedFnValues = (fieldNode: string, fieldNameLabel: string): string => `
       (variable_declarator name: (identifier) @name value: ${JS_FN_VALUE}) @def
@@ -57,7 +59,8 @@ const jsNamedFnValues = (fieldNode: string, fieldNameLabel: string): string => `
         left: [(identifier) @name (member_expression property: (property_identifier) @name)]
         right: ${JS_FN_VALUE}) @def
       (pair key: (property_identifier) @name value: ${JS_FN_VALUE}) @def
-      (${fieldNode} ${fieldNameLabel}: (property_identifier) @name value: ${JS_FN_VALUE}) @def
+      (${fieldNode} ${fieldNameLabel}: [(property_identifier) @name (private_property_identifier) @name]
+        value: ${JS_FN_VALUE}) @def
 `;
 
 /**

@@ -162,6 +162,32 @@ describe('typed parameters (TS dialects)', () => {
   });
 });
 
+describe('private class fields', () => {
+  it('extracts a #private field arrow (a sink there is as dangerous as a public one)', () => {
+    const src = 'class C { #handler = (x) => eval(x); pub = (y) => y; }\n';
+    for (const [ext, path] of [
+      ['.js', 'c.js'],
+      ['.ts', 'c.ts'],
+      ['.tsx', 'c.tsx'],
+    ] as const) {
+      const names = parseFileMultiLang(path, src, ext).map((b) => b.name).sort();
+      expect(names, `blocks in ${ext}`).toEqual(['#handler', 'C', 'pub']);
+    }
+  });
+});
+
+describe('same-line duplicate names get distinct ids', () => {
+  it('disambiguates two same-named definitions on one line (minified-bundle shape)', () => {
+    // `path::name@line` alone collides here, and a colliding id silently merges
+    // the two blocks' call-graph entries — one carrying a sink, one not.
+    const src = 'const a = { send: (u) => fetch(u) }; const b = { send: (u) => log(u) };\n';
+    const blocks = parseFileMultiLang('bundle.min.js', src, '.js').filter((x) => x.name === 'send');
+    expect(blocks).toHaveLength(2);
+    expect(new Set(blocks.map((x) => x.id)).size).toBe(2);
+    expect(blocks[0].id).toBe('bundle.min.js::send@1'); // first keeps the plain id
+  });
+});
+
 describe('JSX (.tsx)', () => {
   it('extracts an arrow-bound React component and its handler', () => {
     const src =

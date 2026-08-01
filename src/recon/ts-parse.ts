@@ -111,10 +111,20 @@ export function parseFileMultiLang(
       return [];
     }
     const blocks: CodeBlock[] = [];
+    // A block id is `path::name@line`, so two same-named definitions starting on
+    // the SAME line collide — and a colliding id silently merges their call-graph
+    // entries downstream (buildCallGraph keys on id). Rare for declarations, but
+    // routine once value-bound functions are extracted: minified/bundled JS packs
+    // many `{ handler: … }` / `x.send = …` onto one line. Disambiguate the later
+    // one by column; the first keeps the plain id, so no existing id changes.
+    const seen = new Set<string>();
     for (const match of g.query.matches(tree.rootNode)) {
       const caps: Record<string, Node> = {};
       for (const c of match.captures) caps[c.name] = c.node;
-      blocks.push(nodeToCodeBlock(caps.def, caps.name, caps.params, path, g.lang));
+      const block = nodeToCodeBlock(caps.def, caps.name, caps.params, path, g.lang);
+      if (seen.has(block.id)) block.id = `${block.id}:${caps.def.startPosition.column}`;
+      seen.add(block.id);
+      blocks.push(block);
     }
     return blocks;
   } catch {
