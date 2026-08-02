@@ -11,7 +11,7 @@ import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'orcarouter' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -22,6 +22,7 @@ export interface TempestSettings {
   apiKeys: {
     openrouter?: string;
     venice?: string;
+    orcarouter?: string;
     anthropic?: string;
     openai?: string;
     xai?: string;
@@ -47,6 +48,12 @@ export interface TempestSettings {
 
   // Venice AI — OpenAI-compatible, privacy-focused (same wire shape as OpenRouter)
   venice: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // OrcaRouter — OpenAI-compatible gateway that routes any mainstream model via one endpoint
+  orcarouter: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -149,6 +156,13 @@ const DEFAULT_SETTINGS: TempestSettings = {
   venice: {
     baseUrl: 'https://api.venice.ai/api/v1',
     defaultModel: 'llama-3.3-70b',
+  },
+
+  // OrcaRouter — OpenAI-compatible multi-model gateway (base URL ends at /v1, so the
+  // OpenAIAdapter posts to https://api.orcarouter.ai/v1/chat/completions).
+  orcarouter: {
+    baseUrl: 'https://api.orcarouter.ai/v1',
+    defaultModel: 'anthropic/claude-sonnet-4.6',
   },
 
   anthropic: {
@@ -577,6 +591,43 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
+  // OrcaRouter routes mainstream model ids through one OpenAI-compatible endpoint
+  // (https://api.orcarouter.ai/v1); any id in its catalog can be passed via config/CLI
+  // model arg — these are just curated, tool-capable defaults.
+  orcarouter: [
+    {
+      id: 'anthropic/claude-sonnet-4.6',
+      name: 'Claude Sonnet 4.6 (OrcaRouter)',
+      provider: 'Anthropic',
+      contextWindow: 200000,
+      maxOutput: 32000,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'complex-tasks', 'agents', 'tools'],
+    },
+    {
+      id: 'anthropic/claude-haiku-4.5',
+      name: 'Claude Haiku 4.5 (OrcaRouter)',
+      provider: 'Anthropic',
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'fast', 'tools'],
+    },
+    {
+      id: 'openai/gpt-5.4-mini',
+      name: 'GPT-5.4 Mini (OrcaRouter)',
+      provider: 'OpenAI',
+      contextWindow: 400000,
+      maxOutput: 128000,
+      capabilities: ['reasoning', 'code', 'analysis', 'fast', 'tools'],
+    },
+    {
+      id: 'google/gemini-3.5-flash',
+      name: 'Gemini 3.5 Flash (OrcaRouter)',
+      provider: 'Google',
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'multimodal', 'fast', 'tools'],
+    },
+  ],
   // Full HF repo ids for the OpenAI-compatible Inference Providers router. Any model
   // served by an HF inference provider can be passed via config/CLI/model arg — these
   // are just curated, tool-capable defaults.
@@ -729,7 +780,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'orcarouter', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -825,6 +876,7 @@ class ConfigManager {
     const envVarMap = {
       openrouter: 'OPENROUTER_API_KEY',
       venice: 'VENICE_API_KEY',
+      orcarouter: 'ORCAROUTER_API_KEY',
       anthropic: 'ANTHROPIC_API_KEY',
       openai: 'OPENAI_API_KEY',
       xai: 'XAI_API_KEY',
@@ -893,6 +945,7 @@ class ConfigManager {
 
     if (this.hasApiKey('openrouter')) providers.push('openrouter');
     if (this.hasApiKey('venice')) providers.push('venice');
+    if (this.hasApiKey('orcarouter')) providers.push('orcarouter');
     if (this.hasApiKey('anthropic')) providers.push('anthropic');
     if (this.hasApiKey('openai')) providers.push('openai');
     if (this.hasApiKey('xai')) providers.push('xai');
@@ -940,6 +993,12 @@ class ConfigManager {
         apiKey = this.getApiKey('venice');
         baseUrl = this.config.get('venice').baseUrl;
         actualModel = model || this.config.get('venice').defaultModel;
+        break;
+      case 'orcarouter':
+        // OrcaRouter — OpenAI-compatible multi-model gateway.
+        apiKey = this.getApiKey('orcarouter');
+        baseUrl = this.config.get('orcarouter').baseUrl;
+        actualModel = model || this.config.get('orcarouter').defaultModel;
         break;
       case 'anthropic':
         apiKey = this.getApiKey('anthropic');
@@ -1052,7 +1111,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt') => {
+    const add = (p: 'openrouter' | 'venice' | 'orcarouter' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1064,6 +1123,7 @@ class ConfigManager {
     };
     add('openrouter');
     add('venice');
+    add('orcarouter');
     add('litellm');
     add('anthropic');
     add('openai');
@@ -1088,6 +1148,9 @@ class ConfigManager {
         break;
       case 'venice':
         this.config.set('defaultModel', this.config.get('venice').defaultModel);
+        break;
+      case 'orcarouter':
+        this.config.set('defaultModel', this.config.get('orcarouter').defaultModel);
         break;
       case 'anthropic':
         this.config.set('defaultModel', this.config.get('anthropic').defaultModel);
@@ -1132,6 +1195,9 @@ class ConfigManager {
         break;
       case 'venice':
         this.config.set('venice', { ...this.config.get('venice'), defaultModel: model });
+        break;
+      case 'orcarouter':
+        this.config.set('orcarouter', { ...this.config.get('orcarouter'), defaultModel: model });
         break;
       case 'anthropic':
         this.config.set('anthropic', { ...this.config.get('anthropic'), defaultModel: model });

@@ -73,7 +73,7 @@ In the War Room, open **Settings** and connect a local agent (Claude Code / Code
 Prefer to bring a key? Set one and skip the connect step:
 
 ```bash
-export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
+export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ORCAROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
 export XAI_API_KEY=...            # Grok Build (grok-build-0.1) — xAI's coding model, native tool-calling
 ```
 
@@ -296,7 +296,7 @@ Operators map to MITRE ATT&CK and Cyber Kill Chain phases (recon is live; later 
 | **Coordinator** | Command & Control | TA0011 | mission control, orchestration |
 | **Analyst** | Analysis | — | pattern analysis, reporting |
 
-**Providers:** OpenRouter, Venice, Anthropic, OpenAI, or a keyless local agent (Claude Code / Codex / Hermes / OpenCode / Oh My Pi). Set `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `ANTHROPIC_API_KEY`, or connect an agent in Settings.
+**Providers:** OpenRouter, Venice, OrcaRouter, Anthropic, OpenAI, or a keyless local agent (Claude Code / Codex / Hermes / OpenCode / Oh My Pi). Set `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `ORCAROUTER_API_KEY` / `ANTHROPIC_API_KEY`, or connect an agent in Settings.
 
 **Integrations:** `node dist/mcp-server.js` exposes `security_recon` to MCP-aware agents. `npm run server` starts the HTTP API (`POST /api/mission/start`, `GET /api/mission/status`, and more). Full reference in [docs/](docs/).
 
