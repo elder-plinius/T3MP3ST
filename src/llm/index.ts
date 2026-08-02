@@ -1353,7 +1353,7 @@ function estimateUsage(promptText: string, completionText: string): LLMResponse[
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }
 
-// Generic adapter that drives a CONNECTED local agent CLI (Claude Code / Codex / Hermes) as the LLM
+// Generic adapter that drives a connected local agent CLI as the LLM
 // backend — NO API key needed; each CLI uses its own login. The agent id travels in `config.model`,
 // optionally with an underlying model after a `::` separator ("claude::opus", "claude::claude-opus-4-8")
 // so the operator can pick WHICH model the local CLI runs (passed through as the CLI's --model/-m flag).
@@ -1371,7 +1371,7 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     return { agentId, agentModel };
   }
   validateConfig(): { valid: boolean; error?: string } {
-    return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes)' };
+    return this.config.model ? { valid: true } : { valid: false, error: 'local-agent requires the agent id in `model` (codex|claude|hermes|opencode|omp)' };
   }
   private formatPrompt(messages: LLMMessage[], options?: ChatOptions): string {
     const parts = [

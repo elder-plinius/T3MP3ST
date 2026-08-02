@@ -6290,7 +6290,7 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     : resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
   const effectiveKey = missionLLMConfig.apiKey;
   if (providerNeedsApiKey(missionLLMConfig.provider) && !effectiveKey) {
-    res.status(400).json({ error: 'API key required — pass apiKey, configure one on the server, or connect a local agent (Claude Code / Codex / Hermes)' });
+    res.status(400).json({ error: 'API key required — pass apiKey, configure one on the server, or connect a supported local agent' });
     return;
   }
   if (missionLLMConfig.provider === 'local-agent') {
@@ -6818,8 +6818,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
 } {
   const defaultConfig = config.getLLMConfig();
   const selectedProvider = provider || defaultConfig.provider;
-  // Local-agent backends (Claude Code / Codex / Hermes via the connector) need NO API key — the
-  // agent uses its own login. The agent id (codex|claude|hermes) travels in `model`.
+  // Local-agent backends use their own CLI login and need no T3MP3ST API key.
   if (selectedProvider === 'local-agent') {
     return {
       provider: 'local-agent' as any,
@@ -7805,7 +7804,7 @@ app.get('/api/bounty/credentials', (_req: Request, res: Response) => {
 });
 
 // =============================================================================
-// LOCAL AGENT CONNECTORS — bring-your-own already-authed CLIs (Claude Code / Codex / Hermes)
+// LOCAL AGENT CONNECTORS — bring-your-own already-authed CLIs
 // =============================================================================
 // Detect agent CLIs that are already installed + logged-in on this machine and enlist them as
 // operators — no keys are entered or read (auth is detected by artifact PRESENCE only; see

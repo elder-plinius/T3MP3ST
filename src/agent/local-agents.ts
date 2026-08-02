@@ -2,7 +2,7 @@
 // LOCAL AGENT CONNECTORS — "bring your own already-authed agent"
 // =============================================================================
 // Detect + connect agent CLIs that already live, authenticated, on the operator's machine
-// (Claude Code, Codex, Hermes) and drive them headlessly as t3mp3st operators.
+// (Claude Code, Codex, Hermes, OpenCode, Oh My Pi) and drive them headlessly as t3mp3st operators.
 //
 // SECURITY POSTURE (important):
 //   - We NEVER read, print, log, or transmit credential contents. Auth is detected purely by the
@@ -80,7 +80,7 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export type LocalAgentId = 'claude' | 'codex' | 'hermes';
+export type LocalAgentId = 'claude' | 'codex' | 'hermes' | 'opencode' | 'omp';
 
 /** Apply an authoritative bulk selection; single-agent connects remain additive. */
 export function syncLocalAgentSelection<T>(
@@ -164,6 +164,30 @@ const SPECS: AgentSpec[] = [
     authArtifacts: ['~/.hermes/.env', "~/.hermes/auth.json", localAppData('hermes/.env'), localAppData('hermes/auth.json')],
     oneShot: (p, m) => ['-z', p, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(m ? ['-m', m] : [])],
   },
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    vendor: 'Anomaly',
+    bin: 'opencode',
+    blurb: 'Open-source coding agent CLI',
+    invokeHint: 'opencode run "<prompt>" (internal tools denied by T3MP3ST)',
+    versionArgs: ['--version'],
+    parseVersion: (o) => (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
+    authArtifacts: ['~/.local/share/opencode/auth.json', '~/.config/opencode/auth.json'],
+    oneShot: (p, m) => ['run', ...(m ? ['--model', m] : []), p],
+  },
+  {
+    id: 'omp',
+    label: 'Oh My Pi',
+    vendor: 'Oh My Pi',
+    bin: 'omp',
+    blurb: 'Oh My Pi coding agent CLI',
+    invokeHint: 'omp --no-tools -p "<prompt>"',
+    versionArgs: ['--version'],
+    parseVersion: (o) => (o.match(/[\d]+\.[\d]+(\.[\d]+)?/) || ['?'])[0],
+    authArtifacts: ['~/.omp/agent/agent.db'],
+    oneShot: (p, m) => ['--no-tools', '-p', ...(m ? ['--model', m] : []), p],
+  },
 ];
 
 export function getSpec(id: string): AgentSpec | undefined {
@@ -179,6 +203,13 @@ export function getSpec(id: string): AgentSpec | undefined {
  */
 export function hermesYoloEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test((process.env.T3MP3ST_HERMES_YOLO || '').trim());
+}
+
+/** OpenCode remains a planning backbone; Arsenal owns every executable tool action. */
+function agentChildEnv(id: string): NodeJS.ProcessEnv {
+  const env = childEnv();
+  if (id === 'opencode') env.OPENCODE_PERMISSION = JSON.stringify({ '*': 'deny' });
+  return env;
 }
 
 export interface AgentDetection {
@@ -213,6 +244,7 @@ const NEWLINE_RE = new RegExp('\\r?\\n');
 function wellKnownBinDirs(home: string): string[] {
   const dirs = [
     join(home, '.local', 'bin'),                       // Claude Code native installer, pipx, mise
+    join(home, '.opencode', 'bin'),                    // OpenCode native installer
     join(home, '.local', 'share', 'mise', 'shims'),    // mise
     join(home, '.asdf', 'shims'),                      // asdf
     '/opt/homebrew/bin',                               // Homebrew (Apple Silicon)
@@ -410,7 +442,7 @@ export function runLocalAgent(
   const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
   const maxChars = opts.maxChars ?? 4000;
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
-  const env = childEnv();
+  const env = agentChildEnv(id);
   const resolvedBin = resolveBin(spec.bin) || spec.bin;
   return new Promise((resolve) => {
     // stdin:'ignore' so the agent doesn't stall waiting on piped input (e.g. `claude -p`'s 3s stdin wait).
@@ -452,16 +484,16 @@ export function pingLocalAgent(id: string, prompt?: string, timeoutMs?: number):
 
 /**
  * Drive a connected agent as the LLM BACKEND for the mission/operator flow — a long-prompt one-shot
- * that returns ONLY the model's reply text (no CLI banner). Per-agent invocation: claude/codex feed
- * the prompt via STDIN (robust for long planning prompts), codex uses --output-last-message for a
- * clean reply, hermes takes the prompt as an arg. Provider keys are stripped so each CLI uses its own
+ * that returns ONLY the model's reply text (no CLI banner). Claude, Codex, OpenCode, and Oh My Pi feed
+ * the prompt via STDIN (robust for long planning prompts); Codex uses --output-last-message for a
+ * clean reply, while Hermes takes the prompt as an arg. Provider keys are stripped so each CLI uses its own
  * login (no API key needed). Throws on non-zero exit / timeout so the LLMBackbone retry/fallback fires.
  */
 export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
   const spec = getSpec(id);
   if (!spec) return Promise.reject(new Error(`unknown local agent: ${id}`));
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
-  const env = childEnv();
+  const env = agentChildEnv(id);
   const model = opts.model && opts.model !== 'codex-default' && opts.model !== id ? opts.model : undefined;
   const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
 
@@ -478,6 +510,12 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
     workDir = mkdtempSync(join(tmpdir(), 't3mp3st-codexllm-'));
     outFile = join(workDir, 'reply.txt');
     args = ['exec', '--ephemeral', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'read-only', '--output-last-message', outFile, ...(model ? ['-m', model] : [])];
+  } else if (id === 'opencode') {
+    args = ['run', ...(model ? ['--model', model] : [])];
+  } else if (id === 'omp') {
+    // Piped stdin selects OMP's one-shot print mode. Its own tools stay disabled so the model may
+    // request actions through T3MP3ST's text contract while Arsenal remains the execution boundary.
+    args = ['--no-tools', ...(model ? ['--model', model] : [])];
   } else { // hermes — takes the prompt as an arg
     args = ['-z', prompt, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(model ? ['-m', model] : [])];
     viaStdin = false;

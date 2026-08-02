@@ -24,6 +24,16 @@ const FAKE_CLI = '#!/bin/sh\necho "1.2.3"\n';
 // For the chat path, which writes the prompt to the child's stdin: drain it before replying so the
 // parent's write()/end() completes cleanly (no EPIPE races), then emit a clean, non-error reply.
 const FAKE_CLI_STDIN = '#!/bin/sh\ncat >/dev/null 2>&1\necho "1.2.3"\n';
+const FAKE_OPENCODE = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "opencode 1.2.3"; exit 0; fi
+prompt=$(cat)
+printf '%s\\n' "$OPENCODE_PERMISSION|$*|$prompt"
+`;
+const FAKE_OMP = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "omp 1.2.3"; exit 0; fi
+prompt=$(cat)
+printf '%s\\n' "$*|$prompt"
+`;
 const tmpDirs: string[] = [];
 const savedEnv = { PATH: process.env.PATH, AGENT_HOME: process.env.T3MP3ST_AGENT_HOME };
 
@@ -63,6 +73,7 @@ describe('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () 
   it.each([
     ['.asdf/shims'],
     ['.bun/bin'],
+    ['.opencode/bin'],
     ['.local/share/pnpm'],
   ])('resolves a CLI installed under the well-known dir %s', (rel) => {
     const home = scratch();
@@ -185,6 +196,24 @@ describe('detectLocalAgents — wiring: a well-known-dir CLI is reported install
     // codex/hermes are absent from this temp home → still not installed (no false positives).
     expect(agents.find((a) => a.id === 'codex')?.installed).toBe(false);
   });
+
+  it('detects authenticated OpenCode and Oh My Pi installations (#136)', async () => {
+    const home = scratch();
+    const binDir = join(home, '.local', 'bin');
+    putExe(binDir, 'opencode', FAKE_OPENCODE);
+    putExe(binDir, 'omp', FAKE_OMP);
+    mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    writeFileSync(join(home, '.local', 'share', 'opencode', 'auth.json'), '{}');
+    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'fixture');
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+    delete process.env.T3MP3ST_DISABLE_LOCAL_AGENTS;
+
+    const agents = await detectLocalAgents();
+    expect(agents.find((a) => a.id === 'opencode')).toMatchObject({ installed: true, authed: true, ready: true, version: '1.2.3' });
+    expect(agents.find((a) => a.id === 'omp')).toMatchObject({ installed: true, authed: true, ready: true, version: '1.2.3' });
+  });
 });
 
 describe('spawn call-sites use the resolved path (issue #78 — detected-but-unspawnable would be worse)', () => {
@@ -201,6 +230,28 @@ describe('spawn call-sites use the resolved path (issue #78 — detected-but-uns
     expect(res.output).toContain('1.2.3');
   });
 
+  it('keeps OpenCode tools denied on the one-shot ping/dispatch path (#136)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'opencode', FAKE_OPENCODE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const res = await runLocalAgent('opencode', 'ping', { model: 'openai/gpt-5', timeoutMs: 4000 });
+    expect(res.ok).toBe(true);
+    expect(res.output).toBe('{"*":"deny"}|run --model openai/gpt-5 ping|');
+  });
+
+  it('keeps Oh My Pi tools disabled on the one-shot ping/dispatch path (#136)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'omp', FAKE_OMP);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const res = await runLocalAgent('omp', 'ping', { model: 'anthropic/claude-sonnet-4-5', timeoutMs: 4000 });
+    expect(res.ok).toBe(true);
+    expect(res.output).toBe('--no-tools -p --model anthropic/claude-sonnet-4-5 ping|');
+  });
+
   it('localAgentChat launches the well-known-dir CLI (not the bare name)', async () => {
     const home = scratch();
     putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_STDIN);
@@ -208,5 +259,27 @@ describe('spawn call-sites use the resolved path (issue #78 — detected-but-uns
     process.env.PATH = '/usr/bin:/bin';
 
     await expect(localAgentChat('claude', 'ping', { timeoutMs: 4000 })).resolves.toContain('1.2.3');
+  });
+
+  it('drives OpenCode through stdin with model routing and all internal tools denied (#136)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'opencode', FAKE_OPENCODE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    await expect(localAgentChat('opencode', 'long planning prompt', {
+      model: 'anthropic/claude-sonnet-4-5', timeoutMs: 4000,
+    })).resolves.toBe('{"*":"deny"}|run --model anthropic/claude-sonnet-4-5|long planning prompt');
+  });
+
+  it('drives Oh My Pi through stdin with model routing and internal tools disabled (#136)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'omp', FAKE_OMP);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    await expect(localAgentChat('omp', 'long planning prompt', {
+      model: 'openai-codex/gpt-5', timeoutMs: 4000,
+    })).resolves.toBe('--no-tools --model openai-codex/gpt-5|long planning prompt');
   });
 });

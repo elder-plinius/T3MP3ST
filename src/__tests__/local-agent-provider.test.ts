@@ -15,7 +15,7 @@ describe("local-agent provider wiring (#118)", () => {
   });
 
   it('preserves any supported agent id passed as the model', () => {
-    for (const agent of ['codex', 'claude', 'hermes']) {
+    for (const agent of ['codex', 'claude', 'hermes', 'opencode', 'omp']) {
       const cfg = config.getLLMConfig('local-agent', agent);
       expect(cfg.provider).toBe('local-agent');
       expect(cfg.model).toBe(agent);
@@ -38,7 +38,7 @@ describe("local-agent provider wiring (#118)", () => {
 
   it('surfaces the connected-agent ids as available local-agent models', () => {
     expect(AVAILABLE_MODELS['local-agent']?.map(m => m.id)).toEqual(
-      expect.arrayContaining(['codex', 'claude', 'hermes']),
+      expect.arrayContaining(['codex', 'claude', 'hermes', 'opencode', 'omp']),
     );
   });
 });

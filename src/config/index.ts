@@ -638,7 +638,7 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   ],
   'local-agent': [
     // Connected local agent CLIs used AS the LLM backend — no API key (each uses its own login).
-    // The chosen agent id (codex|claude|hermes) travels in the `model` field.
+    // The chosen agent id (codex|claude|hermes|opencode|omp) travels in the `model` field.
     {
       id: 'codex',
       name: 'Codex (local CLI)',
@@ -662,6 +662,22 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       contextWindow: 32000,
       maxOutput: 8192,
       capabilities: ['reasoning', 'code', 'agents', 'local-cli'],
+    },
+    {
+      id: 'opencode',
+      name: 'OpenCode (local CLI)',
+      provider: 'LocalAgent',
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'local-cli'],
+    },
+    {
+      id: 'omp',
+      name: 'Oh My Pi (local CLI)',
+      provider: 'LocalAgent',
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'local-cli'],
     },
   ],
 };
@@ -975,7 +991,7 @@ class ConfigManager {
         break;
       case 'local-agent':
         // Keyless backbone: the mission is routed through a connected local CLI agent
-        // (Claude Code / Codex / Hermes), each using its own login — no API key or base
+        // (Claude Code / Codex / Hermes / OpenCode / Oh My Pi), each using its own login — no API key or base
         // URL. The chosen agent id travels in `model`, optionally with the selected
         // underlying model after "::" (for example "claude::opus").
         actualModel = model || 'claude';

@@ -26303,9 +26303,9 @@ Be specific and actionable. Format as structured JSON.`;
         });
     </script>
 <script>
-// ═══════════ Connect Local Agents — detect + enlist already-authed CLIs (Claude Code / Codex / Hermes) ═══════════
+// ═══════════ Connect Local Agents — detect + enlist already-authed CLIs ═══════════
 (function(){
-  const ICONS = { claude: '🟠', codex: '🟢', hermes: '🔵' };
+  const ICONS = { claude: '🟠', codex: '🟢', hermes: '🔵', opencode: '🟣', omp: '🟡' };
   let lastDetected = [];
   let connectedIds = [];
   const pingStatus = {};   // id -> { ok, latencyMs, error } from a real round-trip
@@ -26536,9 +26536,9 @@ Be specific and actionable. Format as structured JSON.`;
   }
   window.t3mpHasBackend = hasBackend;
   // Pick the best connected agent to serve as the mission LLM backend: prefer a live-pinged one, and
-  // prefer codex/hermes over claude (claude's standalone CLI is often auth-stale). Returns id | null.
+  // Use a stable preference order when the operator has not pinned a connected agent. Returns id | null.
   function preferredAgent(){
-    var order = ['codex','hermes','claude'];
+    var order = ['codex','opencode','omp','hermes','claude'];
     var connected = (connectedIds || []).slice();
     var live = connected.filter(function(id){ return pingStatus[id] && pingStatus[id].ok; });
     var pool = live;
