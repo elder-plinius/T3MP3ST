@@ -95,7 +95,9 @@
     "update": "node scripts/update.mjs",
     "update:dry": "node scripts/update.mjs --dry-run",
     "update:hard": "node scripts/update.mjs --hard",
-    "test:update": "node scripts/test-update.mjs"
+    "test:update": "node scripts/test-update.mjs",
+    "maintainer:check": "node scripts/sync-bt6-maintainer.mjs --check",
+    "maintainer:sync": "node scripts/sync-bt6-maintainer.mjs"
   },
   "bin": {
     "tempest": "./dist/cli.js",

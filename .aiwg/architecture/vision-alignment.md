@@ -1,7 +1,16 @@
 # Vision-to-Code Alignment Matrix
 
-**Reference:** `VISION.md`  
+**Reference:** `VISION.md`
 **Rule:** Alignment is directional; only code/tests/receipts establish implementation maturity.
+
+## Assessment Method
+
+- **Implemented:** Supported operational path with current code, deterministic shared-safety tests, and maintained documentation.
+- **Partial / experimental:** Working code or bounded benchmark evidence exists, but reliability, breadth, safety coverage, or support is incomplete.
+- **Research:** Evidence answers a defined research question but is not a supported general product contract.
+- **Future:** Direction is documented without an implemented, tested operational path.
+
+Evidence confidence is bounded by the cited source: source code establishes presence, tests establish behavior under their cases, and a receipt establishes only its declared corpus/harness/model/metric. No row is a substitute for a requirement, threat model, or release decision.
 
 | Vision vector | Current maturity | Current evidence | Gap / next architectural proof |
 | --- | --- | --- | --- |
@@ -20,3 +29,32 @@
 3. Promotion to stable requires deterministic safety tests, an operational path, documentation, and a reproducible receipt.
 4. Persistent autonomy, distributed execution, or shared knowledge services trigger new threat models and ADRs.
 5. The SAD is updated from implementation evidence; the vision is not reverse-engineered into fictitious components.
+
+## Promotion Checklist
+
+A capability may move toward stable only when all applicable items are evidenced:
+
+- [ ] User goal, acceptance behavior, and NFRs are identified.
+- [ ] Operational entry path and failure/rollback behavior are documented.
+- [ ] Shared authorization, scope, secret, evidence, and approval controls apply.
+- [ ] Deterministic positive and adversarial tests cover critical paths.
+- [ ] Benchmark/claim evidence is reproducible and scoped.
+- [ ] SAD/API/deployment/test documentation and traceability are updated.
+- [ ] Architecture, safety, test, and evaluation reviewers record approval.
+
+## Review Triggers
+
+Review this matrix when a public feature label changes, a benchmark/receipt is added or regraded, a new provider/tool/domain is exposed, a roadmap capability gains an operational path, or the SAD/ADRs change a maturity boundary. Persistent autonomy, distributed execution, hosted multi-tenancy, and shared knowledge services require new threat/architecture work before promotion.
+
+## References
+
+- @VISION.md — Directional research source.
+- @README.md — Primary product claims and maturity labels.
+- @FEATURES.md — Feature inventory and maturity surface.
+- @.aiwg/architecture/software-architecture-doc.md — Current implemented architecture.
+- @.aiwg/architecture/adr-004.md — Evidence-derived claims policy.
+- @.aiwg/architecture/adr-005.md — Current-state/vision separation decision.
+- @.aiwg/requirements/UC-005.md — Reproduction and maturity acceptance behavior.
+- @.aiwg/requirements/nfr-register.md — NFR-03 and NFR-09.
+- @scripts/verify-claims.mjs — Claim derivation implementation.
+- @src/__tests__/stub-honesty.test.ts — Stub/maturity regression evidence.

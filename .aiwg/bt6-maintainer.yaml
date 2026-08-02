@@ -1,0 +1,125 @@
+version: "1"
+project:
+  id: "t3mp3st"
+  displayName: "T3MP3ST"
+  family: "mixed"
+repository:
+  canonicalRemote: "upstream"
+  baseBranch: "main"
+  expectedSlug: "elder-plinius/T3MP3ST"
+  ciRemote: "upstream"
+tracker:
+  authorityRemote: "upstream"
+  provider: "github"
+  expectedActor: "jmagly"
+delivery:
+  requireCiGreen: true
+  requireCurrentHead: true
+  defaultMergeMethod: "squash"
+  allowedMergeMethods: ["squash"]
+validation:
+  quick:
+    - "npm run typecheck"
+  full:
+    - "npm test"
+  documentation:
+    - "npm run docs:check"
+  researchIntegrity:
+    - "npm run verify-claims"
+riskSurfaces:
+  - id: "provider-boundary"
+    paths:
+      - "src/config/**"
+      - "src/llm/**"
+      - "src/agent/**"
+      - "src/setup.ts"
+      - "src/cli.ts"
+      - ".env.example"
+      - "README.md"
+      - "docs/**"
+    concerns:
+      - "secret-handling"
+      - "local-vs-hosted-routing"
+      - "third-party-data-flow"
+      - "model-catalog-correctness"
+      - "fallback-behavior"
+    requiredChecks:
+      - "npm run typecheck"
+      - "npm test"
+  - id: "server-browser-contract"
+    paths:
+      - "src/server.ts"
+      - "docs/index.html"
+    concerns:
+      - "auth-and-origin-boundary"
+      - "browser-server-contract"
+      - "proxy-and-provider-routing"
+    requiredChecks:
+      - "npm run typecheck"
+      - "npm test"
+  - id: "tool-execution"
+    paths:
+      - "src/arsenal/**"
+      - "src/mcp-server.ts"
+      - "scripts/arsenal-*.mjs"
+    concerns:
+      - "command-execution"
+      - "tool-policy-bypass"
+      - "mcp-contract"
+    requiredChecks:
+      - "npm run test:arsenal-tools"
+      - "npm test"
+  - id: "delivery-and-install"
+    paths:
+      - ".github/workflows/**"
+      - "scripts/setup-api.sh"
+      - "scripts/install-*.sh"
+      - "package.json"
+      - "package-lock.json"
+    concerns:
+      - "ci-integrity"
+      - "supply-chain"
+      - "installation-regression"
+    requiredChecks:
+      - "npm run typecheck"
+      - "npm test"
+  - id: "disclosure-and-evidence"
+    paths:
+      - "scripts/disclosure-gen.mjs"
+      - "scripts/verify-claims.mjs"
+      - "scripts/verify-finding.mjs"
+      - "bench/**"
+      - "ctf/**"
+    concerns:
+      - "evidence-integrity"
+      - "reproducibility"
+      - "responsible-disclosure"
+    requiredChecks:
+      - "npm run test:disclose"
+      - "npm run test:verify"
+      - "npm run verify-claims"
+research:
+  corpusPaths:
+    - "bench/**"
+    - "ctf/**"
+  evidencePaths:
+    - "docs/**"
+    - "notes/**"
+  provenanceRequired: true
+  citationVerificationRequired: true
+security:
+  disclosureUrl: "https://forms.gle/QvKoijJMtEhLG7nf8"
+  sensitiveDataPaths:
+    - ".env*"
+    - "src/config/**"
+    - "src/agent/**"
+    - "scripts/keys.sh"
+  mutationRequiresExplicitApproval: true
+support:
+  requiredEnvironmentFields:
+    - "version"
+    - "operating-system"
+    - "runtime"
+    - "provider"
+    - "reproduction"
+  translationPolicy: "validated-only"

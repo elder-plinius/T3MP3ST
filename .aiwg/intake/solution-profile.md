@@ -1,6 +1,6 @@
 # Solution Profile (Current System)
 
-**Document type:** Existing system profile  
+**Document type:** Existing system profile
 **Generated:** 2026-07-20
 
 ## Current Profile
@@ -107,3 +107,24 @@ Lower-value components until owner context changes:
 - Database migration plans for an application database that does not currently exist
 
 Revisit those exclusions if the project becomes a hosted service, assumes contractual SLAs, processes centrally retained customer data, or grows into a larger formal organization.
+
+## Decision Criteria and Verification
+
+| Profile claim | Evidence required to retain classification |
+| --- | --- |
+| Stable core | Supported operational path, deterministic critical tests, maintained docs, release gate |
+| Experimental subsystem | Explicit label, bounded safety controls, test scope, limitations, no stable SLA implication |
+| Strong testing | Current required CI passes; critical path mapping is complete; no metric inferred from file counts |
+| Moderate reliability | Health/timeout/smoke evidence exists while hosted SLO/telemetry claims remain absent |
+| Strong product safety | Scope/approval/origin negative tests pass and adapter inventory has no uncovered path |
+
+## References
+
+- @.aiwg/intake/project-intake.md — Brownfield evidence and constraints.
+- @.aiwg/intake/option-matrix.md — Owner priorities and scale context.
+- @.aiwg/intake/risk-screening.md — Risk exposure and controls.
+- @.aiwg/requirements/nfr-register.md — Measurable quality attributes.
+- @.aiwg/architecture/software-architecture-doc.md — Current-state architecture.
+- @.aiwg/architecture/vision-alignment.md — Maturity classification.
+- @.aiwg/testing/test-strategy.md — Testing profile evidence.
+- @.github/workflows/ci.yml — CI implementation.

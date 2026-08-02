@@ -13,6 +13,8 @@ import { defineConfig } from 'vitest/config';
 // initGrammars itself is unit-tested to 100% in ts-grammars.test.ts.
 export default defineConfig({
   test: {
+    // Keep generated JavaScript under dist/ out of discovery after `npm run build`.
+    include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       include: [

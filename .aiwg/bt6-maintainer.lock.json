@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "package": "bt6-maintainer",
+  "version": "0.2.0",
+  "source": "https://git.integrolabs.net/roctinam/bt6-aiwg-plugins.git",
+  "canonicalSource": "https://github.com/jmagly/bt6-aiwg-plugins.git",
+  "registryKey": "roctinam/bt6-aiwg-plugins",
+  "ref": "v0.2.0",
+  "commit": "cbce5de3f676c69f1b4bc1dd1c96c9322d49aea7",
+  "wrapperTree": "3ff741712ee3a5f7b32906032f775e88d2e1f42b",
+  "installCommand": "aiwg install https://git.integrolabs.net/roctinam/bt6-aiwg-plugins.git@v0.2.0",
+  "bridgeReason": "AIWG #1997: Git package install does not yet select nested standalone plugin wrappers",
+  "sourceWrapperPath": ".aiwg/plugins/bt6-maintainer",
+  "wrapperPath": ".aiwg/plugins/bt6-maintainer"
+}

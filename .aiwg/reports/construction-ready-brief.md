@@ -1,8 +1,8 @@
 # Construction Ready Brief
 
-**Project:** T3MP3ST  
-**Date:** 2026-07-20  
-**Status:** CONSTRUCTION READY — brownfield architecture alignment
+**Project:** T3MP3ST
+**Date:** 2026-07-20
+**Status:** CONDITIONALLY CONSTRUCTION READY — brownfield architecture alignment
 
 ## Executive Summary
 
@@ -42,3 +42,20 @@ Scope bypass, secret/evidence leakage, maturity overstatement, nondeterministic 
 2. Execute Iteration 001 architecture-alignment work.
 3. Preserve current CI gates while adding traceability/maturity checks.
 4. Update the alignment matrix whenever a vision capability changes maturity.
+
+## Readiness Conditions
+
+- Named maintainers must review and record accept/amend/supersede outcomes for the SAD and ADRs.
+- The adapter safety inventory, maturity consistency audit, and workload baselines remain Iteration 001 work; they are not described as complete controls.
+- Any implementation change follows the test and deployment gates; documentation-only readiness does not waive runtime verification.
+
+## References
+
+- @.aiwg/reports/lom-gate-report.md — Lifecycle objective gate and conditions.
+- @.aiwg/reports/abm-gate-report.md — Architecture baseline gate and conditions.
+- @.aiwg/architecture/software-architecture-doc.md — Current architecture baseline.
+- @.aiwg/architecture/vision-alignment.md — Maturity evidence.
+- @.aiwg/requirements/nfr-register.md — Quality constraints.
+- @.aiwg/testing/test-strategy.md — Construction/release verification.
+- @.aiwg/planning/iteration-001-plan.md — First construction-alignment iteration.
+- @.aiwg/intake/risk-screening.md — Residual risks.

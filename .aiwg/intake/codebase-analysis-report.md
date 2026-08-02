@@ -1,8 +1,8 @@
 # Codebase Analysis Report
 
-**Project:** T3MP3ST  
-**Directory:** `/home/roctinam/dev/bt6/T3MP3ST`  
-**Generated:** 2026-07-20  
+**Project:** T3MP3ST
+**Directory:** `/home/roctinam/dev/bt6/T3MP3ST`
+**Generated:** 2026-07-20
 **Revision:** `186afe6b50e365371774aa2ed7986d73eb0656db`
 
 ## Summary
@@ -78,3 +78,23 @@
 ## Recommended Next Action
 
 Have maintainers validate the five owner questions in `option-matrix.md`, then select incremental expansion, stabilization, research, or hosted evolution as the governing near-term path. The code evidence favors incremental expansion with explicit safety and benchmark promotion gates.
+
+The owner subsequently selected a balanced priority across stability, domain expansion, swarm research, and adoption; supplied a scale estimate of thousands to tens of thousands; required fail-safe behavior; and reported no additional formal commitments. These are owner inputs, not measurements from the analyzed revision.
+
+## Method and Limitations
+
+Counts are point-in-time observations at the stated revision and command environment. File/test counts indicate surface area, not coverage or quality. Contributor identities are not normalized to humans. Architecture and maturity inferences are bounded by the cited files and were reconciled into the SAD and vision-alignment matrix.
+
+## References
+
+- @.aiwg/intake/project-intake.md — Detailed interpretation of the scan.
+- @.aiwg/intake/option-matrix.md — Owner answers recorded after analysis.
+- @.aiwg/architecture/software-architecture-doc.md — Architecture synthesis.
+- @package.json — Runtime, version, scripts, dependencies, and license.
+- @README.md — Product scope and claims.
+- @FEATURES.md — Capability/maturity inventory.
+- @SECURITY.md — Safety and disclosure policy.
+- @.github/workflows/ci.yml — CI implementation.
+- @src/cli.ts — CLI surface.
+- @src/server.ts — HTTP/War Room surface.
+- @src/mcp-server.ts — MCP surface.

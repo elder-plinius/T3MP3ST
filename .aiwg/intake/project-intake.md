@@ -1,7 +1,7 @@
 # Project Intake Form (Existing System)
 
-**Document type:** Brownfield system documentation  
-**Generated:** 2026-07-20  
+**Document type:** Brownfield system documentation
+**Generated:** 2026-07-20
 **Source:** Codebase analysis of `/home/roctinam/dev/bt6/T3MP3ST`
 
 ## Metadata
@@ -27,7 +27,7 @@ T3MP3ST is a self-hosted, multi-agent offensive-security framework for authorize
 - Developers integrating security workflows through HTTP or MCP
 - Contributors extending operators, tools, benchmarks, and target adapters
 
-Actual installation count, active-user count, commercial use, support commitments, and production fleet size are **unknown**.
+The owner reports a current/expected scale of thousands to tens of thousands of users or installations. This is planning input rather than measured repository telemetry. Commercial use, support commitments, and production fleet topology remain unverified; the owner supplied no additional contractual, funding, compliance, or support commitments.
 
 ## Current Scope and Features
 
@@ -89,7 +89,7 @@ Performance-sensitive areas include:
 - Concurrent agent/operator orchestration
 - Benchmark corpus processing
 
-Exact throughput, concurrent-user capacity, p95 latency, resource profiles, and installation scale are unknown. Existing timeout controls and deterministic benchmark harnesses provide a foundation for measuring these characteristics.
+Exact throughput, concurrent-task capacity, p95 latency, and resource profiles are unknown. Installation/user scale is owner-estimated rather than measured. Existing timeout controls and deterministic benchmark harnesses provide a foundation for measuring these characteristics.
 
 ## Security, Safety, and Compliance
 
@@ -152,9 +152,8 @@ No Kubernetes, Terraform, service mesh, managed database, centralized cache, or 
 
 The invocation supplied no additional business guidance. The evidenced purpose is to establish a current SDLC baseline from the existing codebase, preserve the distinction between shipped and aspirational capabilities, and provide a reviewable starting point for requirements, architecture, risk, and roadmap decisions.
 
-## Unknowns Requiring Owner Validation
+## Owner-Validated Context and Remaining Unknowns
 
-- Current active installations and users
 - Maintainer roles, staffing, and support model
 - Funding or commercial model
 - Production usage patterns and capacity objectives
@@ -162,9 +161,39 @@ The invocation supplied no additional business guidance. The evidenced purpose i
 - Regulatory or contractual obligations of maintainers
 - Near-term milestone, roadmap priority, and desired investment trade-offs
 
+Owner input recorded in `option-matrix.md`: scale is thousands to tens of thousands; stability, expansion, swarm research, and adoption all matter; no extra formal commitments were supplied; execution should fail safely.
+
+## Testing Strategy and Quality Thresholds
+
+- Required CI/release gates are defined in the test strategy and workflow; all required gates must pass for the release revision.
+- Scope, authorization, approval, credential routing, evidence integrity, and claim reproduction are critical paths with non-negotiable negative tests.
+- Deterministic CI uses fixtures and committed evidence rather than live target or paid-model availability.
+- Performance claims require workload, environment, sample, percentile, and receipt; no unmeasured SLO is accepted.
+
+## Decision Heuristics
+
+- Prefer local simplicity over distributed power until an evidenced deployment need justifies a new baseline.
+- Prefer operator control and fail-safe refusal over automatic execution when authorization or scope is ambiguous.
+- Prefer reproducible, scoped claims over broader marketing language.
+- Priority weighting remains quality/security 0.35, reliability/scale 0.25, delivery speed 0.25, cost 0.15 until owners amend it.
+
 ## Next Steps
 
 1. Validate the unknowns above with project owners.
 2. Review the recommended rigor and roadmap in `solution-profile.md`.
 3. Confirm priorities and trade-offs in `option-matrix.md`.
 4. If accepted, use the intake as input to an Inception or continuous architecture/risk workflow. `intake-start` is not required for this generated intake.
+
+## References
+
+- @.aiwg/intake/intake-form.md — Concise accelerate intake and owner-validated context.
+- @.aiwg/intake/solution-profile.md — Tailored rigor and roadmap.
+- @.aiwg/intake/option-matrix.md — Trade-offs and recorded owner answers.
+- @.aiwg/intake/risk-screening.md — Initial risks and residual exposure.
+- @.aiwg/architecture/software-architecture-doc.md — Implemented architecture baseline.
+- @.aiwg/testing/test-strategy.md — Required testing and gate policy.
+- @README.md — Product scope and maturity claims.
+- @FEATURES.md — Feature inventory.
+- @SECURITY.md — Safety and vulnerability-reporting policy.
+- @package.json — Package/runtime/license source.
+- @.github/workflows/ci.yml — CI evidence.

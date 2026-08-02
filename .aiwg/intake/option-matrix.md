@@ -1,6 +1,6 @@
 # Option Matrix (Project Context and Intent)
 
-**Purpose:** Capture what the project is and expose the decisions that owner input must complete.  
+**Purpose:** Capture what the project is and expose the decisions that owner input must complete.
 **Generated:** 2026-07-20
 
 ## Project Reality
@@ -13,7 +13,7 @@ T3MP3ST is a mature, self-hosted TypeScript offensive-security platform with a l
 | --- | --- | --- |
 | Audience | Authorized operators, researchers, CTF users, developers, contributors | High |
 | Distribution | Open-source package/repository, self-hosted execution | High |
-| Active users/installations | Not measurable from the codebase | Unknown |
+| Active users/installations | Owner reports thousands to tens of thousands; no repository telemetry verifies the count | Owner input / unmeasured |
 | Support expectations | Documentation and security-response target exist; no general SLA found | Medium |
 | Geographic reach | Public open-source distribution implies global reach | Medium |
 | Runtime concurrency | Local missions and agent/tool tasks; fleet scale unknown | Medium |
@@ -50,10 +50,10 @@ T3MP3ST is a mature, self-hosted TypeScript offensive-security platform with a l
 - Stable versus experimental status must remain explicit
 - The project supports a heterogeneous contributor base and multiple provider/runtime environments
 
-### Unknown
+### Unknown or Unverified
 
 - Maintainer availability and budget
-- User/install base and growth targets
+- Measured user/install telemetry and observed growth rate
 - Revenue or funding model
 - Contractual obligations and general support SLA
 - Formal compliance or certification objectives
@@ -132,3 +132,21 @@ none, failsafe patterns always
 
 5. Are there contractual, funding, compliance, or support commitments not represented in the repository?
 no
+
+## Decision Record
+
+- **Selected posture:** Balanced portfolio across stability, incremental domain expansion, swarm research, and adoption.
+- **Governing constraint:** Fail-safe behavior; authorization, scope, secrets, evidence integrity, and honest claims remain non-negotiable.
+- **Scale input:** Thousands to tens of thousands of users/installations, treated as owner-supplied planning context until telemetry supports a measured claim.
+- **Commitments:** No additional contractual, funding, compliance, or support commitments supplied.
+- **Architecture effect:** Continue local-first modular baseline; hosted/distributed work requires a new decision rather than inference from adoption goals.
+
+## References
+
+- @.aiwg/intake/project-intake.md — Detailed codebase-derived context.
+- @.aiwg/intake/solution-profile.md — Recommended rigor and roadmap.
+- @.aiwg/intake/risk-screening.md — Non-negotiable risk constraints.
+- @.aiwg/architecture/adr-005.md — Maturity/current-state policy.
+- @.aiwg/planning/iteration-001-plan.md — Near-term balanced governance work.
+- @README.md — Public product scope.
+- @VISION.md — Research direction.
