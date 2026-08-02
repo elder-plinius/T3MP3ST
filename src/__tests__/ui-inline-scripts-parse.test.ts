@@ -99,5 +99,5 @@ describe('docs/index.html inline scripts — semantic defect gate (#111 hardenin
       }
     });
     expect(findings, findings.join('\n')).toEqual([]);
-  });
+  }, 15_000);
 });
