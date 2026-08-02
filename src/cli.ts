@@ -174,7 +174,8 @@ async function interactiveMode(): Promise<void> {
 ${chalk.cyan('npx t3mp3st setup')}
 
 Or set environment variables:
-${chalk.gray('OPENROUTER_API_KEY=your-key-here')}`,
+${chalk.gray('OPENROUTER_API_KEY=your-key-here')}
+${chalk.gray('ORCAROUTER_API_KEY=your-key-here')}`,
       'yellow'
     );
 
@@ -521,6 +522,7 @@ async function openSettings(): Promise<void> {
       console.log(chalk.cyan('  Model:'), settings.defaultModel);
       console.log(chalk.cyan('  OpenRouter:'), hasApiKey('openrouter') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  Venice:'), hasApiKey('venice') ? chalk.green('configured') : chalk.red('not set'));
+      console.log(chalk.cyan('  OrcaRouter:'), hasApiKey('orcarouter') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  Anthropic:'), hasApiKey('anthropic') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  OpenAI:'), hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set'));
       console.log(chalk.cyan('  DeepSeek:'), hasApiKey('deepseek') ? chalk.green('configured') : chalk.red('not set'));
@@ -577,7 +579,7 @@ async function openSettings(): Promise<void> {
           type: 'list',
           name: 'keyProvider',
           message: 'Which provider?',
-          choices: ['openrouter', 'venice', 'anthropic', 'openai', 'deepseek', 'huggingface'],
+          choices: ['openrouter', 'venice', 'orcarouter', 'anthropic', 'openai', 'deepseek', 'huggingface'],
         },
       ]);
       const { apiKey } = await inquirer.prompt([

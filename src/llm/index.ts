@@ -1531,6 +1531,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenRouterAdapter(config);
       case 'venice':
         return new VeniceAdapter(config);
+      case 'orcarouter':
+        return new OpenAIAdapter(config); // OrcaRouter is OpenAI-compatible (baseUrl ends in /v1)
       case 'litellm':
         return new LiteLLMAdapter(config);
       case 'anthropic':
@@ -1829,6 +1831,12 @@ export function createVeniceBackbone(apiKey?: string, model?: string): LLMBackbo
   return new LLMBackbone(llmConfig);
 }
 
+export function createOrcaRouterBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('orcarouter', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createOpenAIBackbone(apiKey?: string, model?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('openai', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1891,6 +1899,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('venice')) {
     return createVeniceBackbone();
+  }
+  if (providers.includes('orcarouter')) {
+    return createOrcaRouterBackbone();
   }
   if (providers.includes('litellm')) {
     return createLiteLLMBackbone();
