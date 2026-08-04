@@ -413,6 +413,16 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.agentLoop = agentLoop;
   }
 
+  /**
+   * Drop any resumed local-agent session (e.g. Claude Code's --resume id). Called at kill-chain
+   * phase boundaries: local-agent operators are pre-spawned once and reused for the whole
+   * mission (auto-spawn-per-phase is disabled for local-agent), so nothing else would naturally
+   * end a resumed session between phases.
+   */
+  resetLLMSession(): void {
+    this.llm?.resetLocalAgentSession();
+  }
+
   /** Attach the shared pack board so this operator sees the swarm's live lead-board (Phase-2). */
   attachBoard(board: PackBoard): void {
     this.board = board;

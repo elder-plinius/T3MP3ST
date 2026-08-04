@@ -283,3 +283,59 @@ describe('spawn call-sites use the resolved path (issue #78 — detected-but-uns
     })).resolves.toBe('--no-tools --model openai-codex/gpt-5|long planning prompt');
   });
 });
+
+/**
+ * REGRESSION guard (Tier 2 — #139 follow-up, session resume): confirmed empirically against the
+ * real Claude Code CLI that an unknown/expired --resume id is a hard, fast failure (nonzero exit,
+ * "No conversation found with session ID: ..." on stderr, no JSON on stdout) — the CLI never falls
+ * back to a fresh session on its own. localAgentChat does that fallback itself, once. These tests
+ * drive the REAL function (not mocked) through a fake CLI script so the retry wiring is pinned,
+ * not just the higher-level LocalAgentAdapter call-shape covered in local-agent-tool-calling.test.ts.
+ */
+const FAKE_CLI_RESUME_STALE = `#!/bin/sh
+cat >/dev/null 2>&1
+case "$*" in
+  *--resume*) echo "No conversation found with session ID: fake" >&2; exit 1 ;;
+  *) echo '{"result":"fresh ok","session_id":"new-session-123"}' ;;
+esac
+`;
+
+describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
+  it('retries WITHOUT --resume when the resumed session is stale, and succeeds', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ping', { sessionId: 'stale-uuid', timeoutMs: 4000 });
+    expect(JSON.parse(out).result).toBe('fresh ok');
+  });
+
+  it('never adds --resume when no sessionId is supplied (no unnecessary retry path)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ping', { timeoutMs: 4000 });
+    expect(JSON.parse(out).result).toBe('fresh ok');
+  });
+
+  it('a genuine failure with no session in play still rejects (no unnecessary-retry regression)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', '#!/bin/sh\ncat >/dev/null 2>&1\necho "boom" >&2\nexit 1\n');
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    await expect(localAgentChat('claude', 'ping', { timeoutMs: 4000 })).rejects.toThrow(/boom/);
+  });
+
+  it('propagates the fallback attempt\'s own error when both the resumed and fresh calls fail', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', '#!/bin/sh\ncat >/dev/null 2>&1\necho "both broken" >&2\nexit 1\n');
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    await expect(localAgentChat('claude', 'ping', { sessionId: 'whatever', timeoutMs: 4000 })).rejects.toThrow(/both broken/);
+  });
+});

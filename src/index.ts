@@ -999,6 +999,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
           this.mission.generateNextPhaseTasks(target.address);
         }
 
+        // Local-agent operators are pre-spawned once and reused for the whole mission (see
+        // autoSpawnForPhase below), so a resumed CLI session (Claude Code --resume) would
+        // otherwise span every phase. Drop it here so each phase starts a fresh session instead
+        // of one unbounded session for the entire kill chain.
+        for (const op of this.cell.getAllOperators()) op.resetLLMSession();
+
         // Auto-spawn operators for the new phase
         const nextPhase = mission.currentPhase;
         this.autoSpawnForPhase(nextPhase);

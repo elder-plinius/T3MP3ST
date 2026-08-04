@@ -195,6 +195,70 @@ describe('Claude local-agent usage accounting (#139)', () => {
   });
 });
 
+describe('Claude local-agent session resume (Tier 2)', () => {
+  it('the first call on a fresh adapter passes no sessionId', async () => {
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await claudeBackbone().chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  it('captures session_id from the response and passes it as --resume on the next call', async () => {
+    const be = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat([{ role: 'user', content: 'hello' }]);
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
+    await be.chat([{ role: 'user', content: 'again' }]);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: 'sess-1' });
+  });
+
+  it('resetLocalAgentSession() drops the tracked session so the next call starts fresh', async () => {
+    const be = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat([{ role: 'user', content: 'hello' }]);
+
+    be.resetLocalAgentSession();
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-2' }));
+    await be.chat([{ role: 'user', content: 'again' }]);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  it('a separate LLMBackbone instance never inherits another instance\'s session (per-operator isolation)', async () => {
+    const opA = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'a1', session_id: 'sess-a' }));
+    await opA.chat([{ role: 'user', content: 'hello' }]);
+
+    const opB = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'b1', session_id: 'sess-b' }));
+    await opB.chat([{ role: 'user', content: 'hello' }]);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  it('a resumed session with no usable id in the envelope keeps the PRIOR session for the next call', async () => {
+    const be = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat([{ role: 'user', content: 'hello' }]);
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second' })); // no session_id this time
+    await be.chat([{ role: 'user', content: 'again' }]);
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'third', session_id: 'sess-1' }));
+    await be.chat([{ role: 'user', content: 'once more' }]);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: 'sess-1' });
+  });
+
+  it('non-claude local agents (codex CLI via local-agent provider) never receive a sessionId', async () => {
+    cli.mockResolvedValueOnce('done');
+    await localBackbone().chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+});
+
 describe('codex backbone surfaces toolCalls (guards the CodexAdapter half of the fix)', () => {
   it('returns toolCalls when codex emits the contract', async () => {
     fileRead.mockResolvedValueOnce('```json\n{"tool_calls":[{"name":"nmap_scan","arguments":{"target":"x"}}]}\n```');

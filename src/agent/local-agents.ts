@@ -489,7 +489,7 @@ export function pingLocalAgent(id: string, prompt?: string, timeoutMs?: number):
  * clean reply, while Hermes takes the prompt as an arg. Provider keys are stripped so each CLI uses its own
  * login (no API key needed). Throws on non-zero exit / timeout so the LLMBackbone retry/fallback fires.
  */
-export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
+export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number; sessionId?: string } = {}): Promise<string> {
   const spec = getSpec(id);
   if (!spec) return Promise.reject(new Error(`unknown local agent: ${id}`));
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
@@ -498,6 +498,7 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
   const timeoutMs = opts.timeoutMs ?? envTimeoutMs('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS', 600000);
 
   let args: string[];
+  let claudeArgsNoResume: string[] | null = null;
   let viaStdin = true;
   let outFile: string | null = null;
   let workDir: string | null = null;
@@ -505,7 +506,12 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
     // json (not text): the envelope carries REAL per-call token usage (input/output tokens
     // plus prompt-cache creation/read) that LocalAgentAdapter.chat() parses to drive
     // AgentLoop's token budget check. text mode reports no usage at all.
-    args = ['-p', '--output-format', 'json', ...(model ? ['--model', model] : [])];
+    claudeArgsNoResume = ['-p', '--output-format', 'json', ...(model ? ['--model', model] : [])];
+    // --resume continues a prior Claude Code session (LocalAgentAdapter tracks the id) so the CLI
+    // carries the accumulated transcript itself instead of the caller resending it every turn.
+    args = opts.sessionId
+      ? ['-p', '--output-format', 'json', '--resume', opts.sessionId, ...(model ? ['--model', model] : [])]
+      : claudeArgsNoResume;
   } else if (id === 'codex') {
     workDir = mkdtempSync(join(tmpdir(), 't3mp3st-codexllm-'));
     outFile = join(workDir, 'reply.txt');
@@ -523,8 +529,8 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
 
   const cleanup = () => { if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { /* noop */ } } };
   const resolvedBin = resolveBin(spec.bin) || spec.bin;
-  return new Promise((resolve, reject) => {
-    const child = spawnAgent(resolvedBin, args, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+  const runOnce = (argv: string[]): Promise<string> => new Promise((resolve, reject) => {
+    const child = spawnAgent(resolvedBin, argv, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
     let done = false;
@@ -545,4 +551,13 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
     });
     if (viaStdin && child.stdin) { child.stdin.write(prompt); child.stdin.end(); }
   });
+
+  const first = runOnce(args);
+  if (!claudeArgsNoResume || args === claudeArgsNoResume) return first;
+  // A resumed Claude session can go stale (CLI storage pruned, different session dir, expired).
+  // Confirmed empirically: an unknown/invalid --resume id is a hard, fast failure (nonzero exit,
+  // "No conversation found with session ID: ..." on stderr, no JSON on stdout) — the CLI never
+  // falls back to a fresh session on its own. Do that fallback here, once, rather than failing
+  // the whole task over a stale id.
+  return first.catch(() => runOnce(claudeArgsNoResume as string[]));
 }

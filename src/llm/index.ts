@@ -48,6 +48,8 @@ export interface LLMProviderAdapter {
   chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse>;
   stream?(messages: LLMMessage[], options?: ChatOptions): AsyncGenerator<string, void, unknown>;
   validateConfig(): { valid: boolean; error?: string };
+  /** Drop any resumed backend session so the next chat() starts clean. No-op where not applicable. */
+  resetSession?(): void;
 }
 
 export interface ChatOptions {
@@ -1315,6 +1317,7 @@ class CodexAdapter implements LLMProviderAdapter {
 // see and which measured 4-25k tokens on a single trivial call in testing.
 interface ClaudeJsonEnvelope {
   result?: string;
+  session_id?: string;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -1324,7 +1327,7 @@ interface ClaudeJsonEnvelope {
 }
 
 /** Parse the envelope; invalid usage is omitted so the caller can retain content and estimate. */
-function parseClaudeJsonEnvelope(raw: string): { content: string; usage?: LLMResponse['usage'] } | null {
+function parseClaudeJsonEnvelope(raw: string): { content: string; sessionId?: string; usage?: LLMResponse['usage'] } | null {
   let json: ClaudeJsonEnvelope;
   try {
     json = JSON.parse(raw);
@@ -1332,16 +1335,17 @@ function parseClaudeJsonEnvelope(raw: string): { content: string; usage?: LLMRes
     return null;
   }
   if (typeof json.result !== 'string') return null;
+  const sessionId = typeof json.session_id === 'string' && json.session_id ? json.session_id : undefined;
   const u = json.usage || {};
   const tokenValues = [u.input_tokens, u.output_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens];
   if (!tokenValues.some((v) => v !== undefined)
       || tokenValues.some((v) => v !== undefined && (!Number.isFinite(v) || v < 0))) {
-    return { content: json.result };
+    return { content: json.result, sessionId };
   }
   const promptTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
   const completionTokens = u.output_tokens ?? 0;
-  if (promptTokens + completionTokens === 0) return { content: json.result };
-  return { content: json.result, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
+  if (promptTokens + completionTokens === 0) return { content: json.result, sessionId };
+  return { content: json.result, sessionId, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
 }
 
 // Character-based fallback ONLY — used when the real envelope can't be parsed (older CLI,
@@ -1360,7 +1364,14 @@ function estimateUsage(promptText: string, completionText: string): LLMResponse[
 class LocalAgentAdapter implements LLMProviderAdapter {
   name = 'local-agent';
   private config: LLMConfig;
+  // Claude Code session to --resume (see local-agents.ts). Lives as long as this adapter does —
+  // one LocalAgentAdapter is held for an operator's whole life, so this naturally spans every task
+  // until the caller (TempestCommand, on phase advance) calls resetSession() to start a new one.
+  private claudeSessionId?: string;
   constructor(config: LLMConfig) { this.config = config; }
+  resetSession(): void {
+    this.claudeSessionId = undefined;
+  }
   // Split "agentId[::model]" → { agentId, agentModel }. No separator = just the agent id (CLI default model).
   private parseAgentSpec(): { agentId: string; agentModel?: string } {
     const raw = this.config.model || 'codex';
@@ -1392,7 +1403,11 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     const { agentId, agentModel } = this.parseAgentSpec();
     const prompt = this.formatPrompt(messages, options);
     const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
-    const raw = (await localAgentChat(agentId, prompt, { model: agentModel, timeoutMs })).trim();
+    const raw = (await localAgentChat(agentId, prompt, {
+      model: agentModel,
+      timeoutMs,
+      sessionId: agentId === 'claude' ? this.claudeSessionId : undefined,
+    })).trim();
     // Claude requests --output-format json (see local-agents.ts) so this parses to REAL usage.
     // Anything else (parse failure, or a non-claude agent) falls back to the raw text — claude
     // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
@@ -1401,6 +1416,10 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     const usage = agentId === 'claude'
       ? (parsed?.usage ?? estimateUsage(prompt, parsed?.content ?? raw))
       : undefined;
+    // Carry the session forward so the NEXT call (--resume) picks up where this one left off.
+    // Empirically stable across --resume (confirmed against the real CLI), but re-capture anyway
+    // in case a future CLI version rotates it.
+    if (agentId === 'claude' && parsed?.sessionId) this.claudeSessionId = parsed.sessionId;
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
@@ -1572,6 +1591,11 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
    */
   getModel(): string {
     return this.config.model;
+  }
+
+  /** Drop any resumed local-agent session (e.g. Claude Code's --resume id) so the next chat() starts fresh. */
+  resetLocalAgentSession(): void {
+    this.adapter.resetSession?.();
   }
 
   /**
