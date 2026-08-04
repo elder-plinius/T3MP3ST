@@ -26,13 +26,19 @@ export const RULES = [
   { id: 'B-FORMAT-STRING', desc: 'printf(var) — user-controlled format string', test: rx(/\bf?printf\s*\(\s*[a-zA-Z_]\w*\s*\)/) },
   { id: 'B-CMD-INJECTION', desc: 'system()/popen() on a variable — command injection', test: rx(/\b(system|popen)\s*\(\s*[a-zA-Z_]\w*/) },
   { id: 'B-INT-OVERFLOW', desc: 'malloc/calloc with multiplication — integer-overflow alloc size', test: rx(/\b(malloc|calloc|alloca|realloc)\s*\([^)]*\*/) },
-  // Inspects the length (3rd) arg: fires on a variable / field / deref / computed
-  // length (`len`, `hdr->len`, `ntohl(hdr->len)`), stays silent when it is a
-  // `sizeof(...)` expression or a numeric literal. The `[^)\s]` after the lookahead
-  // is load-bearing — without it `\s*` backtracks onto whitespace and every bounded
-  // form leaks through. Decompiled output inlines constants, so a named-macro length
-  // does not arise here.
-  { id: 'B-MEMCPY', desc: 'memcpy()/memmove() with a non-constant length — candidate overflow from an unchecked/wire-controlled size', test: rx(/\b(?:memcpy|memmove)\s*\([^,]+,[^,]+,\s*(?!\d|sizeof\b)[^)\s][^)]*\)/) },
+  // Inspects the length (3rd) arg: fires when it begins with a variable / field /
+  // deref / decoded value (`len`, `hdr->len`, `ntohl(hdr->len)`) and stays silent
+  // when it begins with a `sizeof` expression or a numeric literal. Two subtleties:
+  // the `[^)\s]` after the lookahead is load-bearing — without it `\s*` backtracks
+  // onto whitespace and bounded forms leak through; and args 1-2 are `[^,()]+` (no
+  // nested parens) so a comma inside a nested call can't mis-split the list into a
+  // false positive on a bounded call. Directional static pre-filter, not taint
+  // analysis — disclosed misses (silently NOT flagged): a computed length that
+  // starts with a digit (`8*count`) or with `sizeof` plus a term (`sizeof(x)+n`), a
+  // memcpy whose 1st/2nd arg is itself a call, an inline block comment before the
+  // length, and the `__memcpy_chk`/`memcpy_s`/`wmemcpy` variants. Decompiled output
+  // inlines constants, so a named-macro length does not arise here.
+  { id: 'B-MEMCPY', desc: 'memcpy()/memmove() with a non-constant length — candidate overflow from an unchecked/wire-controlled size', test: rx(/\b(?:memcpy|memmove)\s*\([^,()]+,[^,()]+,\s*(?!\d|sizeof\b)[^)\s][^)]*\)/) },
 ];
 
 export function loadCorpus() {

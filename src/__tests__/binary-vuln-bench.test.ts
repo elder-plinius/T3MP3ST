@@ -33,16 +33,33 @@ describe('binary/RE decompiled-vuln benchmark', () => {
   });
 
   it('flags memcpy/memmove with a non-constant length, not a bounded one', () => {
-    // fires on a variable / wire-controlled / computed length
-    expect(detect('memcpy(buf, pkt + 4, len);').has('B-MEMCPY')).toBe(true);
-    expect(detect('memcpy(dst, src, hdr->len);').has('B-MEMCPY')).toBe(true);
-    expect(detect('memcpy(dst, src, ntohl(hdr->len));').has('B-MEMCPY')).toBe(true);
-    expect(detect('memmove(d, s, n);').has('B-MEMCPY')).toBe(true);
-    // stays silent when the length is sizeof-bounded or a numeric literal —
-    // this is what forces a discriminating rule rather than a bare /memcpy/ match
-    expect(detect('memcpy(dst, src, sizeof(dst));').has('B-MEMCPY')).toBe(false);
-    expect(detect('memcpy(hdr, src, 4);').has('B-MEMCPY')).toBe(false);
-    expect(detect('memcpy(dst, src, 0x40);').has('B-MEMCPY')).toBe(false);
+    const fires = (c: string) => expect(detect(c).has('B-MEMCPY'), c).toBe(true);
+    const silent = (c: string) => expect(detect(c).has('B-MEMCPY'), c).toBe(false);
+
+    // fires on a variable / field / deref / wire-decoded / cast length
+    fires('memcpy(buf, pkt + 4, len);');
+    fires('memcpy(dst, src, hdr->len);');
+    fires('memcpy(dst, src, ntohl(hdr->len));');
+    fires('memmove(d, s, n);');
+    fires('memcpy(&d, s, (size_t)len);');
+    fires('memcpy(&local_38, param_1, size);');
+
+    // silent when the length is sizeof-bounded or a numeric literal — this is what
+    // forces a discriminating rule rather than a bare /memcpy/ match
+    silent('memcpy(dst, src, sizeof(dst));');
+    silent('memcpy(hdr, src, 4);');
+    silent('memcpy(dst, src, 0x40);');
+    silent('memcpy(dst, src, sizeof(struct hdr));');
+    // a comma inside a nested call must NOT mis-split the arg list and false-fire
+    // on a bounded sizeof length (args 1-2 are paren-free by construction)
+    silent('memcpy(dst, get_src(a,b), sizeof(dst));');
+
+    // Disclosed directional limits (see the rule comment): these non-constant
+    // lengths are NOT flagged — pinned here so the scope boundary is auditable and
+    // any future tightening surfaces as a deliberate change, not a silent one.
+    silent('memcpy(d, s, 8 * count);'); //         leading-digit computed length
+    silent('memcpy(d, s, sizeof(x) + n);'); //     sizeof plus a variable term
+    silent('memcpy(get_dst(a,b), src, len);'); //  1st/2nd arg is itself a call
   });
 
   it('ruleset spans memory-safety + injection + integer-overflow', () => {
