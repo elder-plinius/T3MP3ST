@@ -43,6 +43,13 @@ describe('binary/RE decompiled-vuln benchmark', () => {
     fires('memmove(d, s, n);');
     fires('memcpy(&d, s, (size_t)len);');
     fires('memcpy(&local_38, param_1, size);');
+    // pointer casts on args 1-2 are the common decompiled shape — must still fire
+    fires('memcpy((void *)dst, src, len);');
+    fires('memmove((uint8_t *)dst, (uint8_t *)src, len);');
+    fires('memcpy((char *)dst + 4, src, len);');
+    // a comma-bearing call in an arg is consumed as one arg, so a non-constant
+    // length after it is still caught
+    fires('memcpy(get_dst(a,b), src, len);');
 
     // silent when the length is sizeof-bounded or a numeric literal — this is what
     // forces a discriminating rule rather than a bare /memcpy/ match
@@ -51,15 +58,18 @@ describe('binary/RE decompiled-vuln benchmark', () => {
     silent('memcpy(dst, src, 0x40);');
     silent('memcpy(dst, src, sizeof(struct hdr));');
     // a comma inside a nested call must NOT mis-split the arg list and false-fire
-    // on a bounded sizeof length (args 1-2 are paren-free by construction)
+    // on a bounded sizeof length; casts on args 1-2 must not either
     silent('memcpy(dst, get_src(a,b), sizeof(dst));');
+    silent('memcpy((void *)dst, (void *)src, sizeof(dst));');
 
     // Disclosed directional limits (see the rule comment): these non-constant
     // lengths are NOT flagged — pinned here so the scope boundary is auditable and
     // any future tightening surfaces as a deliberate change, not a silent one.
-    silent('memcpy(d, s, 8 * count);'); //         leading-digit computed length
-    silent('memcpy(d, s, sizeof(x) + n);'); //     sizeof plus a variable term
-    silent('memcpy(get_dst(a,b), src, len);'); //  1st/2nd arg is itself a call
+    silent('memcpy(d, s, 8 * count);'); //          leading-digit computed length
+    silent('memcpy(d, s, sizeof(x) + n);'); //      sizeof plus a variable term
+    silent('memcpy(dst, wrap(get(a,b)), len);'); // doubly-nested paren in an arg
+    silent('__memcpy_chk(dst, src, len, dn);'); //  _chk variant (usually bounded)
+    silent('wmemcpy(dst, src, len);'); //           wide-char variant
   });
 
   it('ruleset spans memory-safety + injection + integer-overflow', () => {
