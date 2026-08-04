@@ -26,6 +26,13 @@ export const RULES = [
   { id: 'B-FORMAT-STRING', desc: 'printf(var) — user-controlled format string', test: rx(/\bf?printf\s*\(\s*[a-zA-Z_]\w*\s*\)/) },
   { id: 'B-CMD-INJECTION', desc: 'system()/popen() on a variable — command injection', test: rx(/\b(system|popen)\s*\(\s*[a-zA-Z_]\w*/) },
   { id: 'B-INT-OVERFLOW', desc: 'malloc/calloc with multiplication — integer-overflow alloc size', test: rx(/\b(malloc|calloc|alloca|realloc)\s*\([^)]*\*/) },
+  // Inspects the length (3rd) arg: fires on a variable / field / deref / computed
+  // length (`len`, `hdr->len`, `ntohl(hdr->len)`), stays silent when it is a
+  // `sizeof(...)` expression or a numeric literal. The `[^)\s]` after the lookahead
+  // is load-bearing — without it `\s*` backtracks onto whitespace and every bounded
+  // form leaks through. Decompiled output inlines constants, so a named-macro length
+  // does not arise here.
+  { id: 'B-MEMCPY', desc: 'memcpy()/memmove() with a non-constant length — candidate overflow from an unchecked/wire-controlled size', test: rx(/\b(?:memcpy|memmove)\s*\([^,]+,[^,]+,\s*(?!\d|sizeof\b)[^)\s][^)]*\)/) },
 ];
 
 export function loadCorpus() {
