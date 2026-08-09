@@ -8,6 +8,7 @@
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
  * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
+ * - Novita AI (OpenAI-compatible API serving open-source and frontier models)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -1547,6 +1548,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
       case 'nanogpt':
         return new NanoGPTAdapter(config);
+      case 'novita':
+        return new OpenAIAdapter(config); // Novita AI's native API is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1853,6 +1856,12 @@ export function createNanoGPTBackbone(apiKey?: string, model?: string): LLMBackb
   return new LLMBackbone(llmConfig);
 }
 
+export function createNovitaBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('novita', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1883,7 +1892,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Novita > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -1909,6 +1918,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('nanogpt')) {
     return createNanoGPTBackbone();
+  }
+  if (providers.includes('novita')) {
+    return createNovitaBackbone();
   }
 
   // Default to mock if no API keys configured
