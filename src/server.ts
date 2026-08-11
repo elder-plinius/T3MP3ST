@@ -4235,7 +4235,7 @@ function buildPressureChains(params: Record<string, unknown>): Record<string, an
   }) as Record<string, any>;
 }
 
-function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, unknown>): MemoryProposal {
+function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, unknown>): MemoryProposal | null {
   const now = nowIso();
   const content = redactString(String(input.content || '').trim()).slice(0, 1200);
   const type = normalizeMemoryType(input.type);
@@ -4252,6 +4252,11 @@ function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, un
       return rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt);
     });
   const duplicate = duplicateCandidates[0];
+  // REJECTION FEEDBACK: a lesson the operator already rejected must not keep
+  // resurfacing on every mission — respect the rejection and propose nothing.
+  if (duplicate && duplicate.status === 'rejected') {
+    return null;
+  }
   if (duplicate) {
     duplicate.fingerprint = fingerprint;
     duplicate.observationCount = Math.max(1, duplicate.observationCount || 1) + 1;
@@ -4327,7 +4332,7 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
   const proposals: MemoryProposal[] = [];
 
   if (evidence.length || findings.length || retests.length) {
-    proposals.push(createMemoryProposal({
+    const _mp1 = createMemoryProposal({
       type: 'procedure',
       content: `${family} missions should preserve traceability before promotion: ${evidence.length} evidence item(s), ${findings.length} finding(s), and ${passedRetests.length} passed retest(s) were linked in this run.`,
       source: 'learning.run_review',
@@ -4338,11 +4343,12 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: evidence.map(entry => entry.id),
       sourceFindingIds: findings.map(finding => finding.id),
       sourceRetestIds: retests.map(retest => retest.id),
-    }));
+    });
+    if (_mp1) proposals.push(_mp1);
   }
 
   for (const finding of findings.filter(item => item.status === 'resolved' || item.confidence >= 0.8).slice(0, 4)) {
-    proposals.push(createMemoryProposal({
+    const _mp2 = createMemoryProposal({
       type: finding.family === 'ai_red_team' || finding.family === 'agent_warfare' ? 'boundary' : 'procedure',
       content: `${finding.family} lesson: ${finding.claim} Defensive artifact: ${finding.recommendedFix || 'attach fix guidance before promotion'}.`,
       source: 'learning.finding_review',
@@ -4353,12 +4359,13 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: finding.evidenceIds,
       sourceFindingIds: [finding.id],
       sourceRetestIds: finding.retestIds,
-    }));
+    });
+    if (_mp2) proposals.push(_mp2);
   }
 
   for (const retest of passedRetests.slice(0, 4)) {
     const finding = findingsLedger.get(retest.findingId);
-    proposals.push(createMemoryProposal({
+    const _mp3 = createMemoryProposal({
       type: 'procedure',
       content: `Retest pattern to keep: ${retest.method} Acceptance criteria: ${retest.acceptanceCriteria.join('; ') || 'attach explicit criteria'}.`,
       source: 'learning.retest_review',
@@ -4369,11 +4376,12 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: retest.evidenceIds,
       sourceFindingIds: [retest.findingId],
       sourceRetestIds: [retest.id],
-    }));
+    });
+    if (_mp3) proposals.push(_mp3);
   }
 
   if (!proposals.length) {
-    proposals.push(createMemoryProposal({
+    const _mp4 = createMemoryProposal({
       type: 'open_question',
       content: `No durable memory should be accepted yet for ${missionId || operationId || 'this run'} because no evidence/finding/retest chain was available.`,
       source: 'learning.run_review',
@@ -4381,7 +4389,8 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       rationale: 'The safest learning action is to name the missing receipts instead of inventing memory.',
       sourceMissionId: missionId || undefined,
       sourceOperationId: operationId || undefined,
-    }));
+    });
+    if (_mp4) proposals.push(_mp4);
   }
 
   return {
@@ -6046,6 +6055,10 @@ app.post('/api/memory/proposals', (req: Request, res: Response) => {
     return;
   }
   const proposal = createMemoryProposal(body);
+  if (!proposal) {
+    res.status(200).json({ suppressed: true, reason: 'An identical lesson was previously rejected — respecting the operator decision.' });
+    return;
+  }
   res.status(201).json(proposal);
 });
 
@@ -6544,7 +6557,7 @@ app.post('/api/mission/resume', (_req: Request, res: Response) => {
 /**
  * GET /api/mission/status — Get full mission status
  */
-app.get('/api/mission/status', (_req: Request, res: Response) => {
+app.get('/api/mission/status', async (_req: Request, res: Response) => {
   const cmd = getTempestCommand();
   if (!cmd) {
     res.json({ active: false, progress: [], tasks: [] });
@@ -6571,25 +6584,51 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
     try {
       const verified = findings.filter(f => f.verifyGate?.passed);
       const asserted = findings.filter(f => !f.verifyGate?.passed);
-      const vClasses = [...new Set(verified.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6);
-      const aClasses = [...new Set(asserted.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6);
-      const parts = [
-        `Mission "${mission.name}" (${mission.status}, phase ${mission.currentPhase}) on target(s) ${cmd.targetEnv.getAllTargets().map(t => t.address).join(', ')}:`,
-        `${findings.length} finding(s) total — ${verified.length} tool-verified, ${asserted.length} model-asserted (unverified).`,
-        verified.length ? `Verified classes to chase: ${vClasses.join(', ')}.` : 'No tool-verified findings this run.',
-        asserted.length ? `Model-asserted classes to treat with suspicion (re-verify before reporting): ${aClasses.join(', ')}.` : '',
+      const digest = [
+        `Mission "${mission.name}" (${mission.status}, phase ${mission.currentPhase})`,
+        `Targets: ${cmd.targetEnv.getAllTargets().map(t => t.address).join(', ')}`,
+        `Stall: ${status.stallReason || 'none'}`,
+        verified.length ? `Verified (${verified.length}): ${verified.slice(0, 8).map(f => `[${f.severity}] ${f.title}`).join('; ')}` : 'No tool-verified findings.',
+        asserted.length ? `Model-asserted/unverified (${asserted.length}): ${asserted.slice(0, 8).map(f => `[${f.severity}] ${f.title}`).join('; ')}` : 'No model-asserted findings.',
+      ].join('\n');
+
+      // LLM-generated lessons: one cheap call turns the digest into 2-4 concise,
+      // actionable lessons (what to chase, what to distrust, what to skip).
+      let lessonContent = '';
+      try {
+        const llm = cmd.llm;
+        const r = await llm.chat([
+          { role: 'system', content: 'You distill security-hunting mission digests into 2-4 concise, actionable lessons. Output plain text bullet lines only, no preamble, no markdown headers, no reasoning. Lessons: verified finding classes to chase; model-asserted classes to distrust until tool-backed; tools/approaches that failed (timeouts, WAF blocks, missing binaries).' },
+          { role: 'user', content: digest },
+        ], { maxTokens: 500, temperature: 0.3 });
+        lessonContent = String(r.content ?? '')
+          // strip model reasoning wrappers (Gemma emits <thought> blocks)
+          .replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '')
+          .trim()
+          .slice(0, 900);
+      } catch { /* fall back to digest below */ }
+
+      const content = lessonContent || [
+        `Mission "${mission.name}" (${mission.status}, phase ${mission.currentPhase}):`,
+        `${findings.length} finding(s) — ${verified.length} tool-verified, ${asserted.length} model-asserted.`,
+        verified.length ? `Verified classes to chase: ${[...new Set(verified.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6).join(', ')}.` : 'No tool-verified findings this run.',
+        asserted.length ? `Treat with suspicion until tool-backed: ${[...new Set(asserted.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6).join(', ')}.` : '',
+        status.stallReason ? `Run stalled: ${status.stallReason}.` : '',
       ].filter(Boolean).join(' ');
+
       const proposal = createMemoryProposal({
         type: 'procedure',
-        content: parts,
-        source: 'auto-review',
-        confidence: verified.length ? 0.7 : 0.4,
+        content,
+        source: lessonContent ? 'auto-review-llm' : 'auto-review',
+        confidence: lessonContent ? 0.75 : (verified.length ? 0.7 : 0.4),
         rationale: 'Auto-generated on mission end by the self-learning loop; operator acceptance promotes it into future mission prompts.',
         sourceMissionId: mission.id,
         sourceFindingIds: findings.map(f => f.id),
       });
-      memoryProposals.set(proposal.id, proposal);
-      broadcastEvent('learning.proposed', { proposalId: proposal.id, missionId: mission.id });
+      if (proposal) {
+        memoryProposals.set(proposal.id, proposal);
+        broadcastEvent('learning.proposed', { proposalId: proposal.id, missionId: mission.id });
+      }
     } catch { /* best-effort learning */ }
   }
 
