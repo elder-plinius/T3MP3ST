@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-const configSource = readFileSync(join(process.cwd(), 'src/config/index.ts'), 'utf8');
-const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
-const setupScript = readFileSync(join(process.cwd(), 'scripts/setup-api.sh'), 'utf8');
-const localAgentsSource = readFileSync(join(process.cwd(), 'src/agent/local-agents.ts'), 'utf8');
-const setupSource = readFileSync(join(process.cwd(), 'src/setup.ts'), 'utf8');
-const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8');
+// CRLF→LF normalization: '\n'-based markers must match on Windows checkouts too.
+const lf = (p: string): string => readFileSync(join(process.cwd(), p), 'utf8').replace(/\r\n/g, '\n');
+const configSource = lf('src/config/index.ts');
+const serverSource = lf('src/server.ts');
+const setupScript = lf('scripts/setup-api.sh');
+const localAgentsSource = lf('src/agent/local-agents.ts');
+const setupSource = lf('src/setup.ts');
+const uiSource = lf('docs/index.html');
 
 function sourceBlock(startMarker: string, endMarker: string): string {
   const start = configSource.indexOf(startMarker);

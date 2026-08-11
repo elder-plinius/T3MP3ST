@@ -16,6 +16,10 @@ import * as dns from 'dns';
 import * as tls from 'tls';
 import { ApprovalController, isGatedRisk, type ApprovalRequest } from './approval.js';
 import { classifySubdomainTakeover, renderTakeoverReport } from './takeover.js';
+import { browserProbeTool } from './browser.js';
+import { usernameSearchTool, telegramLookupTool, emailFormatTool, ipInfoTool } from './social-osint.js';
+import { idorProbeTool } from './idor.js';
+import { jsAnalyzeTool } from './js-analyze.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -588,6 +592,13 @@ export function stampSpicyBuiltin(tool: CustomTool): CustomTool {
 }
 
 export const BUILTIN_TOOLS: CustomTool[] = [
+  browserProbeTool,
+  usernameSearchTool,
+  telegramLookupTool,
+  emailFormatTool,
+  ipInfoTool,
+  idorProbeTool,
+  jsAnalyzeTool,
   // =============================================================================
   // RECONNAISSANCE TOOLS
   // =============================================================================
@@ -623,8 +634,12 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           case 'NS':
             records = await dnsResolveNs(domain);
             break;
-          default:
-            records = await dnsResolve(domain, recordType) as string[];
+          default: {
+            // dns.resolve returns an array for most rrtypes, but a single object
+            // for SOA (and other structured types) — normalize before joining.
+            const raw = await dnsResolve(domain, recordType);
+            records = Array.isArray(raw) ? (raw as unknown as string[]) : [JSON.stringify(raw)];
+          }
         }
 
         return {
@@ -2438,6 +2453,7 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD', 'TRACE', 'CONNECT'];
       const results: { method: string; status: number; allowed: boolean }[] = [];
       const dangerousMethods: string[] = [];
+      const wafBlocks: string[] = [];
 
       // First try OPTIONS to see if Allow header is returned
       let optionsAllow: string | null = null;
@@ -2471,27 +2487,42 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           });
 
           const status = response.status;
-          // Consider a method "allowed" if it doesn't return 405 Method Not Allowed
-          const allowed = status !== 405 && status !== 501;
+          // A method is "allowed" ONLY on a 2xx/3xx origin response. 403/503 are
+          // almost always WAF/CDN blocks (Akamai, Cloudflare, nginx deny) — the
+          // origin may not even support the method, so they must NOT count as
+          // "dangerous methods enabled". 400/404/409 are not method-allow signals.
+          const allowed = status >= 200 && status < 400;
+          const wafBlocked = status === 403 || status === 503;
           results.push({ method, status, allowed });
 
           if (allowed && ['PUT', 'DELETE', 'TRACE', 'PATCH'].includes(method)) {
             dangerousMethods.push(method);
+          } else if (wafBlocked && ['PUT', 'DELETE', 'TRACE', 'PATCH'].includes(method)) {
+            wafBlocks.push(method);
           }
 
           // Consume response body to prevent connection leaks
           await response.text().catch(() => {});
-        } catch {
-          results.push({ method, status: 0, allowed: false });
+        } catch (error) {
+          // Distinguish a TIMEOUT from a connection failure: a busy backend that
+          // can't answer in time is not "unreachable" — the label misleads the LLM.
+          const timedOut = error instanceof Error &&
+            (error.name === 'TimeoutError' || error.name === 'AbortError' || /timeout/i.test(error.message));
+          results.push({ method, status: timedOut ? 408 : 0, allowed: false });
         }
       }
 
       const output = results.map(r => {
         if (r.status === 0) return `  ${r.method}: unreachable`;
-        return `  ${r.method}: ${r.status} ${r.allowed ? '(allowed)' : '(not allowed)'}`;
+        if (r.status === 408) return `  ${r.method}: timeout`;
+        const verdict = r.allowed ? '(allowed)' : (r.status === 403 || r.status === 503) ? '(blocked - likely WAF/CDN)' : '(not allowed)';
+        return `  ${r.method}: ${r.status} ${verdict}`;
       }).join('\n');
 
       const sections = [`HTTP Methods Test for ${url}:\n${output}`];
+      if (wafBlocks.length) {
+        sections.push(`\nNote: ${wafBlocks.join(', ')} returned 403/503 — likely WAF/CDN blocking, NOT method support on the origin. Run wafw00f to confirm.`);
+      }
       if (optionsAllow) {
         sections.push(`\nAllow header: ${optionsAllow}`);
       }
@@ -3252,7 +3283,10 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
  */
 export async function isToolAvailable(command: string): Promise<boolean> {
   try {
-    await execFileAsync('which', [command], { timeout: 5000 });
+    // Windows has `where.exe`, POSIX has `which` — `which` alone makes every
+    // installed tool (e.g. curl.exe) look missing on Windows.
+    const probe = process.platform === 'win32' ? 'where' : 'which';
+    await execFileAsync(probe, [command], { timeout: 5000 });
     return true;
   } catch {
     return false;

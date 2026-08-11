@@ -242,6 +242,9 @@ export interface Finding {
   exploitedAt?: number;
   /** Result of the live verification gate — present once verifyFinding() has run. */
   verifyGate?: { passed: boolean; provenance: 'none' | 'context' | 'tool'; reasons: string[]; checkedAt: number };
+  /** Original severity asserted by the model before the provenance cap downgraded
+   *  `severity` for unverified findings (none=low, context=medium, tool=unchanged). */
+  assertedSeverity?: Severity;
 }
 
 export interface Evidence {

@@ -83,7 +83,7 @@ describe('parseToolOutput — honesty contract (never fabricate, never throw)', 
   it('returns [] for a tool with no parser wired', () => {
     expect(parseToolOutput('sqlmap', fixture('nuclei.jsonl'))).toEqual([]);
     expect(parseToolOutput('metasploit', 'anything')).toEqual([]);
-    expect(hasParser('sqlmap')).toBe(false);
+    expect(hasParser('sqlmap')).toBe(true); // sqlmap parser wired; non-sqlmap input stays []
   });
 
   it('never throws on adversarial / deeply-nested / wrong-shape input', () => {
@@ -104,8 +104,55 @@ describe('parseToolOutput — honesty contract (never fabricate, never throw)', 
 
   it('exposes exactly the wired parser ids', () => {
     expect([...PARSED_TOOL_IDS].sort()).toEqual(
-      ['dalfox', 'ffuf', 'garak', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'trivy'],
+      ['dalfox', 'feroxbuster', 'ffuf', 'garak', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'sqlmap', 'trivy', 'wafw00f'],
     );
+  });
+
+  it('sqlmap: one finding per confirmed vulnerable parameter, with payload evidence', () => {
+    const raw = [
+      '[00:00:01] [INFO] testing connection to the target URL',
+      '--- Parameter: id (GET) ---',
+      '    Type: boolean-based blind',
+      '    Payload: id=1 AND 1=1',
+      '    Type: time-based blind',
+      '    Payload: id=1 AND SLEEP(5)',
+      '--- Parameter: user (POST) ---',
+      '    Type: UNION query',
+      '    Payload: user=admin UNION SELECT 1,2,3--',
+      '[00:00:05] [INFO] the back-end DBMS is MySQL',
+    ].join('\n');
+    const f = parseToolOutput('sqlmap', raw);
+    expect(f).toHaveLength(2);
+    expect(f[0].title).toContain("'id'");
+    expect(f[0].severity).toBe('high');
+    expect(f[0].cwe).toEqual(['CWE-89']);
+    expect(f[0].details).toContain('MySQL');
+    expect(f[0].details).toContain('SLEEP(5)');
+    expect(f[1].title).toContain("'user'");
+    // non-sqlmap text stays empty
+    expect(parseToolOutput('sqlmap', '[INF] nuclei banner that is not JSON')).toEqual([]);
+  });
+
+  it('feroxbuster: one aggregate finding of reachable 2xx/3xx paths', () => {
+    const raw = [
+      '{"url":"http://x/admin","status":200,"content_length":512}',
+      '{"url":"http://x/api","status":301,"content_length":0}',
+      '{"url":"http://x/secret","status":404,"content_length":32}',
+    ].join('\n');
+    const f = parseToolOutput('feroxbuster', raw);
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('info');
+    expect(f[0].title).toContain('2');
+    expect(f[0].details).toContain('/admin');
+    expect(f[0].details).not.toContain('/secret');
+  });
+
+  it('wafw00f: detects WAF name and no-WAF case', () => {
+    const f = parseToolOutput('wafw00f', '[+] The site https://x is behind Cloudflare (Cloudflare)');
+    expect(f).toHaveLength(1);
+    expect(f[0].title).toContain('Cloudflare');
+    const none = parseToolOutput('wafw00f', '[+] No WAF detected by the generic detection\n[+] Checking https://y');
+    expect(none.some((n) => n.title === 'No WAF Detected')).toBe(true);
   });
 });
 

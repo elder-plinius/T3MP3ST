@@ -3663,6 +3663,7 @@
                                     <span id="sysEventCount" style="font-size:9px; color:#555;">0</span>
                                     <button onclick="t3mpSysEventsPaused=!t3mpSysEventsPaused; this.textContent=t3mpSysEventsPaused?'▶':'⏸';" title="Pause/resume stream" style="font-size:9px; background:none; border:1px solid #333; border-radius:3px; color:#888; cursor:pointer; padding:1px 6px;">⏸</button>
                                     <button onclick="var t=document.getElementById('sysEventTerminal'); if(t)t.innerHTML='';" title="Clear" style="font-size:9px; background:none; border:1px solid #333; border-radius:3px; color:#888; cursor:pointer; padding:1px 6px;">CLR</button>
+                                    <button onclick="var t=document.getElementById('sysEventTerminal'); if(!t){return;} var txt=t.innerText.split('\n').map(function(l){return l.trim();}).filter(Boolean).join('\n'); if(!txt){return;} function fb(txt){var ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');}catch(e){} document.body.removeChild(ta);} var done=function(){var b=document.getElementById('sysEventCopyBtn'); if(b){var o=b.textContent; b.textContent='✓'; setTimeout(function(){b.textContent=o;},900);}}; if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done).catch(function(){fb(txt);done();});}else{fb(txt);done();}" title="Copy all events to clipboard" style="font-size:9px; background:none; border:1px solid #333; border-radius:3px; color:#888; cursor:pointer; padding:1px 6px;">COPY</button>
                                 </div>
                             </div>
                             <div id="sysEventTerminal" style="flex:1; max-height:188px; min-height:132px; overflow-y:auto; padding:7px 12px; font-size:10.5px; line-height:1.5;">
@@ -15186,6 +15187,7 @@ Be brutally honest. This is not a pep talk.`;
             row.className = 'finding-row';
             row.setAttribute('data-severity', f.severity);
             row.setAttribute('data-type', f.type);
+            row.setAttribute('data-verified', isModelAsserted ? '0' : '1');
             row.style.cssText = `display: grid; grid-template-columns: 60px 70px 1fr 140px 90px 36px; gap: 0; padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); align-items: center; font-size: 10px; transition: background 0.2s; cursor: default;`;
             row.onmouseenter = function() { this.style.background = 'rgba(' + rgb + ',0.08)'; };
             row.onmouseleave = function() { this.style.background = 'transparent'; };
@@ -27483,5 +27485,7 @@ Be specific and actionable. Format as structured JSON.`;
     window.t3mpTheme = { apply: apply, themes: THEMES };
   })();
 </script>
+<script src="sounds.js"></script>
+<script src="findings-sort.js"></script>
 </body>
 </html>

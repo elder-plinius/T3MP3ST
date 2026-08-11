@@ -28,7 +28,7 @@ import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelecti
 import { FRONTIER_ARSENAL_MILESTONE, NETWORK_COMMANDS, SAFE_COMMANDS, TOOL_ADAPTERS, adapterForBinary, adaptersForFamily, summarizeToolCatalog } from './arsenal/catalog.js';
 import { AGENT_PROMPT_PACKS, FOREFRONT_PRESSURE_LANES, OPERATOR_RUNBOOKS, RESOURCE_PACKS, WORKFLOW_PRESETS, forefrontPressureForFamily, promptPacksForFamily, resourcesForFamily, runbookForFamily, searchResources, workflowPresetsForFamily } from './resources/index.js';
 import { AI_REDTEAM_PLAYBOOK, AI_REDTEAM_TECHNIQUE_IDS, aiRedTeamBriefing } from './resources/ai-redteam-playbook.js';
-import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT } from './prompts/index.js';
+import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT, resolveSystemPrompt } from './prompts/index.js';
 import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
 import type { OperatorArchetype, LLMProvider } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
@@ -834,6 +834,8 @@ const workOrderLedger = new Map<string, WorkOrderRecord>();
 const watchCycleLedger = new Map<string, WatchCycleRecord>();
 const memoryCapsule = new Map<string, MemoryEntry>();
 const memoryProposals = new Map<string, MemoryProposal>();
+/** Self-learning: which mission already got an auto-filed lesson proposal. */
+let lastLessonProposedMissionId: string | null = null;
 
 /**
  * Mirror a live mission finding into the persistent findingsLedger (the one the
@@ -4491,9 +4493,12 @@ async function inspectToolAvailability(): Promise<Array<{ id: string; name: stri
     parserStatus: 'text' as const,
     notes: 'Repository context for local evidence and provenance.',
   }];
-  return Promise.all(adapters.map(async adapter => {
-    try {
-      const { stdout } = await execFileAsync('which', [adapter.binary], { timeout: 1500 });
+return Promise.all(adapters.map(async adapter => {
+try {
+// Windows has `where.exe`, POSIX has `which` — a bare `which` makes every
+// installed tool look missing on win32 (same fix as Arsenal.isToolAvailable).
+const probe = process.platform === 'win32' ? 'where' : 'which';
+const { stdout } = await execFileAsync(probe, [adapter.binary], { timeout: 1500 });
       return {
         id: adapter.id,
         name: adapter.binary,
@@ -6364,21 +6369,46 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       }
     }
 
-    // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
-    // exists on disk, ingest + security-rank it and feed the packed source into
-    // the command before it starts, so operators analyze real source you own
-    // rather than probing a black box. Reads LOCAL disk only — no network target.
-    let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown; source: 'local' | 'github' } | undefined;
-    if (repoSource) {
-      const wb = ingestRepoToSourceContext(repoSource.repoPath);
-      // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
-      // black-box view with an empty blob; the includedUnits:0 in the response signals it).
-      if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
-      whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
-    }
+      // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
+      // exists on disk, ingest + security-rank it and feed the packed source into
+      // the command before it starts, so operators analyze real source you own
+      // rather than probing a black box. Reads LOCAL disk only — no network target.
+      let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown; source: 'local' | 'github' } | undefined;
+      if (repoSource) {
+        const wb = ingestRepoToSourceContext(repoSource.repoPath);
+        // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
+        // black-box view with an empty blob; the includedUnits:0 in the response signals it).
+        if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
+        whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
+      }
 
-    // Start the command loop (auto-creates mission, auto-dispatches tasks)
-    cmd.start();
+      // ── SELF-LEARNING LOOP — lesson injection ───────────────────────────
+      // Accepted memory entries from previous hunts are appended to every
+      // operator's system prompt so the swarm hunts with prior knowledge:
+      // verified finding classes to chase, false-positive classes to skip,
+      // tools that worked. This closes the loop: mission → lesson → proposal →
+      // accept → injected into the NEXT mission.
+      if (memoryCapsule.size > 0) {
+        try {
+          const lessons = [...memoryCapsule.values()]
+            .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+            .slice(0, 12)
+            .map((e) => `- [${e.type ?? 'lesson'}] ${String(e.content).slice(0, 300)}`)
+            .join('\n');
+          if (lessons.trim()) {
+            const lessonsBlock = `\n\n## LESSONS FROM PREVIOUS HUNTS (accepted memory)\nApply these when relevant:\n${lessons}`;
+            for (const archetype of validArchetypes) {
+              try {
+                const base = resolveSystemPrompt(archetype);
+                setOperatorOverride(archetype, { systemPrompt: base + lessonsBlock });
+              } catch { /* per-archetype best effort */ }
+            }
+          }
+        } catch { /* never break mission start on a lesson-injection failure */ }
+      }
+
+      // Start the command loop (auto-creates mission, auto-dispatches tasks)
+      cmd.start();
 
     broadcastEvent('mission:started', {
       name,
@@ -6525,6 +6555,43 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
   const mission = cmd.mission.getActiveMission();
   const findings = cmd.vault.getAllFindings();
   const allOperators = cmd.cell.getAllOperators().map(op => op.getSummary());
+
+  // ── SELF-LEARNING LOOP — auto-file a lesson proposal when a mission ends ──
+  // The UI polls this endpoint every few seconds, so an ended mission is noticed
+  // here within seconds. "Ended" = completed, aborted, manually stopped, or
+  // stalled (command not running / stallReason set). One proposal per mission id.
+  const missionEnded = mission && (
+    mission.status === 'completed' ||
+    mission.status === 'aborted' ||
+    !status.running ||
+    Boolean(status.stallReason)
+  );
+  if (missionEnded && mission && mission.id !== lastLessonProposedMissionId) {
+    lastLessonProposedMissionId = mission.id;
+    try {
+      const verified = findings.filter(f => f.verifyGate?.passed);
+      const asserted = findings.filter(f => !f.verifyGate?.passed);
+      const vClasses = [...new Set(verified.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6);
+      const aClasses = [...new Set(asserted.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6);
+      const parts = [
+        `Mission "${mission.name}" (${mission.status}, phase ${mission.currentPhase}) on target(s) ${cmd.targetEnv.getAllTargets().map(t => t.address).join(', ')}:`,
+        `${findings.length} finding(s) total — ${verified.length} tool-verified, ${asserted.length} model-asserted (unverified).`,
+        verified.length ? `Verified classes to chase: ${vClasses.join(', ')}.` : 'No tool-verified findings this run.',
+        asserted.length ? `Model-asserted classes to treat with suspicion (re-verify before reporting): ${aClasses.join(', ')}.` : '',
+      ].filter(Boolean).join(' ');
+      const proposal = createMemoryProposal({
+        type: 'procedure',
+        content: parts,
+        source: 'auto-review',
+        confidence: verified.length ? 0.7 : 0.4,
+        rationale: 'Auto-generated on mission end by the self-learning loop; operator acceptance promotes it into future mission prompts.',
+        sourceMissionId: mission.id,
+        sourceFindingIds: findings.map(f => f.id),
+      });
+      memoryProposals.set(proposal.id, proposal);
+      broadcastEvent('learning.proposed', { proposalId: proposal.id, missionId: mission.id });
+    } catch { /* best-effort learning */ }
+  }
 
   res.json({
     active: status.running,

@@ -24,8 +24,34 @@ import type { Arsenal } from '../arsenal/index.js';
 import type { AgentLoop } from '../agent/index.js';
 import type { ToolResult } from '../types/index.js';
 import type { Target } from '../types/index.js';
-import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
+import { resolveSystemPrompt } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
+import { SEVERITY_SCORES } from '../evidence/index.js';
+import type { Severity } from '../types/index.js';
+
+// ── Phase-based model routing (opt-in) ───────────────────────────────────────
+// Env per phase: T3MP3ST_MODEL_RECON / _SCAN / _EXPLOIT / _POST / _ANALYSIS.
+// Missions burn most LLM calls in recon/scanner phases; routing a cheap model
+// there and a strong model only to exploit/analysis cuts cost 2-3x at the same
+// deep-phase quality. Unset vars keep the operator's configured model.
+const PHASE_MODEL_ENV: Record<string, string> = {
+  [KillChainPhase.RECON]: 'T3MP3ST_MODEL_RECON',
+  [KillChainPhase.WEAPONIZE]: 'T3MP3ST_MODEL_SCAN',
+  [KillChainPhase.DELIVER]: 'T3MP3ST_MODEL_SCAN',
+  [KillChainPhase.EXPLOIT]: 'T3MP3ST_MODEL_EXPLOIT',
+  [KillChainPhase.INSTALL]: 'T3MP3ST_MODEL_POST',
+  [KillChainPhase.C2]: 'T3MP3ST_MODEL_POST',
+  [KillChainPhase.ACTIONS]: 'T3MP3ST_MODEL_POST',
+  ANALYSIS: 'T3MP3ST_MODEL_ANALYSIS',
+};
+
+/** Resolve the LLM to drive a task of this phase; base itself when unconfigured. */
+function routeModelForPhase(phase: string, base: LLMBackbone): LLMBackbone {
+  const envName = PHASE_MODEL_ENV[phase] ?? PHASE_MODEL_ENV[KillChainPhase.RECON];
+  const model = (process.env[envName] ?? '').trim();
+  if (!model) return base;
+  return base.withModel(model);
+}
 
 // =============================================================================
 // OPERATOR EVENTS
@@ -78,33 +104,33 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Specialized in OSINT, network discovery, and asset enumeration',
     mitreTactics: ['TA0043'],
     primaryPhases: [KillChainPhase.RECON],
-    defaultTools: ['dns_lookup', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'subdomain_takeover_check', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery'],
+    defaultTools: ['dns_lookup', 'ip_info', 'username_search', 'telegram_lookup', 'email_format', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'subdomain_takeover_check', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery', 'subfinder_tool', 'httpx_tool', 'dnsx_tool', 'katana_tool', 'naabu_tool', 'gobuster_tool', 'nmap_tool'],
     toolCategories: ['recon', 'web'],
     capabilities: ['osint', 'dns_enum', 'subdomain_discovery', 'port_scanning', 'service_detection'],
     techniques: ['T1595', 'T1592', 'T1589', 'T1590', 'T1591'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.recon,
+    systemPrompt: resolveSystemPrompt('recon'),
   },
   scanner: {
     name: 'Vulnerability Scanner',
     description: 'Identifies vulnerabilities and security misconfigurations',
     mitreTactics: ['TA0007'],
     primaryPhases: [KillChainPhase.WEAPONIZE],
-    defaultTools: ['nuclei_scan', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request'],
+    defaultTools: ['idor_probe', 'js_analyze', 'nuclei_scan', 'browser_probe', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request', 'nuclei_tool', 'httpx_tool', 'dalfox_tool', 'sqlmap_tool', 'gobuster_tool'],
     toolCategories: ['vuln', 'web', 'recon'],
     capabilities: ['vuln_scanning', 'web_scanning', 'service_enum', 'config_audit'],
     techniques: ['T1046', 'T1082', 'T1083', 'T1087'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.scanner,
+    systemPrompt: resolveSystemPrompt('scanner'),
   },
   exploiter: {
     name: 'Exploitation Specialist',
     description: 'Executes exploits and achieves initial access',
     mitreTactics: ['TA0001', 'TA0002'],
     primaryPhases: [KillChainPhase.DELIVER, KillChainPhase.EXPLOIT],
-    defaultTools: ['sqli_scan', 'xss_scan', 'ssti_test', 'lfi_test', 'open_redirect_test', 'nuclei_scan', 'ffuf_fuzz', 'dir_bruteforce', 'api_endpoint_discovery', 'http_methods_test', 'password_spray', 'hash_crack', 'base64_decode', 'url_encode', 'jwt_decode', 'http_request', 'curl_request', 'technology_detect', 'header_analysis'],
+    defaultTools: ['sqli_scan', 'js_analyze', 'browser_probe', 'xss_scan', 'ssti_test', 'lfi_test', 'open_redirect_test', 'nuclei_scan', 'ffuf_fuzz', 'dir_bruteforce', 'api_endpoint_discovery', 'http_methods_test', 'password_spray', 'hash_crack', 'base64_decode', 'url_encode', 'jwt_decode', 'http_request', 'curl_request', 'technology_detect', 'header_analysis', 'sqlmap_tool', 'dalfox_tool', 'httpx_tool'],
     toolCategories: ['vuln', 'web', 'auth', 'util'],
     capabilities: ['exploit_dev', 'payload_delivery', 'initial_access', 'code_execution'],
     techniques: ['T1190', 'T1133', 'T1078', 'T1059'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.exploiter,
+    systemPrompt: resolveSystemPrompt('exploiter'),
   },
   infiltrator: {
     name: 'Lateral Movement Specialist',
@@ -115,7 +141,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     toolCategories: ['recon', 'web', 'auth', 'vuln'],
     capabilities: ['priv_esc', 'lateral_movement', 'credential_access', 'domain_enum'],
     techniques: ['T1021', 'T1078', 'T1068', 'T1548'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.infiltrator,
+    systemPrompt: resolveSystemPrompt('infiltrator'),
   },
   exfiltrator: {
     name: 'Data Exfiltration Specialist',
@@ -126,7 +152,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     toolCategories: ['web', 'recon', 'util'],
     capabilities: ['data_collection', 'exfiltration', 'staging', 'compression'],
     techniques: ['T1041', 'T1048', 'T1567', 'T1560'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.exfiltrator,
+    systemPrompt: resolveSystemPrompt('exfiltrator'),
   },
   ghost: {
     name: 'Persistence Specialist',
@@ -137,7 +163,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     toolCategories: ['web', 'recon', 'vuln'],
     capabilities: ['persistence', 'evasion', 'cleanup', 'anti_forensics'],
     techniques: ['T1547', 'T1053', 'T1136', 'T1070'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.ghost,
+    systemPrompt: resolveSystemPrompt('ghost'),
   },
   coordinator: {
     name: 'Mission Coordinator',
@@ -148,7 +174,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     toolCategories: ['recon', 'web', 'vuln'],
     capabilities: ['orchestration', 'task_management', 'communication', 'decision_making'],
     techniques: ['T1071', 'T1095', 'T1573', 'T1132'],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.coordinator,
+    systemPrompt: resolveSystemPrompt('coordinator'),
   },
   analyst: {
     name: 'Security Analyst',
@@ -159,7 +185,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     toolCategories: ['web', 'vuln', 'recon', 'util'],
     capabilities: ['analysis', 'reporting', 'recommendations', 'risk_assessment'],
     techniques: [],
-    systemPrompt: OPERATOR_SYSTEM_PROMPTS.analyst,
+    systemPrompt: resolveSystemPrompt('analyst'),
   },
 };
 
@@ -445,13 +471,26 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       }
 
       let result;
+      // [Phase-2] Register as live on the board and pull the shared situation report so this
+      // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
+      this.board?.heartbeat(this.id, 'hunting', task.name);
+      const sharedContext = this.board?.situationReport(this.id);
+      // ── Phase-based model routing (opt-in) ──────────────────────────────
+      // Missions burn most LLM calls in recon/scanner phases and fewest in
+      // exploit/analysis. With two providers configured, route the cheap model
+      // to high-volume phases and the strong model only where reasoning matters:
+      //   T3MP3ST_MODEL_RECON / _SCAN / _EXPLOIT / _POST / _ANALYSIS
+      // (model id per phase; unset = keep the operator's configured model).
+      let routedLLM: LLMBackbone | null = null;
       try {
-        // [Phase-2] Register as live on the board and pull the shared situation report so this
-        // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
-        this.board?.heartbeat(this.id, 'hunting', task.name);
-        const sharedContext = this.board?.situationReport(this.id);
+        const routed = routeModelForPhase(task.phase, this.llm);
+        if (routed !== this.llm && this.agentLoop) {
+          routedLLM = routed;
+          this.agentLoop.setLLM(routed);
+        }
         result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext);
       } finally {
+        if (routedLLM && this.agentLoop) this.agentLoop.setLLM(this.llm);
         if (canForwardAgentEvents) {
           this.agentLoop.off('agent:thinking', onThinking);
           this.agentLoop.off('agent:tool_call', onToolCall);
@@ -636,6 +675,16 @@ Respond in a structured format.`;
       finding.verifiedAt = finding.verifiedAt ?? Date.now();
     } else {
       delete finding.verifiedAt;
+      // PROVENANCE SEVERITY CAP — an unverified claim must not outrank a verified one
+      // in the report. The original model assertion is preserved in assertedSeverity;
+      // the reported severity is capped: no provenance → low, context-only → medium,
+      // tool-backed → unchanged (verified).
+      const cap: Record<string, Severity> = { none: 'low', context: 'medium' };
+      const capped = cap[gate.provenance];
+      if (capped && SEVERITY_SCORES[finding.severity] > SEVERITY_SCORES[capped]) {
+        finding.assertedSeverity = finding.severity;
+        finding.severity = capped;
+      }
     }
     this.findings.push(finding);
     this._state.findingsCount++;
