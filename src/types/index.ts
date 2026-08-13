@@ -478,13 +478,15 @@ export interface ToolContext {
  * Simplified finding for tool results (tools don't have full context)
  */
 export interface ToolFinding {
-  title: string;
-  severity: Severity;
-  details: string;
-  cvss?: number;
-  cve?: string[];
-  cwe?: string[];
-  remediation?: string;
+title: string;
+severity: Severity;
+details: string;
+cvss?: number;
+cve?: string[];
+cwe?: string[];
+remediation?: string;
+/** Optional machine evidence attached at the tool boundary (e.g. browser screenshots). */
+evidence?: { type: 'screenshot' | 'output' | 'request' | 'response'; content: string; timestamp: number; metadata?: Record<string, unknown> }[];
   /**
    * How this finding was produced — the provenance flag the honesty gate keys on:
    *  'tool'  = parsed from real tool output (has provenance, can be verified)

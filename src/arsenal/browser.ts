@@ -20,6 +20,14 @@ const XSS_PAYLOAD = '"><svg/onload=alert(1)>';
 // text node always survives serialization — reliable reflection signal.
 const XSS_MARKER = 'T3MP3STXSSMARKER123';
 
+/** Screenshot of the current page as base64 evidence (type: 'screenshot'). */
+async function screenshotEvidence(page: { screenshot: (o?: { type?: 'png'; fullPage?: boolean }) => Promise<Buffer> }, tag: string): Promise<{ type: 'screenshot'; content: string; timestamp: number; metadata?: Record<string, unknown> } | undefined> {
+  try {
+    const buf = await page.screenshot({ type: 'png' });
+    return { type: 'screenshot', content: `data:image/png;base64,${buf.toString('base64')}`, timestamp: Date.now(), metadata: { tag } };
+  } catch { return undefined; }
+}
+
 export const browserProbeTool: CustomTool = {
   name: 'browser_probe',
   description: 'Open a URL in a headless browser: inspect rendered DOM, cookie flags, console errors, and test for reflected/executed XSS (GET only, read-only)',
@@ -123,12 +131,14 @@ export const browserProbeTool: CustomTool = {
           // is a bonus signal for servers that echo without parsing.
           const reflected = html.includes(XSS_MARKER) || html.includes(XSS_PAYLOAD);
           await page.waitForTimeout(1500); // let deferred onload handlers fire
+          const xssShot = await screenshotEvidence(page, 'xss');
           if (reflected && dialogFired) {
             findings.push({
               title: `XSS Executed in '${firstParam}' (browser)`,
               severity: 'high',
               details: `Payload executed (alert dialog fired) after reflection in parameter '${firstParam}' at ${finalUrl}. Payload: ${XSS_PAYLOAD}`,
               cwe: ['CWE-79'],
+              evidence: xssShot ? [xssShot] : undefined,
             });
           } else if (reflected) {
             findings.push({
@@ -136,6 +146,7 @@ export const browserProbeTool: CustomTool = {
               severity: 'medium',
               details: `Payload appears unencoded in the rendered DOM of parameter '${firstParam}' at ${finalUrl}; execution not confirmed (no dialog fired). Verify manually. Payload: ${XSS_PAYLOAD}`,
               cwe: ['CWE-79'],
+              evidence: xssShot ? [xssShot] : undefined,
             });
           } else {
             sections.push('XSS probe: payload not reflected — parameter appears safely encoded');

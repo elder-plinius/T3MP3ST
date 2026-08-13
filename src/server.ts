@@ -862,6 +862,26 @@ const memoryProposals = new Map<string, MemoryProposal>();
 /** Self-learning: which mission already got an auto-filed lesson proposal. */
 let lastLessonProposedMissionId: string | null = null;
 
+// ── Telegram notifications (opt-in) ──────────────────────────────────────────
+// TELEGRAM_BOT_TOKEN + T3MP3ST_TG_CHAT_ID: sends mission-lifecycle messages to
+// your own chat. Discover the chat id with GET /api/notify/chat-id (uses
+// getUpdates) or set T3MP3ST_TG_CHAT_ID manually.
+async function sendTelegramNotify(text: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  const chatId = process.env.T3MP3ST_TG_CHAT_ID?.trim();
+  if (!token || !chatId) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 3500) }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const j = (await res.json()) as { ok?: boolean };
+    return j.ok === true;
+  } catch { return false; }
+}
+
 /**
  * Mirror a live mission finding into the persistent findingsLedger (the one the
  * Evidence Vault reads via /api/findings). Mission findings otherwise live only in
@@ -6325,6 +6345,28 @@ app.post('/api/osint/quick', async (req: Request, res: Response): Promise<void> 
   }
 });
 
+// Telegram: discover your chat id (message your bot first, then call this).
+app.get('/api/notify/chat-id', async (_req: Request, res: Response) => {
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!token) { res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not set' }); return; }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, { signal: AbortSignal.timeout(10000) });
+    const j = (await r.json()) as { ok?: boolean; result?: { message?: { chat?: { id?: number; type?: string; first_name?: string } } }[] };
+    const chats = new Map<number, string>();
+    for (const u of j.result ?? []) {
+      const c = u.message?.chat;
+      if (c && c.id) chats.set(c.id, `${c.type}${c.first_name ? ' ' + c.first_name : ''}`);
+    }
+    if (chats.size) {
+      res.json({ ok: true, chats: [...chats.entries()].map(([id, name]) => ({ id, name })), hint: 'Set T3MP3ST_TG_CHAT_ID=<id> and restart to enable notifications.' });
+    } else {
+      res.json({ ok: false, hint: 'Message your bot first (any text), then call this endpoint again.' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: `getUpdates failed: ${e instanceof Error ? e.message.slice(0, 120) : 'unknown'}` });
+  }
+});
+
 app.get('/api/tools', (_req: Request, res: Response) => {  res.json({
     success: true,
     tools: SAFE_COMMANDS,
@@ -6712,6 +6754,17 @@ app.get('/api/mission/status', async (_req: Request, res: Response) => {
         memoryProposals.set(proposal.id, proposal);
         broadcastEvent('learning.proposed', { proposalId: proposal.id, missionId: mission.id });
       }
+      // Telegram alert when a mission ends (opt-in: TELEGRAM_BOT_TOKEN + T3MP3ST_TG_CHAT_ID).
+      try {
+        const targets = cmd.targetEnv.getAllTargets().map(t => t.address).join(', ');
+        const verifiedN = findings.filter(f => f.verifyGate?.passed).length;
+        await sendTelegramNotify(
+          `⚡ T3MP3ST mission ended: "${mission.name}"\n` +
+          `Status: ${mission.status}${status.stallReason ? ` (stall: ${status.stallReason})` : ''}\n` +
+          `Targets: ${targets}\n` +
+          `Findings: ${findings.length} (${verifiedN} tool-verified)`,
+        );
+      } catch { /* best-effort */ }
     } catch { /* best-effort learning */ }
   }
 
