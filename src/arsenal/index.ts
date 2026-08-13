@@ -3128,23 +3128,89 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
   // =============================================================================
   {
     name: 'cve_lookup',
-    description: 'Look up CVEs from the built-in CVE database by keyword or CVE ID',
+    description: 'Look up CVEs by ID or keyword — live NVD (CVSS/vector/published) + EPSS exploit probability, local DB fallback',
     category: 'util',
     parameters: [
-      { name: 'query', type: 'string', description: 'Search keyword or CVE ID (e.g., "log4j" or "CVE-2021-44228")', required: true },
+      { name: 'query', type: 'string', description: 'CVE ID (e.g. CVE-2024-4577) or keyword (e.g. log4j)', required: true },
     ],
     handler: async (context) => {
-      const query = (context.parameters.query as string).toLowerCase();
+      const query = (context.parameters.query as string).trim();
+      const q = query.toLowerCase();
+      const cveIdMatch = /^CVE-\d{4}-\d{4,}$/i.exec(q);
+
+      // ── Live enrichment for a full CVE ID: NVD CVSS + EPSS probability ──
+      if (cveIdMatch) {
+        const cveId = cveIdMatch[0].toUpperCase();
+        const parts: string[] = [];
+        let cvssBase: number | null = null;
+        let severity: string | null = null;
+        let found = false;
+        try {
+          const nvd = await targetFetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${cveId}`, {
+            signal: AbortSignal.timeout(15000),
+            headers: { 'user-agent': 'T3MP3ST/1.0' },
+          });
+          const j = (await nvd.json()) as { resultsPerPage?: number; vulnerabilities?: { cve: { id: string; descriptions?: { lang: string; value: string }[]; published?: string; metrics?: Record<string, unknown[]> } }[] };
+          const v = j.vulnerabilities?.[0]?.cve;
+          if (v) {
+            found = true;
+            parts.push(`CVE: ${v.id}`);
+            const desc = v.descriptions?.find((d) => d.lang === 'en')?.value ?? '';
+            if (desc) parts.push(`Description: ${desc.slice(0, 400)}`);
+            if (v.published) parts.push(`Published: ${v.published.slice(0, 10)}`);
+            const metrics = v.metrics ?? {};
+            const cvssV4 = metrics.cvssMetricV40?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
+            const cvssV31 = metrics.cvssMetricV31?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
+            const cvssV3 = metrics.cvssMetricV30?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
+            const pick = cvssV4 ?? cvssV31 ?? cvssV3;
+            if (pick?.cvssData) {
+              cvssBase = pick.cvssData.baseScore ?? null;
+              severity = pick.cvssData.baseSeverity ?? null;
+              parts.push(`CVSS: ${cvssBase} (${severity})`);
+              if (pick.cvssData.vectorString) parts.push(`Vector: ${pick.cvssData.vectorString}`);
+            }
+          }
+        } catch { /* NVD unreachable — fall through to EPSS + local */ }
+
+        try {
+          const epss = await targetFetch(`https://api.first.org/data/v1/epss?cve=${cveId}`, { signal: AbortSignal.timeout(10000) });
+          const ej = (await epss.json()) as { data?: { epss?: string; percentile?: string }[] };
+          const e = ej.data?.[0];
+          if (e?.epss !== undefined) {
+            const pct = (parseFloat(e.epss) * 100).toFixed(1);
+            const ptile = e.percentile ? (parseFloat(e.percentile) * 100).toFixed(1) : '?';
+            parts.push(`EPSS exploit probability: ${pct}% (percentile ${ptile})`);
+          }
+        } catch { /* EPSS unreachable */ }
+
+        if (found || parts.length > 0) {
+          const risk = cvssBase !== null && cvssBase >= 9.0 ? 'critical'
+            : cvssBase !== null && cvssBase >= 7.0 ? 'high'
+            : cvssBase !== null && cvssBase >= 4.0 ? 'medium' : 'info';
+          const high = risk === 'critical' || risk === 'high';
+          return {
+            success: true,
+            output: parts.join('\n'),
+            findings: [{
+              title: `CVE Intelligence: ${cveId}`,
+              severity: (high ? 'high' : 'info') as 'high' | 'info',
+              details: parts.join(' | ').slice(0, 400),
+              ...(cveIdMatch ? { cve: [cveId] } : {}),
+            }],
+          };
+        }
+        // NVD+EPSS both failed — fall back to local DB
+      }
 
       const matches: CVEEntry[] = CVE_DATABASE.filter(cve =>
-        cve.id.toLowerCase().includes(query) ||
-        cve.description.toLowerCase().includes(query)
+        cve.id.toLowerCase().includes(q) ||
+        cve.description.toLowerCase().includes(q)
       );
 
       if (matches.length === 0) {
         return {
           success: true,
-          output: `CVE Lookup for "${query}":\nNo matching CVEs found in the local database (${CVE_DATABASE.length} entries).`,
+          output: `CVE Lookup for "${query}":\nNo matching CVEs found (live NVD/EPSS unavailable or no local match; ${CVE_DATABASE.length} local entries).`,
         };
       }
 
