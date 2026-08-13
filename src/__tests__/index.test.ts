@@ -498,6 +498,29 @@ describe('Wedged-dispatch timeout backstop', () => {
 
     expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
   });
+
+  // PR #149 review, round 3 (jmagly): cross-OPERATOR isolation isn't enough — the SAME operator
+  // running a second task must not resume the first task's session either. The old session belongs
+  // to a task (and potentially a target) that never earned a place in the new task's context;
+  // PackBoard is the one sanctioned channel for carrying anything across a task boundary.
+  it('one operator running TWO SEQUENTIAL tasks does not resume task 1\'s session for task 2 (production-shaped)', async () => {
+    const mod = await import('../index.js');
+    const command = new mod.TempestCommand({
+      name: 'Task Boundary Op',
+      llm: { provider: 'local-agent', model: 'claude' },
+    });
+    const op = command.spawnOperator('Recon-Task-Boundary', 'recon');
+
+    localAgentCli.mockResolvedValueOnce(JSON.stringify({ result: 'task1', session_id: 'sess-task-1' }));
+    await (op as any).llm.chat([{ role: 'system', content: 'TASK-1' }, { role: 'user', content: 'do task 1' }]);
+    expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+
+    // AgentLoop.run() builds a brand-new messages array per task — simulate that exactly.
+    localAgentCli.mockResolvedValueOnce(JSON.stringify({ result: 'task2', session_id: 'sess-task-2' }));
+    await (op as any).llm.chat([{ role: 'system', content: 'TASK-2' }, { role: 'user', content: 'do task 2' }]);
+
+    expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
 });
 
 describe('Codex account provider', () => {

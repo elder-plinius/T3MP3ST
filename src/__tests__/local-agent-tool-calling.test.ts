@@ -202,26 +202,33 @@ describe('Claude local-agent session resume (Tier 2)', () => {
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
   });
 
-  it('captures session_id from the response and passes it as --resume on the next call', async () => {
+  it('captures session_id from the response and passes it as --resume on a LATER call within the SAME task', async () => {
     const be = claudeBackbone();
+    // AgentLoop's real shape: one array, grown via push() across a task's iterations.
+    const messages: LLMMessage[] = [{ role: 'user', content: 'hello' }];
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
-    await be.chat([{ role: 'user', content: 'hello' }]);
+    await be.chat(messages);
 
+    messages.push({ role: 'assistant', content: 'first' }, { role: 'user', content: 'again' });
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
-    await be.chat([{ role: 'user', content: 'again' }]);
+    await be.chat(messages);
 
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: 'sess-1' });
   });
 
-  it('resetLocalAgentSession() drops the tracked session so the next call starts fresh', async () => {
+  it('resetLocalAgentSession() drops the tracked session so the next call starts fresh, even mid-task', async () => {
     const be = claudeBackbone();
+    // SAME array both calls, so this isolates the EXPLICIT reset from the automatic task-boundary
+    // reset (a different array would reset on its own regardless of this call).
+    const messages: LLMMessage[] = [{ role: 'user', content: 'hello' }];
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
-    await be.chat([{ role: 'user', content: 'hello' }]);
+    await be.chat(messages);
 
     be.resetLocalAgentSession();
 
+    messages.push({ role: 'assistant', content: 'first' }, { role: 'user', content: 'again' });
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-2' }));
-    await be.chat([{ role: 'user', content: 'again' }]);
+    await be.chat(messages);
 
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
   });
@@ -238,16 +245,19 @@ describe('Claude local-agent session resume (Tier 2)', () => {
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
   });
 
-  it('a resumed session with no usable id in the envelope keeps the PRIOR session for the next call', async () => {
+  it('a resumed session with no usable id in the envelope keeps the PRIOR session for the next call in the SAME task', async () => {
     const be = claudeBackbone();
+    const messages: LLMMessage[] = [{ role: 'user', content: 'hello' }];
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
-    await be.chat([{ role: 'user', content: 'hello' }]);
+    await be.chat(messages);
 
+    messages.push({ role: 'assistant', content: 'first' }, { role: 'user', content: 'again' });
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'second' })); // no session_id this time
-    await be.chat([{ role: 'user', content: 'again' }]);
+    await be.chat(messages);
 
+    messages.push({ role: 'assistant', content: 'second' }, { role: 'user', content: 'once more' });
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'third', session_id: 'sess-1' }));
-    await be.chat([{ role: 'user', content: 'once more' }]);
+    await be.chat(messages);
 
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: 'sess-1' });
   });
@@ -289,21 +299,29 @@ describe('Claude local-agent session resume (Tier 2)', () => {
     expect(secondPrompt).toContain('ACTION CONTRACT'); // tool contract retained on the delta call
   });
 
-  it('a NEW task (different messages array) still gets the full prompt even though the session resumes', async () => {
+  // PR #149 review (jmagly, round 3): a new task must not just switch from delta to full-prompt
+  // sending while still resuming the OLD session — it must start a genuinely FRESH session. The
+  // old session belongs to a different task (and potentially a different target); resuming it
+  // would carry that task's system prompt, target data, and tool output — including anything
+  // attacker-controlled — into a task that never earned it, bypassing PackBoard as the one
+  // sanctioned cross-task channel. One operator, two sequential tasks: task 2 gets no --resume.
+  it('a NEW task (different messages array) starts a genuinely FRESH session, not a resume of the prior task', async () => {
     const be = claudeBackbone();
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
     await be.chat([{ role: 'system', content: 'TASK-ONE-SYSTEM' }, { role: 'user', content: 'TASK-ONE-USER' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
 
-    // A brand-new task builds a brand-new array (AgentLoop.run() does this per task) — the
-    // resumed session has never seen this content, so it must go out in full despite --resume.
-    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
+    // A brand-new task builds a brand-new array (AgentLoop.run() does this per task).
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-2' }));
     await be.chat([{ role: 'system', content: 'TASK-TWO-SYSTEM' }, { role: 'user', content: 'TASK-TWO-USER' }]);
 
     const secondCall = cli.mock.calls.at(-1);
     const secondPrompt = String(secondCall?.[1] || '');
     expect(secondPrompt).toContain('TASK-TWO-SYSTEM');
     expect(secondPrompt).toContain('TASK-TWO-USER');
-    expect(secondCall?.[2]).toMatchObject({ sessionId: 'sess-1', fallbackPrompt: undefined });
+    expect(secondPrompt).not.toContain('TASK-ONE-SYSTEM'); // task 1's content never enters the wire prompt either
+    // The core assertion: task 2's session id is NOT task 1's — no --resume across the task boundary.
+    expect(secondCall?.[2]).toMatchObject({ sessionId: undefined, fallbackPrompt: undefined });
   });
 
   it('passes fallbackPrompt (the FULL transcript) alongside a delta send, so a stale-session retry never gets the delta', async () => {

@@ -1412,6 +1412,15 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const { agentId, agentModel } = this.parseAgentSpec();
+    // Task boundary: a DIFFERENT messages array means AgentLoop.run() started a new task (it builds
+    // one fresh array per task). Resuming across that boundary would carry the prior task's system
+    // prompt, target data, and tool output — including anything attacker-controlled — into a task
+    // that never earned it, outside T3MP3ST's one sanctioned cross-task channel (PackBoard). Only
+    // resume WITHIN one task's own growing transcript; a new task always starts a fresh session
+    // (PR #149 review).
+    if (agentId === 'claude' && this.lastSentMessages !== undefined && messages !== this.lastSentMessages) {
+      this.claudeSessionId = undefined;
+    }
     const fullPrompt = this.formatPrompt(messages, options);
     // Resuming AND still the same task's (same array object) growing transcript → send only the
     // NEW messages since last call. A resumed session already has everything up to lastSentCount;
