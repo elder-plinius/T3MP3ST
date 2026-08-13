@@ -12,7 +12,8 @@
  * substring found in the file's strings — never fabricated.
  */
 
-import { readFileSync, statSync } from 'fs';
+import { readFileSync, statSync, readdirSync } from 'fs';
+import { join } from 'path';
 import type { CustomTool, ToolFinding } from '../types/index.js';
 
 // Same ruleset as scripts/binary-vuln-bench.mjs (kept in sync manually) +
@@ -30,7 +31,7 @@ const SINK_RULES: { id: string; desc: string; severity: 'high' | 'medium'; re: R
   { id: 'B-ALLOCA', desc: 'alloca() with variable size — stack overflow risk', severity: 'medium', re: /\balloca\s*\(\s*[a-zA-Z_]/ },
   { id: 'B-CREATEPROCESS', desc: 'CreateProcess/ShellExecute on a variable — possible injection/path abuse', severity: 'high', re: /\b(CreateProcess|ShellExecute|WinExec)\w*\s*\([^)]*[a-zA-Z_]\w*\s*[),]/ },
   { id: 'B-DLLIMPORT', desc: 'DllImport with dynamic library name — DLL search-order hijack risk', severity: 'medium', re: /DllImport\s*\(\s*["\x27][a-zA-Z_]/ },
-  { id: 'B-STRTOK', desc: 'strtok/strsep — fragile parsing, often leads to OOB when input is malformed', severity: 'low', re: /\b(strtok|strsep)\s*\(/ },
+  { id: 'B-STRTOK', desc: 'strtok/strsep — fragile parsing, often leads to OOB when input is malformed', severity: 'medium', re: /\b(strtok|strsep)\s*\(/ },
 ];
 
 // Hardcoded secret / sensitive-data patterns found in extracted strings.
@@ -73,6 +74,47 @@ export const binarySinkScanTool: CustomTool = {
     let size = 0;
     try { size = statSync(filePath).size; } catch {
       return { success: false, error: `binary_sink_scan: cannot stat ${filePath}` };
+    }
+    // Directory mode: scan up to 40 files in the folder (top-level only),
+    // aggregate per-file sink/secret hits.
+    if (statSync(filePath).isDirectory()) {
+      let files: string[] = [];
+      try { files = readdirSync(filePath).filter((f) => { try { return statSync(join(filePath, f)).isFile(); } catch { return false; } }); } catch { /* ignore */ }
+      files = files.slice(0, 40);
+      const perFile: { file: string; sinks: number; secrets: number; top: string[] }[] = [];
+      for (const f of files) {
+        const fp = join(filePath, f);
+        try {
+          const s = statSync(fp).size;
+          if (s > MAX_BYTES) continue;
+          const strings = extractStrings(readFileSync(fp));
+          const sinkHits = SINK_RULES.filter((r) => strings.some((x) => r.re.test(x)));
+          const secretHits = SECRET_RULES.filter((r) => strings.some((x) => r.re.test(x)));
+          if (sinkHits.length || secretHits.length) {
+            perFile.push({
+              file: f,
+              sinks: sinkHits.length,
+              secrets: secretHits.length,
+              top: [...sinkHits.slice(0, 3).map((r) => r.id), ...secretHits.slice(0, 2).map((r) => r.id)],
+            });
+          }
+        } catch { /* skip unreadable */ }
+      }
+      if (perFile.length === 0) {
+        return { success: true, output: `binary_sink_scan ${filePath}: scanned ${files.length} files — no dangerous sinks or hardcoded secrets found.` };
+      }
+      const lines = perFile.map((p) => `  ${p.file}: ${p.sinks} sink(s), ${p.secrets} secret(s) [${p.top.join(', ')}]`);
+      const findings: ToolFinding[] = [{
+        title: `Sinks/Secrets in ${files.length} files of ${filePath.split(/[\\/]/).pop()}`,
+        severity: perFile.some((p) => p.sinks >= 2 || p.secrets >= 1) ? 'high' : 'medium',
+        details: perFile.map((p) => `${p.file}: ${p.top.join(', ')}`).join(' | ').slice(0, 400),
+        cwe: ['CWE-120', 'CWE-78', 'CWE-798'],
+      }];
+      return {
+        success: true,
+        output: `binary_sink_scan ${filePath}: ${perFile.length}/${files.length} file(s) flagged:\n${lines.join('\n')}`,
+        findings,
+      };
     }
     if (size > MAX_BYTES) {
       return { success: false, error: `binary_sink_scan: file too large (${size} bytes, max ${MAX_BYTES})` };
