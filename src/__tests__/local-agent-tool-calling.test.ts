@@ -23,7 +23,7 @@ vi.mock('fs/promises', async (orig) => {
   return { ...actual, readFile: vi.fn() };
 });
 
-import { parseTextToolCalls, LLMBackbone } from '../llm/index.js';
+import { parseTextToolCalls, LLMBackbone, type LLMMessage } from '../llm/index.js';
 import { localAgentChat } from '../agent/local-agents.js';
 import { readFile } from 'fs/promises';
 const cli = vi.mocked(localAgentChat);
