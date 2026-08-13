@@ -22,6 +22,7 @@ import { idorProbeTool } from './idor.js';
 import { jsAnalyzeTool } from './js-analyze.js';
 import { kevCheckTool } from './kev.js';
 import { binarySinkScanTool } from './binary.js';
+import { r2AnalyzeTool } from './r2-analyze.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -603,6 +604,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
   jsAnalyzeTool,
   kevCheckTool,
   binarySinkScanTool,
+  r2AnalyzeTool,
   // =============================================================================
   // RECONNAISSANCE TOOLS
   // =============================================================================
