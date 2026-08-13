@@ -257,6 +257,75 @@ describe('Claude local-agent session resume (Tier 2)', () => {
     await localBackbone().chat([{ role: 'user', content: 'hello' }]);
     expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
   });
+
+  // PR #149 review (jmagly): formatPrompt() always serialized the WHOLE messages array, so a
+  // resumed call duplicated the transcript into a session that already had it — the exact resend
+  // this feature exists to eliminate. These pin the fix: same-array (same task) reuse sends only
+  // the NEW messages once a session exists; a different array (a new task) still gets everything.
+  it('a resumed call on the SAME growing messages array sends only the delta, not the full transcript', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [
+      { role: 'system', content: 'SYSTEM-PROMPT-MARKER' },
+      { role: 'user', content: 'USER-TASK-MARKER' },
+    ];
+
+    cli.mockResolvedValueOnce(JSON.stringify({
+      result: '{"tool_calls":[{"name":"nmap_scan","arguments":{"target":"x"}}]}',
+      session_id: 'sess-1',
+    }));
+    await be.chatWithTools(messages, TOOLS as never);
+
+    // AgentLoop's real growth pattern: push the assistant turn + tool result onto the SAME array.
+    messages.push({ role: 'assistant', content: 'reasoning', toolCalls: [{ id: 'c1', name: 'nmap_scan', arguments: { target: 'x' } }] });
+    messages.push({ role: 'tool', content: 'TOOL-RESULT-MARKER', toolCallId: 'c1', name: 'nmap_scan' });
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'Final debrief.', session_id: 'sess-1' }));
+    await be.chatWithTools(messages, TOOLS as never);
+
+    const secondPrompt = String(cli.mock.calls.at(-1)?.[1] || '');
+    expect(secondPrompt).not.toContain('SYSTEM-PROMPT-MARKER');
+    expect(secondPrompt).not.toContain('USER-TASK-MARKER');
+    expect(secondPrompt).toContain('TOOL-RESULT-MARKER');
+    expect(secondPrompt).toContain('ACTION CONTRACT'); // tool contract retained on the delta call
+  });
+
+  it('a NEW task (different messages array) still gets the full prompt even though the session resumes', async () => {
+    const be = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat([{ role: 'system', content: 'TASK-ONE-SYSTEM' }, { role: 'user', content: 'TASK-ONE-USER' }]);
+
+    // A brand-new task builds a brand-new array (AgentLoop.run() does this per task) — the
+    // resumed session has never seen this content, so it must go out in full despite --resume.
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
+    await be.chat([{ role: 'system', content: 'TASK-TWO-SYSTEM' }, { role: 'user', content: 'TASK-TWO-USER' }]);
+
+    const secondCall = cli.mock.calls.at(-1);
+    const secondPrompt = String(secondCall?.[1] || '');
+    expect(secondPrompt).toContain('TASK-TWO-SYSTEM');
+    expect(secondPrompt).toContain('TASK-TWO-USER');
+    expect(secondCall?.[2]).toMatchObject({ sessionId: 'sess-1', fallbackPrompt: undefined });
+  });
+
+  it('passes fallbackPrompt (the FULL transcript) alongside a delta send, so a stale-session retry never gets the delta', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }];
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ fallbackPrompt: undefined }); // nothing to fall back from yet
+
+    messages.push({ role: 'assistant', content: 'ok' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    const call = cli.mock.calls.at(-1);
+    const deltaPrompt = String(call?.[1] || '');
+    const fallbackPrompt = String((call?.[2] as { fallbackPrompt?: string } | undefined)?.fallbackPrompt || '');
+    expect(deltaPrompt).not.toContain('### SYSTEM\nS'); // delta omits the first task's system/user content
+    expect(deltaPrompt).not.toContain('### USER\nU');
+    expect(fallbackPrompt).toContain('### SYSTEM\nS'); // fallback carries the FULL transcript a fresh session would need
+    expect(fallbackPrompt).toContain('### USER\nU');
+  });
 });
 
 describe('codex backbone surfaces toolCalls (guards the CodexAdapter half of the fix)', () => {

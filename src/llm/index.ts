@@ -1368,9 +1368,20 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   // one LocalAgentAdapter is held for an operator's whole life, so this naturally spans every task
   // until the caller (TempestCommand, on phase advance) calls resetSession() to start a new one.
   private claudeSessionId?: string;
+  // The exact `messages` array object sent last call, and how many of its entries were sent.
+  // A resumed session already HAS everything up to that point server-side — resending it would
+  // duplicate the transcript into the session instead of avoiding the resend (PR #149 review).
+  // Reference equality is deliberate: AgentLoop grows ONE array via push() across a task's
+  // iterations, so `messages === lastSentMessages` means "same task, continuing" and the tail
+  // past `lastSentCount` is the delta. A DIFFERENT array (a new task) means the resumed session
+  // has never seen any of it, so it goes out in full even though the CLI session itself resumes.
+  private lastSentMessages?: LLMMessage[];
+  private lastSentCount = 0;
   constructor(config: LLMConfig) { this.config = config; }
   resetSession(): void {
     this.claudeSessionId = undefined;
+    this.lastSentMessages = undefined;
+    this.lastSentCount = 0;
   }
   // Split "agentId[::model]" → { agentId, agentModel }. No separator = just the agent id (CLI default model).
   private parseAgentSpec(): { agentId: string; agentModel?: string } {
@@ -1401,20 +1412,30 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const { agentId, agentModel } = this.parseAgentSpec();
-    const prompt = this.formatPrompt(messages, options);
+    const fullPrompt = this.formatPrompt(messages, options);
+    // Resuming AND still the same task's (same array object) growing transcript → send only the
+    // NEW messages since last call. A resumed session already has everything up to lastSentCount;
+    // resending it would duplicate the transcript into the session rather than avoiding the resend.
+    // A different array (a new task) or no session yet falls through to the full prompt.
+    const isDelta = agentId === 'claude' && this.claudeSessionId !== undefined && messages === this.lastSentMessages;
+    const sendPrompt = isDelta ? this.formatPrompt(messages.slice(this.lastSentCount), options) : fullPrompt;
     const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
-    const raw = (await localAgentChat(agentId, prompt, {
+    const raw = (await localAgentChat(agentId, sendPrompt, {
       model: agentModel,
       timeoutMs,
       sessionId: agentId === 'claude' ? this.claudeSessionId : undefined,
+      // The stale-session fallback starts a genuinely fresh session with no history — it needs
+      // the FULL transcript, never the delta computed for the (failed) resumed attempt.
+      fallbackPrompt: isDelta ? fullPrompt : undefined,
     })).trim();
+    if (agentId === 'claude') { this.lastSentMessages = messages; this.lastSentCount = messages.length; }
     // Claude requests --output-format json (see local-agents.ts) so this parses to REAL usage.
     // Anything else (parse failure, or a non-claude agent) falls back to the raw text — claude
     // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
     const parsed = agentId === 'claude' ? parseClaudeJsonEnvelope(raw) : null;
     const content = parsed ? parsed.content : raw;
     const usage = agentId === 'claude'
-      ? (parsed?.usage ?? estimateUsage(prompt, parsed?.content ?? raw))
+      ? (parsed?.usage ?? estimateUsage(sendPrompt, parsed?.content ?? raw))
       : undefined;
     // Carry the session forward so the NEXT call (--resume) picks up where this one left off.
     // Empirically stable across --resume (confirmed against the real CLI), but re-capture anyway

@@ -300,6 +300,16 @@ case "$*" in
 esac
 `;
 
+// Echoes exactly what it received on stdin back to stdout on the fresh (non-resume) path — lets a
+// test prove WHICH prompt string a fresh-session retry actually received, not just that it succeeded.
+const FAKE_CLI_ECHO_ON_FRESH = `#!/bin/sh
+prompt=$(cat)
+case "$*" in
+  *--resume*) echo "No conversation found with session ID: fake" >&2; exit 1 ;;
+  *) printf '%s' "$prompt" ;;
+esac
+`;
+
 describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
   it('retries WITHOUT --resume when the resumed session is stale, and succeeds', async () => {
     const home = scratch();
@@ -337,5 +347,33 @@ describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
     process.env.PATH = '/usr/bin:/bin';
 
     await expect(localAgentChat('claude', 'ping', { sessionId: 'whatever', timeoutMs: 4000 })).rejects.toThrow(/both broken/);
+  });
+
+  // PR #149 review (jmagly): the fresh-session retry has no history at all, so it must receive the
+  // FULL transcript (fallbackPrompt) — never the delta sized for the (failed) resumed attempt.
+  it('the fresh-session retry receives fallbackPrompt, not the delta prompt of the failed resumed attempt', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_ECHO_ON_FRESH);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'DELTA-ONLY-CONTENT', {
+      sessionId: 'stale-uuid',
+      fallbackPrompt: 'FULL-TRANSCRIPT-CONTENT',
+      timeoutMs: 4000,
+    });
+
+    expect(out).toBe('FULL-TRANSCRIPT-CONTENT');
+    expect(out).not.toContain('DELTA-ONLY-CONTENT');
+  });
+
+  it('falls back to the (delta) prompt itself when no fallbackPrompt is supplied', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_ECHO_ON_FRESH);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ONLY-PROMPT-CONTENT', { sessionId: 'stale-uuid', timeoutMs: 4000 });
+    expect(out).toBe('ONLY-PROMPT-CONTENT');
   });
 });

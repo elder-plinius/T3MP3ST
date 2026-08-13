@@ -489,7 +489,7 @@ export function pingLocalAgent(id: string, prompt?: string, timeoutMs?: number):
  * clean reply, while Hermes takes the prompt as an arg. Provider keys are stripped so each CLI uses its own
  * login (no API key needed). Throws on non-zero exit / timeout so the LLMBackbone retry/fallback fires.
  */
-export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number; sessionId?: string } = {}): Promise<string> {
+export function localAgentChat(id: string, prompt: string, opts: { model?: string; timeoutMs?: number; sessionId?: string; fallbackPrompt?: string } = {}): Promise<string> {
   const spec = getSpec(id);
   if (!spec) return Promise.reject(new Error(`unknown local agent: ${id}`));
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
@@ -529,7 +529,7 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
 
   const cleanup = () => { if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { /* noop */ } } };
   const resolvedBin = resolveBin(spec.bin) || spec.bin;
-  const runOnce = (argv: string[]): Promise<string> => new Promise((resolve, reject) => {
+  const runOnce = (argv: string[], promptToSend: string): Promise<string> => new Promise((resolve, reject) => {
     const child = spawnAgent(resolvedBin, argv, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
@@ -549,15 +549,16 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
         else reject(new Error((errOut.trim() || content || `exited with code ${code}`).slice(0, 800)));
       });
     });
-    if (viaStdin && child.stdin) { child.stdin.write(prompt); child.stdin.end(); }
+    if (viaStdin && child.stdin) { child.stdin.write(promptToSend); child.stdin.end(); }
   });
 
-  const first = runOnce(args);
+  const first = runOnce(args, prompt);
   if (!claudeArgsNoResume || args === claudeArgsNoResume) return first;
   // A resumed Claude session can go stale (CLI storage pruned, different session dir, expired).
   // Confirmed empirically: an unknown/invalid --resume id is a hard, fast failure (nonzero exit,
   // "No conversation found with session ID: ..." on stderr, no JSON on stdout) — the CLI never
   // falls back to a fresh session on its own. Do that fallback here, once, rather than failing
-  // the whole task over a stale id.
-  return first.catch(() => runOnce(claudeArgsNoResume as string[]));
+  // the whole task over a stale id. The fresh session has no history, so it MUST get the full
+  // transcript (fallbackPrompt), never the delta `prompt` that was sized for the resumed attempt.
+  return first.catch(() => runOnce(claudeArgsNoResume as string[], opts.fallbackPrompt ?? prompt));
 }
