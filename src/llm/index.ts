@@ -1434,8 +1434,13 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
     const parsed = agentId === 'claude' ? parseClaudeJsonEnvelope(raw) : null;
     const content = parsed ? parsed.content : raw;
+    // Estimate from the FULL prompt, not sendPrompt: a real envelope's promptTokens on a delta
+    // call is large (input + cache_creation + cache_read for the WHOLE resumed context, confirmed
+    // empirically — a resumed call's real promptTokens tracks the full conversation, not the wire
+    // size of the delta). Estimating from the tiny delta text instead would undercount the budget
+    // check by an order of magnitude in the one case this estimate exists to cover (PR #149 review).
     const usage = agentId === 'claude'
-      ? (parsed?.usage ?? estimateUsage(sendPrompt, parsed?.content ?? raw))
+      ? (parsed?.usage ?? estimateUsage(fullPrompt, parsed?.content ?? raw))
       : undefined;
     // Carry the session forward so the NEXT call (--resume) picks up where this one left off.
     // Empirically stable across --resume (confirmed against the real CLI), but re-capture anyway

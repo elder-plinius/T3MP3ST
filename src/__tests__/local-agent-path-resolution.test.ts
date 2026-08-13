@@ -310,6 +310,17 @@ case "$*" in
 esac
 `;
 
+// A --resume failure that is NOT the stale-session error. If a fallback retry incorrectly fired,
+// the fresh (non-resume) branch below would resolve successfully — so a test asserting this
+// REJECTS proves no retry happened, not just that the final error text matches.
+const FAKE_CLI_NONSTALE_RESUME_ERROR = `#!/bin/sh
+cat >/dev/null 2>&1
+case "$*" in
+  *--resume*) echo "connection refused" >&2; exit 1 ;;
+  *) echo '{"result":"should not be reached — a retry fired for a non-stale error","session_id":"x"}' ;;
+esac
+`;
+
 describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
   it('retries WITHOUT --resume when the resumed session is stale, and succeeds', async () => {
     const home = scratch();
@@ -340,13 +351,26 @@ describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
     await expect(localAgentChat('claude', 'ping', { timeoutMs: 4000 })).rejects.toThrow(/boom/);
   });
 
-  it('propagates the fallback attempt\'s own error when both the resumed and fresh calls fail', async () => {
+  it('a non-stale failure with a session in play propagates without a fallback retry (narrowed trigger, PR #149 review)', async () => {
     const home = scratch();
-    putExe(join(home, '.local', 'bin'), 'claude', '#!/bin/sh\ncat >/dev/null 2>&1\necho "both broken" >&2\nexit 1\n');
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_NONSTALE_RESUME_ERROR);
     process.env.T3MP3ST_AGENT_HOME = home;
     process.env.PATH = '/usr/bin:/bin';
 
-    await expect(localAgentChat('claude', 'ping', { sessionId: 'whatever', timeoutMs: 4000 })).rejects.toThrow(/both broken/);
+    // If the (old, unnarrowed) fallback fired here, this would RESOLVE with the fresh branch's
+    // success text instead of rejecting — a rejection proves no retry happened.
+    await expect(localAgentChat('claude', 'ping', { sessionId: 'whatever', timeoutMs: 4000 }))
+      .rejects.toThrow(/connection refused/);
+  });
+
+  it('the specific stale-session error still triggers exactly one fallback retry', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ping', { sessionId: 'stale-uuid', timeoutMs: 4000 });
+    expect(JSON.parse(out).result).toBe('fresh ok');
   });
 
   // PR #149 review (jmagly): the fresh-session retry has no history at all, so it must receive the

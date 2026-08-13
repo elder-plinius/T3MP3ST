@@ -560,5 +560,13 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
   // falls back to a fresh session on its own. Do that fallback here, once, rather than failing
   // the whole task over a stale id. The fresh session has no history, so it MUST get the full
   // transcript (fallbackPrompt), never the delta `prompt` that was sized for the resumed attempt.
-  return first.catch(() => runOnce(claudeArgsNoResume as string[], opts.fallbackPrompt ?? prompt));
+  //
+  // Only retry for a CONFIRMED stale session (the exact empirical error text above). Any other
+  // failure — a network blip, a real auth error, a timeout — propagates as-is instead of silently
+  // doubling latency and cost on a retry that would not fix the actual problem (PR #149 review).
+  return first.catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/no conversation found/i.test(message)) throw err;
+    return runOnce(claudeArgsNoResume as string[], opts.fallbackPrompt ?? prompt);
+  });
 }

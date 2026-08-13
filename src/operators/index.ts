@@ -849,7 +849,8 @@ export class OperatorCell extends EventEmitter<CellEvents> {
   spawnOperator(
     callsign: string,
     archetype: OperatorArchetype,
-    config?: Partial<OperatorConfig>
+    config?: Partial<OperatorConfig>,
+    llm?: LLMBackbone
   ): OperatorAgent {
     if (this.operators.size >= this.maxOperators) {
       this.emit('cell:capacity_warning', {
@@ -866,7 +867,7 @@ export class OperatorCell extends EventEmitter<CellEvents> {
       }
     }
 
-    const operator = new OperatorAgent(callsign, archetype, config, this.llm);
+    const operator = new OperatorAgent(callsign, archetype, config, llm ?? this.llm);
 
     // Forward operator events
     operator.on('status:changed', ({ oldStatus }) => {

@@ -326,6 +326,30 @@ describe('Claude local-agent session resume (Tier 2)', () => {
     expect(fallbackPrompt).toContain('### SYSTEM\nS'); // fallback carries the FULL transcript a fresh session would need
     expect(fallbackPrompt).toContain('### USER\nU');
   });
+
+  // PR #149 review follow-up: a real envelope's promptTokens on a resumed call reflects the WHOLE
+  // cached conversation (input + cache_creation + cache_read), not the wire size of the delta —
+  // confirmed empirically. The character-estimate fallback (used only when the envelope fails to
+  // parse) must approximate that same full-conversation size, or it silently undercounts the
+  // budget check by an order of magnitude on a delta call.
+  it('the usage estimate fallback reflects the FULL transcript, not the delta, on a mid-session parse failure', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [
+      { role: 'system', content: 'S'.repeat(2000) },
+      { role: 'user', content: 'U'.repeat(2000) },
+    ];
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    messages.push({ role: 'assistant', content: 'ok' });
+    cli.mockResolvedValueOnce('not json'); // envelope parse failure -> falls to the estimate
+    const res = await be.chat(messages);
+
+    // A delta-only estimate would be tiny (just "ok" plus the preamble/tool contract). The full
+    // ~4000 chars of original system/user content must show up in the estimate too.
+    expect(res.usage?.promptTokens).toBeGreaterThan(900);
+  });
 });
 
 describe('codex backbone surfaces toolCalls (guards the CodexAdapter half of the fix)', () => {
