@@ -20,6 +20,7 @@ import { browserProbeTool } from './browser.js';
 import { usernameSearchTool, telegramLookupTool, emailFormatTool, ipInfoTool } from './social-osint.js';
 import { idorProbeTool } from './idor.js';
 import { jsAnalyzeTool } from './js-analyze.js';
+import { kevCheckTool } from './kev.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -599,6 +600,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
   ipInfoTool,
   idorProbeTool,
   jsAnalyzeTool,
+  kevCheckTool,
   // =============================================================================
   // RECONNAISSANCE TOOLS
   // =============================================================================

@@ -115,7 +115,7 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Identifies vulnerabilities and security misconfigurations',
     mitreTactics: ['TA0007'],
     primaryPhases: [KillChainPhase.WEAPONIZE],
-    defaultTools: ['idor_probe', 'js_analyze', 'nuclei_scan', 'browser_probe', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request', 'nuclei_tool', 'httpx_tool', 'dalfox_tool', 'sqlmap_tool', 'gobuster_tool'],
+    defaultTools: ['kev_check', 'idor_probe', 'js_analyze', 'nuclei_scan', 'browser_probe', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request', 'nuclei_tool', 'httpx_tool', 'dalfox_tool', 'sqlmap_tool', 'gobuster_tool'],
     toolCategories: ['vuln', 'web', 'recon'],
     capabilities: ['vuln_scanning', 'web_scanning', 'service_enum', 'config_audit'],
     techniques: ['T1046', 'T1082', 'T1083', 'T1087'],
