@@ -461,6 +461,76 @@ function parseWafw00f(raw: string): ToolFinding[] {
   return out;
 }
 
+// ── trufflehog --json : one finding per leaked secret ────────────────────────
+function parseTrufflehog(raw: string): ToolFinding[] {
+  const out: ToolFinding[] = [];
+  for (const e of jsonl(raw)) {
+    const meta = asObj(e.SourceMetadata);
+    const data = asObj(meta.Data);
+    const file = String(data.File ?? meta.Filename ?? meta.Path ?? '');
+    const secret = String(e.Raw ?? e.Secret ?? '');
+    const detector = String(e.DetectorName ?? e.decoder_type ?? 'secret');
+    const line = num(data.Line) ?? undefined;
+    const verified = e.Verified === true || e.verified === true;
+    if (!secret || secret.length < 4) continue;
+    out.push({
+      title: `trufflehog: ${detector}${file ? ` in ${file.split(/[\\/]/).pop()}` : ''}`,
+      severity: verified ? 'high' : 'medium',
+      details: [
+        `Detector: ${detector}`,
+        file && `File: ${file}${line !== undefined ? `:${line}` : ''}`,
+        verified ? 'Verified credential' : 'Unverified secret (verify manually)',
+        `Secret: ${secret.slice(0, 60)}${secret.length > 60 ? '…' : ''}`,
+      ].filter(Boolean).join(' | '),
+      cwe: ['CWE-798'],
+    });
+  }
+  return out;
+}
+
+// ── arjun -oJ / text : found hidden parameters per endpoint ──────────────────
+function parseArjun(raw: string): ToolFinding[] {
+  const doc = jsonDoc(raw);
+  const out: ToolFinding[] = [];
+  if (doc && typeof doc === 'object') {
+    for (const [url, paramsRaw] of Object.entries(doc as Record<string, unknown>)) {
+      const params = paramsRaw && typeof paramsRaw === 'object' ? Object.keys(paramsRaw as Record<string, unknown>) : [];
+      if (!params.length) continue;
+      out.push({
+        title: `arjun: ${params.length} hidden parameter(s) on ${url}`,
+        severity: 'info',
+        details: `Discovered parameters: ${params.join(', ')}. Hidden parameters often unlock undocumented functionality — probe each for injection/auth issues.`,
+      });
+    }
+    return out;
+  }
+  // Text mode: "Found 2 parameters: token, debug" or an indented parameter block.
+  const text = String(raw);
+  const found = text.match(/Found\s+(\d+)\s+param(?:eter)?s?\s*:?\s*(.+)/i);
+  if (found) {
+    const params = found[2].split(/[\s,]+/).filter(Boolean);
+    out.push({
+      title: `arjun: ${params.length} hidden parameter(s)`,
+      severity: 'info',
+      details: `Discovered parameters: ${params.join(', ')}. Hidden parameters often unlock undocumented functionality — probe each for injection/auth issues.`,
+    });
+    return out;
+  }
+  const line = text.split('\n').map((l) => l.trim()).find((l) => /^https?:\/\/\S+\s*[:]\s*\S+/.test(l));
+  if (line) {
+    const [url, ...rest] = line.split(':');
+    const params = rest.join(':').split(/[\s,]+/).filter(Boolean);
+    if (params.length) {
+      out.push({
+        title: `arjun: ${params.length} hidden parameter(s) on ${url.trim()}`,
+        severity: 'info',
+        details: `Discovered parameters: ${params.join(', ')}. Hidden parameters often unlock undocumented functionality.`,
+      });
+    }
+  }
+  return out;
+}
+
 const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   nuclei: parseNuclei,
   httpx: parseHttpx,
@@ -475,6 +545,8 @@ const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   sqlmap: parseSqlmap,
   feroxbuster: parseFeroxbuster,
   wafw00f: parseWafw00f,
+  trufflehog: parseTrufflehog,
+  arjun: parseArjun,
 };
 
 /** Adapter ids that have a structured output parser wired here. */

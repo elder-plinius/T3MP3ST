@@ -219,6 +219,17 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
       return ['-u', target, '--batch', `--level=${level}`, `--risk=${risk}`];
     },
   },
+  arjun: {
+    targetParam: 'url',
+    defaultTimeoutMs: 180_000,
+    // arjun prints discovered parameters to stdout; -oJ needs a file path
+    // which the adapter cannot return, so keep stdout text mode.
+    build: (target, params) => {
+      const args = ['-u', target, '-q', '--stable'];
+      if (str(params.wordlist)) args.push('-w', str(params.wordlist) as string);
+      return args;
+    },
+  },
   gobuster: {
     targetParam: 'url',
     defaultTimeoutMs: 120_000,

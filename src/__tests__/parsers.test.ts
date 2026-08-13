@@ -104,7 +104,7 @@ describe('parseToolOutput — honesty contract (never fabricate, never throw)', 
 
   it('exposes exactly the wired parser ids', () => {
     expect([...PARSED_TOOL_IDS].sort()).toEqual(
-      ['dalfox', 'feroxbuster', 'ffuf', 'garak', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'sqlmap', 'trivy', 'wafw00f'],
+      ['arjun', 'dalfox', 'feroxbuster', 'ffuf', 'garak', 'gitleaks', 'grype', 'httpx', 'katana', 'nuclei', 'semgrep', 'sqlmap', 'trivy', 'trufflehog', 'wafw00f'],
     );
   });
 
@@ -153,6 +153,30 @@ describe('parseToolOutput — honesty contract (never fabricate, never throw)', 
     expect(f[0].title).toContain('Cloudflare');
     const none = parseToolOutput('wafw00f', '[+] No WAF detected by the generic detection\n[+] Checking https://y');
     expect(none.some((n) => n.title === 'No WAF Detected')).toBe(true);
+  });
+
+  it('trufflehog: one finding per leaked secret with file/line and verified flag', () => {
+    const raw = [
+      JSON.stringify({ Raw: 'AKIA1234567890ABCDEF', DetectorName: 'AWS', Verified: true, SourceMetadata: { Data: { File: 'src/app.py', Line: 42 } } }),
+      JSON.stringify({ Raw: 'ghp_abcdefghijklmnopqrstuvwxyz', DetectorName: 'Github', Verified: false, SourceMetadata: { Data: { File: 'config.json' } } }),
+    ].join('\n');
+    const f = parseToolOutput('trufflehog', raw);
+    expect(f).toHaveLength(2);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].details).toContain('app.py:42');
+    expect(f[0].details).toContain('Verified');
+    expect(f[1].severity).toBe('medium');
+  });
+
+  it('arjun: hidden parameters per endpoint from -oJ output', () => {
+    const raw = JSON.stringify({ 'https://x/api': { token: '1', debug: '1', page: '1' } });
+    const f = parseToolOutput('arjun', raw);
+    expect(f).toHaveLength(1);
+    expect(f[0].title).toContain('3 hidden parameter');
+    expect(f[0].details).toContain('token, debug, page');
+    expect(parseToolOutput('arjun', '{"https://x/api": {}}')).toEqual([]);
+    const text = parseToolOutput('arjun', '[+] Found 2 parameters: id, debug');
+    expect(text[0].title).toContain('2 hidden parameter');
   });
 });
 
