@@ -62,6 +62,15 @@ export const usernameSearchTool: CustomTool = {
       { platform: 'Keybase', url: `https://keybase.io/${u}`, probe: probeExists(`https://keybase.io/${u}`) },
       { platform: 'VK', url: `https://vk.com/${u}`, probe: probeExists(`https://vk.com/${u}`) },
       { platform: 'Pastebin', url: `https://pastebin.com/u/${u}`, probe: probeExists(`https://pastebin.com/u/${u}`) },
+      { platform: 'HackerOne', url: `https://hackerone.com/${u}`, probe: probeExists(`https://hackerone.com/${u}`) },
+      { platform: 'Bugcrowd', url: `https://bugcrowd.com/${u}`, probe: probeExists(`https://bugcrowd.com/${u}`) },
+      { platform: 'TryHackMe', url: `https://tryhackme.com/p/${u}`, probe: probeExists(`https://tryhackme.com/p/${u}`) },
+      { platform: 'Replit', url: `https://replit.com/@${u}`, probe: probeExists(`https://replit.com/@${u}`) },
+      { platform: 'CodePen', url: `https://codepen.io/${u}`, probe: probeExists(`https://codepen.io/${u}`) },
+      { platform: 'Medium', url: `https://medium.com/@${u}`, probe: probeExists(`https://medium.com/@${u}`) },
+      { platform: 'YouTube', url: `https://www.youtube.com/@${u}`, probe: probeExists(`https://www.youtube.com/@${u}`) },
+      { platform: 'Pinterest', url: `https://www.pinterest.com/${u}/`, probe: probeExists(`https://www.pinterest.com/${u}/`) },
+      { platform: 'Spotify', url: `https://open.spotify.com/user/${u}`, probe: probeExists(`https://open.spotify.com/user/${u}`) },
     ];
     // Telegram via Bot API when a token is configured (chat may be private → note)
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();

@@ -21,6 +21,7 @@ import { usernameSearchTool, telegramLookupTool, emailFormatTool, ipInfoTool } f
 import { idorProbeTool } from './idor.js';
 import { jsAnalyzeTool } from './js-analyze.js';
 import { kevCheckTool } from './kev.js';
+import { binarySinkScanTool } from './binary.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -601,6 +602,7 @@ export const BUILTIN_TOOLS: CustomTool[] = [
   idorProbeTool,
   jsAnalyzeTool,
   kevCheckTool,
+  binarySinkScanTool,
   // =============================================================================
   // RECONNAISSANCE TOOLS
   // =============================================================================

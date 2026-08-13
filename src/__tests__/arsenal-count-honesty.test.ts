@@ -43,7 +43,7 @@ describe('arsenal count honesty (advertised = real registered surface)', () => {
       `arsenal size drifted from the advertised 109 (adapters=${TOOL_ADAPTERS.length}, ` +
         `built-ins=${BUILTIN_TOOLS.length}, externals=${EXTERNAL_TOOLS.length}) — ` +
         'update the README / verify-claims headline to match',
-    ).toBe(117); // 73 adapters + 44 built-ins (browser_probe + 4 social-OSINT + idor_probe + js_analyze + kev_check) + 0 externals
+    ).toBe(118); // 73 adapters + 45 built-ins (incl. browser, OSINT, idor, js, kev, binary) + 0 externals
     expect(total).toBeGreaterThanOrEqual(80); // stays consistent with verify-claims' `>= 80` gate
   });
 
