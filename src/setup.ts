@@ -148,6 +148,54 @@ async function setupVeniceKey(): Promise<boolean> {
   }
 }
 
+async function setupOrcaRouterKey(): Promise<boolean> {
+  console.log('');
+  showInfo('OrcaRouter is an OpenAI-compatible gateway that routes any mainstream model via one endpoint.');
+  showInfo('Get your API key at: ' + chalk.underline('https://www.orcarouter.ai'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your OrcaRouter API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  // Test the API key
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'orcarouter',
+      model: 'anthropic/claude-sonnet-4.6',
+      baseUrl: 'https://api.orcarouter.ai/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('orcarouter', apiKey);
+    showSuccess('OrcaRouter API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupAnthropicKey(): Promise<boolean> {
   console.log('');
   showInfo('Anthropic provides direct access to Claude models.');
@@ -608,6 +656,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'venice',
         },
         {
+          name: `OrcaRouter ${hasApiKey('orcarouter') ? chalk.green('(configured)') : chalk.gray('(multi-model OpenAI-compatible gateway)')}`,
+          value: 'orcarouter',
+        },
+        {
           name: `Anthropic ${hasApiKey('anthropic') ? chalk.green('(configured)') : ''}`,
           value: 'anthropic',
         },
@@ -640,6 +692,9 @@ async function setupApiKeys(): Promise<void> {
       case 'venice':
         await setupVeniceKey();
         break;
+      case 'orcarouter':
+        await setupOrcaRouterKey();
+        break;
       case 'openrouter':
         await setupOpenRouterKey();
         break;
@@ -671,6 +726,7 @@ async function setupProvider(): Promise<void> {
   configuredProviders.push({ name: 'Local model (Ollama / LM Studio / vLLM, no API key)', value: 'local' });
   if (hasApiKey('openrouter')) configuredProviders.push({ name: 'OpenRouter', value: 'openrouter' });
   if (hasApiKey('venice')) configuredProviders.push({ name: 'Venice', value: 'venice' });
+  if (hasApiKey('orcarouter')) configuredProviders.push({ name: 'OrcaRouter', value: 'orcarouter' });
   if (hasApiKey('anthropic')) configuredProviders.push({ name: 'Anthropic', value: 'anthropic' });
   if (hasApiKey('openai')) configuredProviders.push({ name: 'OpenAI', value: 'openai' });
   if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' });
@@ -705,6 +761,7 @@ function viewConfiguration(): void {
   console.log(chalk.cyan('  API Keys:'));
   console.log('    OpenRouter: ' + (hasApiKey('openrouter') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    Venice: ' + (hasApiKey('venice') ? chalk.green('configured') : chalk.red('not set')));
+  console.log('    OrcaRouter: ' + (hasApiKey('orcarouter') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    Anthropic: ' + (hasApiKey('anthropic') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    OpenAI: ' + (hasApiKey('openai') ? chalk.green('configured') : chalk.red('not set')));
   console.log('    DeepSeek: ' + (hasApiKey('deepseek') ? chalk.green('configured') : chalk.red('not set')));
