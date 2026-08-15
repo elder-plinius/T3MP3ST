@@ -640,7 +640,7 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
-  // Model ids verified live against api.novita.ai/openai/v1/models (2026-08-10).
+  // Model ids verified live against api.novita.ai/openai/v1/models (2026-08-15).
   novita: [
     {
       id: 'zai-org/glm-5.2',
@@ -651,8 +651,8 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
     },
     {
-      id: 'deepseek/deepseek-v4-flash-0731',
-      name: 'DeepSeek V4 Flash 0731 (Novita)',
+      id: 'deepseek/deepseek-v4-pro-0813',
+      name: 'DeepSeek V4 Pro 0813 (Novita)',
       provider: 'Novita',
       contextWindow: 1048576,
       maxOutput: 393216,
