@@ -37,7 +37,7 @@ describe('obsidivm bridge — unreachable-service diagnostics (#156)', () => {
     const port = await closedPort();
     const o = obsidivm({ baseUrl: `http://127.0.0.1:${port}`, timeoutMs: 2000 });
 
-    const err = (await o.getSpec().then(() => null, (e) => e)) as (Error & { unreachable?: boolean }) | null;
+    const err = (await o.getSpec().then(() => null, (e: unknown) => e)) as (Error & { unreachable?: boolean }) | null;
 
     expect(err, 'getSpec should reject when the service is down').toBeTruthy();
     // names the failure, the URL, and the self-service escape hatches
@@ -46,5 +46,44 @@ describe('obsidivm bridge — unreachable-service diagnostics (#156)', () => {
     expect(err!.message).toMatch(/OBSIDIVM_URL|docs\/OBSIDIVM\.md/);
     // and is flagged so callers can distinguish "down" from an HTTP-status error
     expect(err!.unreachable).toBe(true);
+  });
+
+  it('reports a timeout distinctly (not as "unreachable")', async () => {
+    // A server that accepts the connection but never responds forces the
+    // AbortController timeout path — distinct from a refused connection.
+    const srv = net.createServer(() => {
+      /* accept, then hang: never write a response */
+    });
+    try {
+      const port: number = await new Promise((resolve) =>
+        srv.listen(0, '127.0.0.1', () => resolve((srv.address() as net.AddressInfo).port)),
+      );
+      const o = obsidivm({ baseUrl: `http://127.0.0.1:${port}`, timeoutMs: 200 });
+      const err = (await o.getSpec().then(() => null, (e: unknown) => e)) as (Error & { unreachable?: boolean }) | null;
+
+      expect(err, 'getSpec should reject on timeout').toBeTruthy();
+      expect(err!.message).toMatch(/timed out after \d+ms/i);
+      expect(err!.unreachable).toBeUndefined(); // a timeout is not "service down"
+    } finally {
+      // Fire-and-forget: the aborted request leaves a half-open socket, so
+      // awaiting close() would hang. Destroy connections and close without
+      // waiting — the assertions are already done. (closeAllConnections lands in
+      // newer @types/node than this repo pins, hence the cast.)
+      (srv as net.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+      srv.close();
+    }
+  });
+
+  it('reports a malformed base URL as a config error, not "unreachable"', async () => {
+    // ERR_INVALID_URL is the operator's mistake, not a down service — the message
+    // must point at OBSIDIVM_URL, not at starting the range service.
+    const o = obsidivm({ baseUrl: 'not-a-valid-url' });
+    const err = (await o.getSpec().then(() => null, (e: unknown) => e)) as (Error & { unreachable?: boolean }) | null;
+
+    expect(err, 'getSpec should reject on a bad URL').toBeTruthy();
+    expect(err!.message).toMatch(/invalid OBSIDIVM base URL/i);
+    expect(err!.message).toMatch(/OBSIDIVM_URL/);
+    expect(err!.message).not.toMatch(/unreachable|is it running/i);
+    expect(err!.unreachable).toBeUndefined();
   });
 });

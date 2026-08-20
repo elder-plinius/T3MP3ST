@@ -24,6 +24,10 @@ export interface ObsidivmClient {
   proposeGoalposts(payload?: Record<string, unknown>): Promise<unknown>;
   evolveStart(payload?: Record<string, unknown>): Promise<unknown>;
   evolveStop(): Promise<unknown>;
+  cloudgoatInstall(): Promise<unknown>;
+  cloudgoatCreate(scenario: string): Promise<unknown>;
+  cloudgoatDestroy(scenario: string): Promise<unknown>;
+  cloudgoatDestroyAll(): Promise<unknown>;
 }
 
 export function obsidivm(opts?: { baseUrl?: string; timeoutMs?: number }): ObsidivmClient;

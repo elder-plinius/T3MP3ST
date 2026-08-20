@@ -40,12 +40,21 @@ export function obsidivm({ baseUrl, timeoutMs } = {}) {
           signal: ctrl.signal,
         });
       } catch (e) {
-        // The fetch itself failed (connection refused, DNS, timeout) — distinct
-        // from an HTTP-status error below. A bare `fetch failed` here is the #156
-        // dead-end; make it self-service instead. Timeout is the AbortController
-        // firing; anything else means nothing is listening on the base URL.
+        // The fetch itself failed — distinct from an HTTP-status error below. A
+        // bare `fetch failed` here is the #156 dead-end; make it self-service.
+        // Three sub-cases, kept distinct so the message points at the real fix:
+        //   AbortError      → the request timed out
+        //   ERR_INVALID_URL → OBSIDIVM_URL is malformed (a config error, NOT a
+        //                     down service — don't send the user to start one)
+        //   otherwise       → nothing is listening on the base URL
         if (e?.name === 'AbortError') {
           throw new Error(`OBSIDIVM ${method} ${path} timed out after ${t}ms (${base}).`);
+        }
+        if (e?.cause?.code === 'ERR_INVALID_URL') {
+          throw new Error(
+            `Invalid OBSIDIVM base URL ${JSON.stringify(base)} — set OBSIDIVM_URL (or --obsidivm) ` +
+              `to a full URL like http://127.0.0.1:4200.`,
+          );
         }
         const err = new Error(
           `OBSIDIVM service unreachable at ${base} — ${method} ${path} failed ` +
