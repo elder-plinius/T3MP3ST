@@ -38,9 +38,9 @@ const SINK_RULES: { id: string; desc: string; severity: 'high' | 'medium'; re: R
 // Hardcoded secret / sensitive-data patterns found in extracted strings.
 const SECRET_RULES: { id: string; desc: string; severity: 'high' | 'medium'; re: RegExp }[] = [
   { id: 'B-HARDCODED-PASS', desc: 'Hardcoded password-like literal', severity: 'high', re: /(password|passwd|pwd)\s*[=:]\s*["\x27][^"\x27]{4,}["\x27]/i },
-  { id: 'B-HARDCODED-KEY', desc: 'Hardcoded API key / token-like literal', severity: 'high', re: /(api[_-]?key|secret|token|apikey)\s*[=:]\s*["\x27][A-Za-z0-9_\-]{12,}["\x27]/i },
+  { id: 'B-HARDCODED-KEY', desc: 'Hardcoded API key / token-like literal', severity: 'high', re: /(api[_-]?key|secret|token|apikey)\s*[=:]\s*["\x27][A-Za-z0-9_-]{12,}["\x27]/i },
   { id: 'B-HARDCODED-CRED', desc: 'Hardcoded user:password / connection string', severity: 'high', re: /(user(id)?|login)\s*[=:]\s*["\x27][^"\x27]+["\x27]\s*[,;]\s*(pass|passwd|pwd)\s*[=:]\s*["\x27][^"\x27]+["\x27]/i },
-  { id: 'B-HARDCODED-URL-CRED', desc: 'Credentials embedded in a URL (scheme://user:pass@host)', severity: 'medium', re: /[a-z][a-z0-9+.-]*:\/\/[^\/\s:]+:[^\/\s@]+@/i },
+  { id: 'B-HARDCODED-URL-CRED', desc: 'Credentials embedded in a URL (scheme://user:pass@host)', severity: 'medium', re: /[a-z][a-z0-9+.-]*:\/\/[^/\s:]+:[^/\s@]+@/i },
   { id: 'B-ENCRYPTION-KEY', desc: 'Hardcoded encryption key/IV literal', severity: 'medium', re: /(encryption[_-]?key|aes[_-]?key|iv|salt|init[_-]?vector)\s*[=:]\s*["\x27][^"\x27]{4,}["\x27]/i },
 ];
 
