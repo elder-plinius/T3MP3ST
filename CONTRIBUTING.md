@@ -4,6 +4,12 @@ T3MP3ST needs contributions from prompt engineers, cyber operators, bug bounty h
 
 The best contributions make the system more capable while making its evidence and authority boundaries clearer.
 
+The canonical repository and tracker are
+[`elder-plinius/T3MP3ST`](https://github.com/elder-plinius/T3MP3ST). Open issues
+and pull requests there against `main`. The project uses focused branches,
+squash merges, green exact-head CI, and does not permit force-pushing published
+review history.
+
 ## High-Value Contribution Types
 
 - Add a tool adapter in `src/arsenal/catalog.ts`.
@@ -41,6 +47,12 @@ Prompt packs should include:
 
 ## Review Standard
 
+Behavior changes must include outcome-oriented regression coverage. A change
+with no relevant tests is blocked. Changed executable lines should reach at
+least 50% coverage; documentation-only and metadata-only changes may mark this
+not applicable with a reason. Trust-boundary, scope, evidence, provider,
+installation, and release changes also need the focused checks for that risk.
+
 Before opening a PR:
 
 ```bash
@@ -71,6 +83,14 @@ The PR must stay scoped to its title. Do not include stale-base deletions,
 unrelated provider/config churn, benchmark fixture removals, provenance doc
 removals, or safety-test removals. If the branch has drifted, recreate it from
 current `main` and reapply only the intended change.
+
+Maintainers run `npm run test:release`, `npm audit --audit-level=high`, and the
+package dry run against the exact release commit before publishing. A green PR
+gate is necessary for review and merge, but it is not release certification.
+
+Do not include secrets, private tracker content, unlicensed corpora, or
+uncoordinated vulnerability details. Use the disclosure channel in
+`SECURITY.md` for security-sensitive reports.
 
 ## Style
 
