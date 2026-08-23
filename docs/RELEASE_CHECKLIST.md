@@ -19,6 +19,7 @@ npm run test:no-self-fitting
 npm run test:no-phantom-tools
 npm run test:gate
 npm run prompt:audit
+npm run pack:dry-run        # inspect the allowlisted package manifest; no workspace/private files
 ```
 
 ## 2. Local API smoke (loopback only)
@@ -56,8 +57,22 @@ degrade gracefully — they never fail the core run.
 
 ## 6. Publish
 
+- Confirm the release commit is already on `main`, CI is green at that exact
+  SHA, the version and changelog agree, and the tag is signed and points to that
+  commit. Never move or reuse a failed release tag; correct the release and use
+  a new version/tag.
 - Verify `repository.url` in `package.json` points at this repo. To retarget it:
   ```bash
   npm pkg set repository.url="git+https://github.com/<owner>/<repo>.git"
   ```
 - Tag the release only after Sections 1–2 are green.
+- Push the `v*` tag and wait for the tag workflow. It reruns
+  `npm run test:release`, the high-severity dependency audit, and the package
+  dry run against the exact tag, then retains the tested `.tgz`, its manifest,
+  and `SHA256SUMS` as workflow artifacts.
+- Inspect `pack-result.json`: only the allowlisted runtime, scripts, tools,
+  documentation, examples, and package metadata may ship. Workspace notes,
+  tests, AIWG/provider deployment internals, secrets, and local artifacts are
+  release blockers.
+- Publish the retained, checksum-matched package artifact. Do not rebuild a
+  different archive from another checkout after certification.

@@ -5,6 +5,17 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "files": [
+    "dist/",
+    "scripts/",
+    "tools/",
+    "docs/",
+    "examples/",
+    ".env.example",
+    "docker-compose.yml",
+    "index.ts",
+    "tsconfig.json"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli.js",
@@ -64,6 +75,8 @@
     "mcp": "tsx src/mcp-server.ts",
     "mcp:prod": "node dist/mcp-server.js",
     "test": "vitest run src && node scripts/test-ops-preflight.mjs && node scripts/test-model-matrix.mjs && node scripts/refusal-frontier.mjs --self-test",
+    "test:release": "npm run lint && npm run typecheck && npm test && npm run test:coverage && npm run doctor && npm run verify-claims && npm run test:no-fitting && npm run test:no-self-fitting && npm run test:gate && npm run prompt:audit && npm run smoke && npm run build",
+    "pack:dry-run": "npm pack --dry-run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest src",
     "lint": "eslint src/**/*.ts",

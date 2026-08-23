@@ -655,7 +655,11 @@ class OpenAIAdapter implements LLMProviderAdapter {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+      const retryAfter = response.headers?.get?.('retry-after');
+      const retryAfterMs = retryAfter && /^\d+$/.test(retryAfter)
+        ? Number(retryAfter) * 1000
+        : undefined;
+      throw new LLMApiError(`OpenAI-compatible API error: ${response.status} - ${errorText}`, response.status, retryAfterMs);
     }
 
     const data = await response.json() as OpenRouterResponse;
@@ -696,6 +700,20 @@ class NanoGPTAdapter extends OpenAIAdapter {
       return {
         valid: false,
         error: 'NanoGPT API key is required. Set NANOGPT_API_KEY. Docs: https://docs.nano-gpt.com/authentication',
+      };
+    }
+    return { valid: true };
+  }
+}
+
+class NovitaAdapter extends OpenAIAdapter {
+  name = 'novita';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'Novita AI API key is required. Set NOVITA_API_KEY. Docs: https://novita.ai/settings/key-management',
       };
     }
     return { valid: true };
@@ -1549,7 +1567,7 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
       case 'nanogpt':
         return new NanoGPTAdapter(config);
       case 'novita':
-        return new OpenAIAdapter(config); // Novita AI's native API is OpenAI-compatible
+        return new NovitaAdapter(config); // Novita AI's native API is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
