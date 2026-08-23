@@ -122,15 +122,9 @@ function isLoopbackHost(host: string | undefined): boolean {
     'api.deepseek.com',
     'api.groq.com',
     'openrouter.ai',
-    'api.telegram.org',
     'api.ipify.org',
     'ip-api.com',
     'ipwho.is',
-    // knowledge/OSINT sources — not attack targets; always reachable direct
-    'services.nvd.nist.gov',
-    'api.first.org',
-    'www.cisa.gov',
-    'crt.sh',
   ];
   for (const hostname of [...builtin, ...extra]) {
     if (h === hostname || h.endsWith('.' + hostname)) return true;

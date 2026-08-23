@@ -20,6 +20,14 @@ const XSS_PAYLOAD = '"><svg/onload=alert(1)>';
 // text node always survives serialization — reliable reflection signal.
 const XSS_MARKER = 'T3MP3STXSSMARKER123';
 
+export function browserRequestInScope(approvedHost: string, requestedUrl: string): boolean {
+  try {
+    const requested = new URL(requestedUrl);
+    return ['http:', 'https:'].includes(requested.protocol)
+      && requested.hostname.toLowerCase() === approvedHost.toLowerCase();
+  } catch { return false; }
+}
+
 /** Screenshot of the current page as base64 evidence (type: 'screenshot'). */
 async function screenshotEvidence(page: { screenshot: (o?: { type?: 'png'; fullPage?: boolean }) => Promise<Buffer> }, tag: string): Promise<{ type: 'screenshot'; content: string; timestamp: number; metadata?: Record<string, unknown> } | undefined> {
   try {
@@ -69,6 +77,22 @@ export const browserProbeTool: CustomTool = {
         const page = await browser.newPage();
         page.setDefaultTimeout(15000);
 
+        // Playwright follows redirects and loads subresources outside the Arsenal's
+        // initial execute() gate. Keep every browser request on the exact host that
+        // was approved; abort cross-host redirects, frames, scripts, and images.
+        const approvedHost = new URL(url).hostname.toLowerCase();
+        await page.route('**/*', async (route) => {
+          try {
+            if (!browserRequestInScope(approvedHost, route.request().url())) {
+              await route.abort('blockedbyclient');
+              return;
+            }
+            await route.continue();
+          } catch {
+            await route.abort('blockedbyclient');
+          }
+        });
+
         let dialogFired = false;
         const consoleErrors: string[] = [];
         page.on('dialog', async (d) => { dialogFired = true; await d.dismiss().catch(() => {}); });
@@ -79,7 +103,8 @@ export const browserProbeTool: CustomTool = {
         let finalUrl = url;
         try {
           const resp = await page.goto(url, { waitUntil: 'domcontentloaded' });
-          finalUrl = page.url();
+          const observedUrl = page.url();
+          finalUrl = new URL(observedUrl).hostname.toLowerCase() === approvedHost ? observedUrl : url;
           sections.push(`Baseline: ${resp?.status() ?? '?'} (final URL: ${finalUrl})`);
         } catch (e) {
           sections.push(`Baseline load failed: ${e instanceof Error ? e.message.slice(0, 150) : 'unknown'}`);

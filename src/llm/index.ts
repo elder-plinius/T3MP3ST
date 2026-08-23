@@ -8,6 +8,7 @@
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
  * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
+ * - Novita AI (OpenAI-compatible API serving open-source and frontier models)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -717,7 +718,11 @@ class OpenAIAdapter implements LLMProviderAdapter {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+      const retryAfter = response.headers?.get?.('retry-after');
+      const retryAfterMs = retryAfter && /^\d+$/.test(retryAfter)
+        ? Number(retryAfter) * 1000
+        : undefined;
+      throw new LLMApiError(`OpenAI-compatible API error: ${response.status} - ${errorText}`, response.status, retryAfterMs);
     }
 
     const data = await response.json() as OpenRouterResponse;
@@ -758,6 +763,20 @@ class NanoGPTAdapter extends OpenAIAdapter {
       return {
         valid: false,
         error: 'NanoGPT API key is required. Set NANOGPT_API_KEY. Docs: https://docs.nano-gpt.com/authentication',
+      };
+    }
+    return { valid: true };
+  }
+}
+
+class NovitaAdapter extends OpenAIAdapter {
+  name = 'novita';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'Novita AI API key is required. Set NOVITA_API_KEY. Docs: https://novita.ai/settings/key-management',
       };
     }
     return { valid: true };
@@ -1615,6 +1634,8 @@ constructor(config: LLMConfig) {
         return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
       case 'nanogpt':
         return new NanoGPTAdapter(config);
+      case 'novita':
+        return new NovitaAdapter(config); // Novita AI's native API is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1923,6 +1944,12 @@ export function createNanoGPTBackbone(apiKey?: string, model?: string): LLMBackb
   return new LLMBackbone(llmConfig);
 }
 
+export function createNovitaBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('novita', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1953,7 +1980,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Novita > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -1979,6 +2006,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('nanogpt')) {
     return createNanoGPTBackbone();
+  }
+  if (providers.includes('novita')) {
+    return createNovitaBackbone();
   }
 
   // Default to mock if no API keys configured

@@ -335,6 +335,53 @@ async function setupNanoGPTKey(): Promise<boolean> {
   }
 }
 
+async function setupNovitaKey(): Promise<boolean> {
+  console.log('');
+  showInfo('Novita AI provides a direct OpenAI-compatible API serving open-source and frontier models.');
+  showInfo('Get your API key at: ' + chalk.underline('https://novita.ai/settings/key-management'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your Novita AI API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'novita',
+      model: 'zai-org/glm-5.2',
+      baseUrl: 'https://api.novita.ai/openai/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('novita', apiKey);
+    showSuccess('Novita AI API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupOpenAIKey(): Promise<boolean> {
   console.log('');
   showInfo('OpenAI provides access to GPT models.');
@@ -628,6 +675,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'nanogpt',
         },
         {
+          name: `Novita AI ${hasApiKey('novita') ? chalk.green('(configured)') : chalk.gray('(direct OpenAI-compatible API)')}`,
+          value: 'novita',
+        },
+        {
           name: `LiteLLM Proxy ${config.hasLiteLLMProxy() ? chalk.green('(configured)') : chalk.gray('(100+ providers via gateway)')}`,
           value: 'litellm',
         },
@@ -658,6 +709,9 @@ async function setupApiKeys(): Promise<void> {
       case 'nanogpt':
         await setupNanoGPTKey();
         break;
+      case 'novita':
+        await setupNovitaKey();
+        break;
       case 'litellm':
         await setupLiteLLMProxy();
         break;
@@ -676,6 +730,7 @@ async function setupProvider(): Promise<void> {
   if (hasApiKey('deepseek')) configuredProviders.push({ name: 'DeepSeek', value: 'deepseek' });
   if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
   if (hasApiKey('nanogpt')) configuredProviders.push({ name: 'NanoGPT', value: 'nanogpt' });
+  if (hasApiKey('novita')) configuredProviders.push({ name: 'Novita AI', value: 'novita' });
   if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   const { provider } = await inquirer.prompt([

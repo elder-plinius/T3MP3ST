@@ -23,7 +23,9 @@ import type { CustomTool, ToolFinding } from '../types/index.js';
 const dnsResolveMx = promisify(dns.resolveMx);
 const dnsResolve4 = promisify(dns.resolve4);
 
-async function probeExists(url: string, headers: Record<string, string> = {}): Promise<{ exists: boolean; note?: string }> {
+type ProfileValidator = (body: unknown) => boolean;
+
+async function probeExists(url: string, validator: ProfileValidator, headers: Record<string, string> = {}): Promise<{ exists: boolean; note?: string }> {
   try {
     const res = await fetch(url, {
       method: 'GET',
@@ -31,7 +33,10 @@ async function probeExists(url: string, headers: Record<string, string> = {}): P
       signal: AbortSignal.timeout(6000),
       headers: { 'user-agent': 'Mozilla/5.0 (compatible; T3MP3ST-OSINT/1.0)', ...headers },
     });
-    if (res.status === 200) return { exists: true };
+    if (res.status === 200) {
+      try { return { exists: validator(await res.json()) }; }
+      catch { return { exists: false, note: 'invalid response' }; }
+    }
     if (res.status === 404) return { exists: false };
     return { exists: false, note: `http ${res.status}` };
   } catch (e) {
@@ -53,24 +58,10 @@ export const usernameSearchTool: CustomTool = {
     }
     const u = encodeURIComponent(username);
     const checks: { platform: string; url: string; probe: Promise<{ exists: boolean; note?: string }> }[] = [
-      { platform: 'GitHub', url: `https://api.github.com/users/${u}`, probe: probeExists(`https://api.github.com/users/${u}`, { accept: 'application/vnd.github+json' }) },
-      { platform: 'GitLab', url: `https://gitlab.com/api/v4/users?username=${u}`, probe: probeExists(`https://gitlab.com/api/v4/users?username=${u}`) },
-      { platform: 'Reddit', url: `https://www.reddit.com/user/${u}/about.json`, probe: probeExists(`https://www.reddit.com/user/${u}/about.json`) },
-      { platform: 'HackerNews', url: `https://hacker-news.firebaseio.com/v0/user/${u}.json`, probe: probeExists(`https://hacker-news.firebaseio.com/v0/user/${u}.json`) },
-      { platform: 'Wikipedia', url: `https://en.wikipedia.org/wiki/${u}`, probe: probeExists(`https://en.wikipedia.org/wiki/${u}`) },
-      { platform: 'Steam', url: `https://steamcommunity.com/id/${u}`, probe: probeExists(`https://steamcommunity.com/id/${u}`) },
-      { platform: 'Keybase', url: `https://keybase.io/${u}`, probe: probeExists(`https://keybase.io/${u}`) },
-      { platform: 'VK', url: `https://vk.com/${u}`, probe: probeExists(`https://vk.com/${u}`) },
-      { platform: 'Pastebin', url: `https://pastebin.com/u/${u}`, probe: probeExists(`https://pastebin.com/u/${u}`) },
-      { platform: 'HackerOne', url: `https://hackerone.com/${u}`, probe: probeExists(`https://hackerone.com/${u}`) },
-      { platform: 'Bugcrowd', url: `https://bugcrowd.com/${u}`, probe: probeExists(`https://bugcrowd.com/${u}`) },
-      { platform: 'TryHackMe', url: `https://tryhackme.com/p/${u}`, probe: probeExists(`https://tryhackme.com/p/${u}`) },
-      { platform: 'Replit', url: `https://replit.com/@${u}`, probe: probeExists(`https://replit.com/@${u}`) },
-      { platform: 'CodePen', url: `https://codepen.io/${u}`, probe: probeExists(`https://codepen.io/${u}`) },
-      { platform: 'Medium', url: `https://medium.com/@${u}`, probe: probeExists(`https://medium.com/@${u}`) },
-      { platform: 'YouTube', url: `https://www.youtube.com/@${u}`, probe: probeExists(`https://www.youtube.com/@${u}`) },
-      { platform: 'Pinterest', url: `https://www.pinterest.com/${u}/`, probe: probeExists(`https://www.pinterest.com/${u}/`) },
-      { platform: 'Spotify', url: `https://open.spotify.com/user/${u}`, probe: probeExists(`https://open.spotify.com/user/${u}`) },
+      { platform: 'GitHub', url: `https://github.com/${u}`, probe: probeExists(`https://api.github.com/users/${u}`, (body) => Boolean(body && typeof body === 'object' && String((body as { login?: unknown }).login || '').toLowerCase() === username.toLowerCase()), { accept: 'application/vnd.github+json' }) },
+      { platform: 'GitLab', url: `https://gitlab.com/${u}`, probe: probeExists(`https://gitlab.com/api/v4/users?username=${u}`, (body) => Array.isArray(body) && body.some((item) => item && typeof item === 'object' && String((item as { username?: unknown }).username || '').toLowerCase() === username.toLowerCase())) },
+      { platform: 'Reddit', url: `https://www.reddit.com/user/${u}`, probe: probeExists(`https://www.reddit.com/user/${u}/about.json`, (body) => Boolean(body && typeof body === 'object' && String((body as { data?: { name?: unknown } }).data?.name || '').toLowerCase() === username.toLowerCase())) },
+      { platform: 'HackerNews', url: `https://news.ycombinator.com/user?id=${u}`, probe: probeExists(`https://hacker-news.firebaseio.com/v0/user/${u}.json`, (body) => Boolean(body && typeof body === 'object' && String((body as { id?: unknown }).id || '').toLowerCase() === username.toLowerCase())) },
     ];
     // Telegram via Bot API when a token is configured (chat may be private → note)
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();

@@ -108,13 +108,30 @@ for (const f of newFindings) {
   if (key) matched.set(key, f);
 }
 
+function structuredRetests(text) {
+  const source = String(text || '');
+  const fenced = [...source.matchAll(/```json\s*([\s\S]*?)```/gi)].at(-1)?.[1];
+  if (!fenced) return new Map();
+  try {
+    const parsed = JSON.parse(fenced);
+    if (!Array.isArray(parsed?.retests)) return new Map();
+    return new Map(parsed.retests
+      .filter((v) => v && typeof v.title === 'string' && ['fixed', 'still_vulnerable', 'unverifiable'].includes(v.status))
+      .map((v) => [norm(v.title), { status: v.status, evidence: String(v.evidence || '').slice(0, 200) }]));
+  } catch { return new Map(); }
+}
+
+const declared = structuredRetests(result.output ?? result.content ?? '');
+
 const verdicts = findings.map((old) => {
   const key = norm(old.title);
   const hit = key && (matched.get(key) ?? [...matched.entries()].find(([k]) => k.includes(key.slice(0, 12)) || key.includes(k.slice(0, 12)))?.[1]);
-  if (hit) {
+  const explicit = declared.get(key);
+  if (explicit?.status === 'still_vulnerable' && hit) {
     return { title: old.title, status: 'still_vulnerable', evidence: String(hit.details ?? hit.title ?? '').slice(0, 200) };
   }
-  return { title: old.title, status: 'not_reproduced', evidence: 'Not re-found in this retest pass (may be fixed, or the check did not reproduce).' };
+  if (explicit?.status === 'fixed') return { title: old.title, ...explicit };
+  return { title: old.title, status: 'unverifiable', evidence: explicit?.evidence || 'No valid structured verdict with corroborating tool evidence.' };
 });
 
 const md = [
@@ -127,8 +144,8 @@ const md = [
   '| # | Finding | Verdict | Evidence |',
   '|---|---------|---------|----------|',
   ...findings.map((f, i) => {
-    const v = verdicts[i] ?? { status: 'not_reproduced', evidence: 'no verdict' };
-    return `| ${i + 1} | ${String(f.title).replace(/\|/g, '\\|')} | ${v.status ?? 'not_reproduced'} | ${String(v.evidence ?? '').replace(/\|/g, '\\|').slice(0, 120)} |`;
+    const v = verdicts[i] ?? { status: 'unverifiable', evidence: 'no verdict' };
+    return `| ${i + 1} | ${String(f.title).replace(/\|/g, '\\|')} | ${v.status ?? 'unverifiable'} | ${String(v.evidence ?? '').replace(/\|/g, '\\|').slice(0, 120)} |`;
   }),
   '',
   '---',
@@ -143,5 +160,6 @@ writeFileSync(file, md, 'utf8');
 console.log(md);
 console.log(`\nОтчёт сохранён: ${file}`);
 const open = verdicts.filter((v) => v.status === 'still_vulnerable').length;
-const nr = verdicts.filter((v) => v.status === 'not_reproduced').length;
-console.log(`Итого: still_vulnerable=${open}, not_reproduced=${nr}`);
+const fixed = verdicts.filter((v) => v.status === 'fixed').length;
+const unverifiable = verdicts.filter((v) => v.status === 'unverifiable').length;
+console.log(`Итого: still_vulnerable=${open}, fixed=${fixed}, unverifiable=${unverifiable}`);

@@ -13,6 +13,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { CustomTool, ToolFinding } from '../types/index.js';
+import { approvedLocalPath } from './local-file-scope.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,8 +32,11 @@ export const r2AnalyzeTool: CustomTool = {
     { name: 'string', type: 'string', description: 'String to cross-reference (for query=xrefs)', required: false },
   ],
   handler: async (context) => {
-    const filePath = String(context.parameters.path || '').trim();
-    if (!filePath) return { success: false, error: 'r2_analyze: path required' };
+    const requestedPath = String(context.parameters.path || '').trim();
+    if (!requestedPath) return { success: false, error: 'r2_analyze: path required' };
+    const approved = approvedLocalPath('r2_analyze', requestedPath);
+    if (!approved.ok) return { success: false, error: approved.error };
+    const filePath = approved.path;
     const query = String(context.parameters.query || 'functions').toLowerCase();
     const sink = String(context.parameters.string || '').trim();
     try {

@@ -859,28 +859,6 @@ const workOrderLedger = new Map<string, WorkOrderRecord>();
 const watchCycleLedger = new Map<string, WatchCycleRecord>();
 const memoryCapsule = new Map<string, MemoryEntry>();
 const memoryProposals = new Map<string, MemoryProposal>();
-/** Self-learning: which mission already got an auto-filed lesson proposal. */
-let lastLessonProposedMissionId: string | null = null;
-
-// ── Telegram notifications (opt-in) ──────────────────────────────────────────
-// TELEGRAM_BOT_TOKEN + T3MP3ST_TG_CHAT_ID: sends mission-lifecycle messages to
-// your own chat. Discover the chat id with GET /api/notify/chat-id (uses
-// getUpdates) or set T3MP3ST_TG_CHAT_ID manually.
-async function sendTelegramNotify(text: string): Promise<boolean> {
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  const chatId = process.env.T3MP3ST_TG_CHAT_ID?.trim();
-  if (!token || !chatId) return false;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 3500) }),
-      signal: AbortSignal.timeout(10000),
-    });
-    const j = (await res.json()) as { ok?: boolean };
-    return j.ok === true;
-  } catch { return false; }
-}
 
 /**
  * Mirror a live mission finding into the persistent findingsLedger (the one the
@@ -6682,7 +6660,7 @@ app.post('/api/mission/resume', (_req: Request, res: Response) => {
 /**
  * GET /api/mission/status — Get full mission status
  */
-app.get('/api/mission/status', async (_req: Request, res: Response) => {
+app.get('/api/mission/status', (_req: Request, res: Response) => {
   const cmd = getTempestCommand();
   if (!cmd) {
     res.json({ active: false, progress: [], tasks: [] });
@@ -6693,80 +6671,6 @@ app.get('/api/mission/status', async (_req: Request, res: Response) => {
   const mission = cmd.mission.getActiveMission();
   const findings = cmd.vault.getAllFindings();
   const allOperators = cmd.cell.getAllOperators().map(op => op.getSummary());
-
-  // ── SELF-LEARNING LOOP — auto-file a lesson proposal when a mission ends ──
-  // The UI polls this endpoint every few seconds, so an ended mission is noticed
-  // here within seconds. "Ended" = completed, aborted, manually stopped, or
-  // stalled (command not running / stallReason set). One proposal per mission id.
-  const missionEnded = mission && (
-    mission.status === 'completed' ||
-    mission.status === 'aborted' ||
-    !status.running ||
-    Boolean(status.stallReason)
-  );
-  if (missionEnded && mission && mission.id !== lastLessonProposedMissionId) {
-    lastLessonProposedMissionId = mission.id;
-    try {
-      const verified = findings.filter(f => f.verifyGate?.passed);
-      const asserted = findings.filter(f => !f.verifyGate?.passed);
-      const digest = [
-        `Mission "${mission.name}" (${mission.status}, phase ${mission.currentPhase})`,
-        `Targets: ${cmd.targetEnv.getAllTargets().map(t => t.address).join(', ')}`,
-        `Stall: ${status.stallReason || 'none'}`,
-        verified.length ? `Verified (${verified.length}): ${verified.slice(0, 8).map(f => `[${f.severity}] ${f.title}`).join('; ')}` : 'No tool-verified findings.',
-        asserted.length ? `Model-asserted/unverified (${asserted.length}): ${asserted.slice(0, 8).map(f => `[${f.severity}] ${f.title}`).join('; ')}` : 'No model-asserted findings.',
-      ].join('\n');
-
-      // LLM-generated lessons: one cheap call turns the digest into 2-4 concise,
-      // actionable lessons (what to chase, what to distrust, what to skip).
-      let lessonContent = '';
-      try {
-        const llm = cmd.llm;
-        const r = await llm.chat([
-          { role: 'system', content: 'You distill security-hunting mission digests into 2-4 concise, actionable lessons. Output plain text bullet lines only, no preamble, no markdown headers, no reasoning. Lessons: verified finding classes to chase; model-asserted classes to distrust until tool-backed; tools/approaches that failed (timeouts, WAF blocks, missing binaries).' },
-          { role: 'user', content: digest },
-        ], { maxTokens: 500, temperature: 0.3 });
-        lessonContent = String(r.content ?? '')
-          // strip model reasoning wrappers (Gemma emits <thought> blocks)
-          .replace(/<(?:think|thought)>[\s\S]*?<\/(?:think|thought)>/gi, '')
-          .trim()
-          .slice(0, 900);
-      } catch { /* fall back to digest below */ }
-
-      const content = lessonContent || [
-        `Mission "${mission.name}" (${mission.status}, phase ${mission.currentPhase}):`,
-        `${findings.length} finding(s) — ${verified.length} tool-verified, ${asserted.length} model-asserted.`,
-        verified.length ? `Verified classes to chase: ${[...new Set(verified.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6).join(', ')}.` : 'No tool-verified findings this run.',
-        asserted.length ? `Treat with suspicion until tool-backed: ${[...new Set(asserted.map(f => f.cwe?.[0] ?? f.title))].slice(0, 6).join(', ')}.` : '',
-        status.stallReason ? `Run stalled: ${status.stallReason}.` : '',
-      ].filter(Boolean).join(' ');
-
-      const proposal = createMemoryProposal({
-        type: 'procedure',
-        content,
-        source: lessonContent ? 'auto-review-llm' : 'auto-review',
-        confidence: lessonContent ? 0.75 : (verified.length ? 0.7 : 0.4),
-        rationale: 'Auto-generated on mission end by the self-learning loop; operator acceptance promotes it into future mission prompts.',
-        sourceMissionId: mission.id,
-        sourceFindingIds: findings.map(f => f.id),
-      });
-      if (proposal) {
-        memoryProposals.set(proposal.id, proposal);
-        broadcastEvent('learning.proposed', { proposalId: proposal.id, missionId: mission.id });
-      }
-      // Telegram alert when a mission ends (opt-in: TELEGRAM_BOT_TOKEN + T3MP3ST_TG_CHAT_ID).
-      try {
-        const targets = cmd.targetEnv.getAllTargets().map(t => t.address).join(', ');
-        const verifiedN = findings.filter(f => f.verifyGate?.passed).length;
-        await sendTelegramNotify(
-          `⚡ T3MP3ST mission ended: "${mission.name}"\n` +
-          `Status: ${mission.status}${status.stallReason ? ` (stall: ${status.stallReason})` : ''}\n` +
-          `Targets: ${targets}\n` +
-          `Findings: ${findings.length} (${verifiedN} tool-verified)`,
-        );
-      } catch { /* best-effort */ }
-    } catch { /* best-effort learning */ }
-  }
 
   res.json({
     active: status.running,

@@ -15,6 +15,7 @@
 import { readFileSync, statSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { CustomTool, ToolFinding } from '../types/index.js';
+import { approvedLocalPath } from './local-file-scope.js';
 
 // Same ruleset as scripts/binary-vuln-bench.mjs (kept in sync manually) +
 // extended sink classes beyond the bench corpus.
@@ -69,8 +70,11 @@ export const binarySinkScanTool: CustomTool = {
     { name: 'path', type: 'string', description: 'Absolute path to the file (binary, DLL, source)', required: true },
   ],
   handler: async (context) => {
-    const filePath = String(context.parameters.path || '').trim();
-    if (!filePath) return { success: false, error: 'binary_sink_scan: path required' };
+    const requestedPath = String(context.parameters.path || '').trim();
+    if (!requestedPath) return { success: false, error: 'binary_sink_scan: path required' };
+    const approved = approvedLocalPath('binary_sink_scan', requestedPath, true);
+    if (!approved.ok) return { success: false, error: approved.error };
+    const filePath = approved.path;
     let size = 0;
     try { size = statSync(filePath).size; } catch {
       return { success: false, error: `binary_sink_scan: cannot stat ${filePath}` };
