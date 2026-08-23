@@ -72,6 +72,14 @@ both human contributors and coding agents.
    - screenshots or artifacts for UI/reporting changes
    - residual risk or follow-up work
 
+7. Preserve review identity and history.
+
+   Sign contributor commits with a key associated with your forge identity (or
+   GitHub's verified web flow). Do not force-push a published review branch;
+   add corrective commits. Maintainers recheck the exact head, required CI,
+   mergeability, and linked issues immediately before the configured squash
+   merge.
+
 ## Coding-Agent Instructions
 
 When an agent prepares a PR, it must perform a final scope audit before posting.
@@ -139,3 +147,10 @@ feature details while stale-base deletions remain in the diff.
 Only comment on PRs that need action: concrete fixes, missing verification,
 missing receipts, or a rebase/scope cleanup. Ready PRs should not receive
 process comments.
+
+When a contributor has substantially completed a significant reviewed change
+and only narrow mechanical cleanup remains, maintainers may resolve the small
+conflict, preserve an established default, or add focused regression coverage
+as a courtesy. Re-run the full exact-head review and tests and tell the
+contributor what changed. Large rebases, behavior changes, architectural
+judgment, or newly discovered substantive defects remain contributor work.

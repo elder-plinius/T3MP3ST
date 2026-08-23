@@ -8,6 +8,7 @@
  * - Anthropic (direct Claude access)
  * - OpenAI (GPT models)
  * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
+ * - Novita AI (OpenAI-compatible API serving open-source and frontier models)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -656,7 +657,11 @@ class OpenAIAdapter implements LLMProviderAdapter {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+      const retryAfter = response.headers?.get?.('retry-after');
+      const retryAfterMs = retryAfter && /^\d+$/.test(retryAfter)
+        ? Number(retryAfter) * 1000
+        : undefined;
+      throw new LLMApiError(`OpenAI-compatible API error: ${response.status} - ${errorText}`, response.status, retryAfterMs);
     }
 
     const data = await response.json() as OpenRouterResponse;
@@ -697,6 +702,20 @@ class NanoGPTAdapter extends OpenAIAdapter {
       return {
         valid: false,
         error: 'NanoGPT API key is required. Set NANOGPT_API_KEY. Docs: https://docs.nano-gpt.com/authentication',
+      };
+    }
+    return { valid: true };
+  }
+}
+
+class NovitaAdapter extends OpenAIAdapter {
+  name = 'novita';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'Novita AI API key is required. Set NOVITA_API_KEY. Docs: https://novita.ai/settings/key-management',
       };
     }
     return { valid: true };
@@ -1378,6 +1397,11 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   private lastSentMessages?: LLMMessage[];
   private lastSentCount = 0;
   constructor(config: LLMConfig) { this.config = config; }
+  private trustedClaudeSessionReuse(): boolean {
+    return ['1', 'true', 'yes', 'on'].includes(
+      (process.env.T3MP3ST_TRUST_CLAUDE_SESSION || '').trim().toLowerCase(),
+    );
+  }
   resetSession(): void {
     this.claudeSessionId = undefined;
     this.lastSentMessages = undefined;
@@ -1412,13 +1436,15 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const { agentId, agentModel } = this.parseAgentSpec();
+    const reuseSession = agentId === 'claude' && this.trustedClaudeSessionReuse();
+    if (!reuseSession) this.resetSession();
     // Task boundary: a DIFFERENT messages array means AgentLoop.run() started a new task (it builds
     // one fresh array per task). Resuming across that boundary would carry the prior task's system
     // prompt, target data, and tool output — including anything attacker-controlled — into a task
     // that never earned it, outside T3MP3ST's one sanctioned cross-task channel (PackBoard). Only
     // resume WITHIN one task's own growing transcript; a new task always starts a fresh session
     // (PR #149 review).
-    if (agentId === 'claude' && this.lastSentMessages !== undefined && messages !== this.lastSentMessages) {
+    if (reuseSession && this.lastSentMessages !== undefined && messages !== this.lastSentMessages) {
       this.claudeSessionId = undefined;
     }
     const fullPrompt = this.formatPrompt(messages, options);
@@ -1426,18 +1452,18 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     // NEW messages since last call. A resumed session already has everything up to lastSentCount;
     // resending it would duplicate the transcript into the session rather than avoiding the resend.
     // A different array (a new task) or no session yet falls through to the full prompt.
-    const isDelta = agentId === 'claude' && this.claudeSessionId !== undefined && messages === this.lastSentMessages;
+    const isDelta = reuseSession && this.claudeSessionId !== undefined && messages === this.lastSentMessages;
     const sendPrompt = isDelta ? this.formatPrompt(messages.slice(this.lastSentCount), options) : fullPrompt;
     const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
     const raw = (await localAgentChat(agentId, sendPrompt, {
       model: agentModel,
       timeoutMs,
-      sessionId: agentId === 'claude' ? this.claudeSessionId : undefined,
+      sessionId: reuseSession ? this.claudeSessionId : undefined,
       // The stale-session fallback starts a genuinely fresh session with no history — it needs
       // the FULL transcript, never the delta computed for the (failed) resumed attempt.
       fallbackPrompt: isDelta ? fullPrompt : undefined,
     })).trim();
-    if (agentId === 'claude') { this.lastSentMessages = messages; this.lastSentCount = messages.length; }
+    if (reuseSession) { this.lastSentMessages = messages; this.lastSentCount = messages.length; }
     // Claude requests --output-format json (see local-agents.ts) so this parses to REAL usage.
     // Anything else (parse failure, or a non-claude agent) falls back to the raw text — claude
     // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
@@ -1454,7 +1480,7 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     // Carry the session forward so the NEXT call (--resume) picks up where this one left off.
     // Empirically stable across --resume (confirmed against the real CLI), but re-capture anyway
     // in case a future CLI version rotates it.
-    if (agentId === 'claude' && parsed?.sessionId) this.claudeSessionId = parsed.sessionId;
+    if (reuseSession && parsed?.sessionId) this.claudeSessionId = parsed.sessionId;
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
@@ -1601,6 +1627,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
         return new OpenAIAdapter(config); // HF Inference Providers router is OpenAI-compatible (baseUrl ends in /v1)
       case 'nanogpt':
         return new NanoGPTAdapter(config);
+      case 'novita':
+        return new NovitaAdapter(config); // Novita AI's native API is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -1912,6 +1940,12 @@ export function createNanoGPTBackbone(apiKey?: string, model?: string): LLMBackb
   return new LLMBackbone(llmConfig);
 }
 
+export function createNovitaBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('novita', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -1942,7 +1976,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Novita > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -1968,6 +2002,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('nanogpt')) {
     return createNanoGPTBackbone();
+  }
+  if (providers.includes('novita')) {
+    return createNovitaBackbone();
   }
 
   // Default to mock if no API keys configured

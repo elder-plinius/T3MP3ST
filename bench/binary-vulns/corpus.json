@@ -44,6 +44,20 @@
       "content": "void fmt(char *input) {\n  char b[16];\n  sprintf(b, \"%s\", input);\n}\n"
     },
     {
+      "id": "memcpy-wire-length",
+      "desc": "memcpy with an attacker/wire-controlled length (unchecked) — buffer overflow",
+      "clean": false,
+      "expect": ["B-MEMCPY"],
+      "content": "void parse(char *pkt) {\n  char buf[128];\n  unsigned len = ntohl(*(unsigned *)pkt);\n  memcpy(buf, pkt + 4, len);\n}\n"
+    },
+    {
+      "id": "memcpy-bounded-control",
+      "desc": "Safe control — memcpy bounded by sizeof and by a constant length",
+      "clean": true,
+      "expect": [],
+      "content": "void copy(char *src) {\n  char dst[64];\n  memcpy(dst, src, sizeof(dst));\n  char hdr[4];\n  memcpy(hdr, src, 4);\n}\n"
+    },
+    {
       "id": "bounded-control",
       "desc": "Safe control — bounded strncpy/snprintf/fgets",
       "clean": true,

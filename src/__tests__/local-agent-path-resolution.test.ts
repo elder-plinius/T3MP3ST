@@ -193,8 +193,9 @@ describe('detectLocalAgents — wiring: a well-known-dir CLI is reported install
     expect(claude?.installed).toBe(true);
     expect(claude?.path).toBe(claudePath);
     expect(claude?.version).toBe('1.2.3');       // parsed from the resolved binary's --version output
-    // codex/hermes are absent from this temp home → still not installed (no false positives).
-    expect(agents.find((a) => a.id === 'codex')?.installed).toBe(false);
+    // Do not assert that another real agent is absent: detection intentionally
+    // also scans system-wide install locations such as /usr/local/bin, so that
+    // result depends on the maintainer/CI host rather than this fixture.
   });
 
   it('detects authenticated OpenCode and Oh My Pi installations (#136)', async () => {

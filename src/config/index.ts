@@ -11,7 +11,7 @@ import { join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -30,6 +30,7 @@ export interface TempestSettings {
     huggingface?: string;
     nanogpt?: string;
     litellm?: string;
+    novita?: string;
     local?: string;
   };
 
@@ -95,6 +96,12 @@ export interface TempestSettings {
 
   // NanoGPT — OpenAI-compatible text API
   nanogpt: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // Novita AI — OpenAI-compatible API serving open-source and frontier models
+  novita: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -199,6 +206,13 @@ const DEFAULT_SETTINGS: TempestSettings = {
   nanogpt: {
     baseUrl: 'https://nano-gpt.com/api/v1',
     defaultModel: 'minimax/minimax-m2.7',
+  },
+
+  // Novita AI's OpenAI-compatible surface. The OpenAIAdapter appends
+  // /chat/completions and provider-models appends /models.
+  novita: {
+    baseUrl: 'https://api.novita.ai/openai/v1',
+    defaultModel: 'zai-org/glm-5.2',
   },
 
   codex: {
@@ -626,6 +640,25 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'tools'],
     },
   ],
+  // Model ids verified live against api.novita.ai/openai/v1/models (2026-08-15).
+  novita: [
+    {
+      id: 'zai-org/glm-5.2',
+      name: 'GLM-5.2 (Novita)',
+      provider: 'Novita',
+      contextWindow: 1048576,
+      maxOutput: 131072,
+      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
+    },
+    {
+      id: 'deepseek/deepseek-v4-pro-0813',
+      name: 'DeepSeek V4 Pro 0813 (Novita)',
+      provider: 'Novita',
+      contextWindow: 1048576,
+      maxOutput: 393216,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -832,6 +865,7 @@ class ConfigManager {
       deepseek: 'DEEPSEEK_API_KEY',
       huggingface: 'HF_TOKEN',
       nanogpt: 'NANOGPT_API_KEY',
+      novita: 'NOVITA_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -901,6 +935,7 @@ class ConfigManager {
     if (this.hasApiKey('deepseek')) providers.push('deepseek');
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
     if (this.hasApiKey('nanogpt')) providers.push('nanogpt');
+    if (this.hasApiKey('novita')) providers.push('novita');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -986,6 +1021,12 @@ class ConfigManager {
         baseUrl = this.config.get('nanogpt').baseUrl;
         actualModel = model || this.config.get('nanogpt').defaultModel;
         break;
+      case 'novita':
+        // Novita AI's OpenAI-compatible surface.
+        apiKey = this.getApiKey('novita');
+        baseUrl = this.config.get('novita').baseUrl;
+        actualModel = model || this.config.get('novita').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -1052,7 +1093,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1072,6 +1113,7 @@ class ConfigManager {
     add('deepseek');
     add('huggingface');
     add('nanogpt');
+    add('novita');
     return chain;
   }
 
@@ -1199,6 +1241,7 @@ class ConfigManager {
         deepseek: settings.apiKeys.deepseek ? '***REDACTED***' : undefined,
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
         nanogpt: settings.apiKeys.nanogpt ? '***REDACTED***' : undefined,
+        novita: settings.apiKeys.novita ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1255,6 +1298,10 @@ HF_TOKEN=
 # NanoGPT API Key (direct OpenAI-compatible API)
 # Docs and key management: https://docs.nano-gpt.com/authentication
 NANOGPT_API_KEY=
+
+# Novita AI API Key (OpenAI-compatible API serving open-source and frontier models)
+# Get your key at: https://novita.ai/settings/key-management
+NOVITA_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).

@@ -4,7 +4,7 @@
  * turn 0 and every operator abstains without ever running the Arsenal. These tests pin the fix AND
  * the parser-hardening from the PR #16 audit (over-match, ReDoS, drift-abstains, string args, Codex coverage).
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 // Mock the local-agent CLI bridge (LocalAgentAdapter) and the codex spawn/file read (CodexAdapter).
@@ -196,6 +196,9 @@ describe('Claude local-agent usage accounting (#139)', () => {
 });
 
 describe('Claude local-agent session resume (Tier 2)', () => {
+  beforeEach(() => { process.env.T3MP3ST_TRUST_CLAUDE_SESSION = '1'; });
+  afterEach(() => { delete process.env.T3MP3ST_TRUST_CLAUDE_SESSION; });
+
   it('the first call on a fresh adapter passes no sessionId', async () => {
     cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
     await claudeBackbone().chat([{ role: 'user', content: 'hello' }]);
@@ -367,6 +370,22 @@ describe('Claude local-agent session resume (Tier 2)', () => {
     // A delta-only estimate would be tiny (just "ok" plus the preamble/tool contract). The full
     // ~4000 chars of original system/user content must show up in the estimate too.
     expect(res.usage?.promptTokens).toBeGreaterThan(900);
+  });
+});
+
+describe('Claude local-agent session trust boundary', () => {
+  afterEach(() => { delete process.env.T3MP3ST_TRUST_CLAUDE_SESSION; });
+
+  it('does not retain or resume an opaque Claude session by default', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [{ role: 'user', content: 'first' }];
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'one', session_id: 'ambient-session' }));
+    await be.chat(messages);
+    messages.push({ role: 'user', content: 'second' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'two', session_id: 'another-session' }));
+    await be.chat(messages);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined, fallbackPrompt: undefined });
   });
 });
 

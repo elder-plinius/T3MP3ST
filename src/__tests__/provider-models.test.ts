@@ -58,6 +58,21 @@ describe('listProviderModels — OpenAI-compatible providers', () => {
     expect((init as { headers: Record<string, string> }).headers.Authorization)
       .toBe('Bearer sk-nano-test-key');
   });
+
+  it('uses Novita canonical /openai/v1/models with Bearer authentication', async () => {
+    const f = fakeFetch({ data: [{ id: 'zai-org/glm-5.2' }] });
+    const models = await listProviderModels('novita', {
+      baseUrl: 'https://api.novita.ai/openai/v1',
+      apiKey: 'sk_novita-test-key',
+      fetchImpl: f,
+    });
+
+    expect(models.map((m) => m.id)).toEqual(['zai-org/glm-5.2']);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://api.novita.ai/openai/v1/models');
+    expect((init as { headers: Record<string, string> }).headers.Authorization)
+      .toBe('Bearer sk_novita-test-key');
+  });
 });
 
 describe('listProviderModels — Anthropic wire', () => {

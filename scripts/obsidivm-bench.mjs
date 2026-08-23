@@ -7,7 +7,9 @@
  *   2. Dispatch a t3mp3st hunter against the target's URL.
  *      - --hunter=live   : direct LLM (OpenRouter / Anthropic / OpenAI auto-detect)
  *      - --hunter=t3mp3st: drive t3mp3st's /api/general/auto (full platform)
- *      - --hunter=stub   : synthesized transcript (no LLM, for plumbing tests)
+ *      - --hunter=stub   : synthesized transcript (no LLM, for plumbing tests).
+ *                          NB: only the HUNTER is offline — the OBSIDIVM service
+ *                          is still required for the spec (step 1) and scoring (3).
  *   3. Submit the agent transcript to OBSIDIVM's /api/score/text.
  *   4. Persist the run via OBSIDIVM's /api/runs ledger + per-target sessions.
  *   5. Print a per-target table + suite aggregate (weighted % + grade).
@@ -105,9 +107,12 @@ function help() {
 Options:
   --target <id>           Target id (repeatable). Default: all 14 OBSIDIVM targets.
   --hunter <stub|live|t3mp3st>
-                          stub:    synthesized transcript (no LLM)
+                          stub:    synthesized transcript (no LLM; the OBSIDIVM
+                                   service is still required for spec + scoring)
                           live:    direct LLM call
                           t3mp3st: drive t3mp3st's /api/general/auto
+  All modes need the OBSIDIVM service (see --obsidivm / docs/OBSIDIVM.md); live
+  and t3mp3st additionally need an LLM key.
   --obsidivm <url>        OBSIDIVM base URL (default http://127.0.0.1:4200)
   --t3mp3st <url>         t3mp3st base URL (default http://127.0.0.1:3333)
   --model <name>          LLM model id (default claude-opus-4-7)
