@@ -4,7 +4,7 @@
  * turn 0 and every operator abstains without ever running the Arsenal. These tests pin the fix AND
  * the parser-hardening from the PR #16 audit (over-match, ReDoS, drift-abstains, string args, Codex coverage).
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 // Mock the local-agent CLI bridge (LocalAgentAdapter) and the codex spawn/file read (CodexAdapter).
@@ -23,7 +23,7 @@ vi.mock('fs/promises', async (orig) => {
   return { ...actual, readFile: vi.fn() };
 });
 
-import { parseTextToolCalls, LLMBackbone } from '../llm/index.js';
+import { parseTextToolCalls, LLMBackbone, type LLMMessage } from '../llm/index.js';
 import { localAgentChat } from '../agent/local-agents.js';
 import { readFile } from 'fs/promises';
 const cli = vi.mocked(localAgentChat);
@@ -192,6 +192,200 @@ describe('Claude local-agent usage accounting (#139)', () => {
     expect(res.toolCalls?.[0]?.name).toBe('nmap_scan');
     expect(res.finishReason).toBe('tool_calls');
     expect(res.usage?.totalTokens).toBe(15);
+  });
+});
+
+describe('Claude local-agent session resume (Tier 2)', () => {
+  beforeEach(() => { process.env.T3MP3ST_TRUST_CLAUDE_SESSION = '1'; });
+  afterEach(() => { delete process.env.T3MP3ST_TRUST_CLAUDE_SESSION; });
+
+  it('the first call on a fresh adapter passes no sessionId', async () => {
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await claudeBackbone().chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  it('captures session_id from the response and passes it as --resume on a LATER call within the SAME task', async () => {
+    const be = claudeBackbone();
+    // AgentLoop's real shape: one array, grown via push() across a task's iterations.
+    const messages: LLMMessage[] = [{ role: 'user', content: 'hello' }];
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    messages.push({ role: 'assistant', content: 'first' }, { role: 'user', content: 'again' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: 'sess-1' });
+  });
+
+  it('resetLocalAgentSession() drops the tracked session so the next call starts fresh, even mid-task', async () => {
+    const be = claudeBackbone();
+    // SAME array both calls, so this isolates the EXPLICIT reset from the automatic task-boundary
+    // reset (a different array would reset on its own regardless of this call).
+    const messages: LLMMessage[] = [{ role: 'user', content: 'hello' }];
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    be.resetLocalAgentSession();
+
+    messages.push({ role: 'assistant', content: 'first' }, { role: 'user', content: 'again' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-2' }));
+    await be.chat(messages);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  it('a separate LLMBackbone instance never inherits another instance\'s session (per-operator isolation)', async () => {
+    const opA = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'a1', session_id: 'sess-a' }));
+    await opA.chat([{ role: 'user', content: 'hello' }]);
+
+    const opB = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'b1', session_id: 'sess-b' }));
+    await opB.chat([{ role: 'user', content: 'hello' }]);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  it('a resumed session with no usable id in the envelope keeps the PRIOR session for the next call in the SAME task', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [{ role: 'user', content: 'hello' }];
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    messages.push({ role: 'assistant', content: 'first' }, { role: 'user', content: 'again' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second' })); // no session_id this time
+    await be.chat(messages);
+
+    messages.push({ role: 'assistant', content: 'second' }, { role: 'user', content: 'once more' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'third', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: 'sess-1' });
+  });
+
+  it('non-claude local agents (codex CLI via local-agent provider) never receive a sessionId', async () => {
+    cli.mockResolvedValueOnce('done');
+    await localBackbone().chat([{ role: 'user', content: 'hello' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  // PR #149 review (jmagly): formatPrompt() always serialized the WHOLE messages array, so a
+  // resumed call duplicated the transcript into a session that already had it — the exact resend
+  // this feature exists to eliminate. These pin the fix: same-array (same task) reuse sends only
+  // the NEW messages once a session exists; a different array (a new task) still gets everything.
+  it('a resumed call on the SAME growing messages array sends only the delta, not the full transcript', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [
+      { role: 'system', content: 'SYSTEM-PROMPT-MARKER' },
+      { role: 'user', content: 'USER-TASK-MARKER' },
+    ];
+
+    cli.mockResolvedValueOnce(JSON.stringify({
+      result: '{"tool_calls":[{"name":"nmap_scan","arguments":{"target":"x"}}]}',
+      session_id: 'sess-1',
+    }));
+    await be.chatWithTools(messages, TOOLS as never);
+
+    // AgentLoop's real growth pattern: push the assistant turn + tool result onto the SAME array.
+    messages.push({ role: 'assistant', content: 'reasoning', toolCalls: [{ id: 'c1', name: 'nmap_scan', arguments: { target: 'x' } }] });
+    messages.push({ role: 'tool', content: 'TOOL-RESULT-MARKER', toolCallId: 'c1', name: 'nmap_scan' });
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'Final debrief.', session_id: 'sess-1' }));
+    await be.chatWithTools(messages, TOOLS as never);
+
+    const secondPrompt = String(cli.mock.calls.at(-1)?.[1] || '');
+    expect(secondPrompt).not.toContain('SYSTEM-PROMPT-MARKER');
+    expect(secondPrompt).not.toContain('USER-TASK-MARKER');
+    expect(secondPrompt).toContain('TOOL-RESULT-MARKER');
+    expect(secondPrompt).toContain('ACTION CONTRACT'); // tool contract retained on the delta call
+  });
+
+  // PR #149 review (jmagly, round 3): a new task must not just switch from delta to full-prompt
+  // sending while still resuming the OLD session — it must start a genuinely FRESH session. The
+  // old session belongs to a different task (and potentially a different target); resuming it
+  // would carry that task's system prompt, target data, and tool output — including anything
+  // attacker-controlled — into a task that never earned it, bypassing PackBoard as the one
+  // sanctioned cross-task channel. One operator, two sequential tasks: task 2 gets no --resume.
+  it('a NEW task (different messages array) starts a genuinely FRESH session, not a resume of the prior task', async () => {
+    const be = claudeBackbone();
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat([{ role: 'system', content: 'TASK-ONE-SYSTEM' }, { role: 'user', content: 'TASK-ONE-USER' }]);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+
+    // A brand-new task builds a brand-new array (AgentLoop.run() does this per task).
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-2' }));
+    await be.chat([{ role: 'system', content: 'TASK-TWO-SYSTEM' }, { role: 'user', content: 'TASK-TWO-USER' }]);
+
+    const secondCall = cli.mock.calls.at(-1);
+    const secondPrompt = String(secondCall?.[1] || '');
+    expect(secondPrompt).toContain('TASK-TWO-SYSTEM');
+    expect(secondPrompt).toContain('TASK-TWO-USER');
+    expect(secondPrompt).not.toContain('TASK-ONE-SYSTEM'); // task 1's content never enters the wire prompt either
+    // The core assertion: task 2's session id is NOT task 1's — no --resume across the task boundary.
+    expect(secondCall?.[2]).toMatchObject({ sessionId: undefined, fallbackPrompt: undefined });
+  });
+
+  it('passes fallbackPrompt (the FULL transcript) alongside a delta send, so a stale-session retry never gets the delta', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }];
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ fallbackPrompt: undefined }); // nothing to fall back from yet
+
+    messages.push({ role: 'assistant', content: 'ok' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'second', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    const call = cli.mock.calls.at(-1);
+    const deltaPrompt = String(call?.[1] || '');
+    const fallbackPrompt = String((call?.[2] as { fallbackPrompt?: string } | undefined)?.fallbackPrompt || '');
+    expect(deltaPrompt).not.toContain('### SYSTEM\nS'); // delta omits the first task's system/user content
+    expect(deltaPrompt).not.toContain('### USER\nU');
+    expect(fallbackPrompt).toContain('### SYSTEM\nS'); // fallback carries the FULL transcript a fresh session would need
+    expect(fallbackPrompt).toContain('### USER\nU');
+  });
+
+  // PR #149 review follow-up: a real envelope's promptTokens on a resumed call reflects the WHOLE
+  // cached conversation (input + cache_creation + cache_read), not the wire size of the delta —
+  // confirmed empirically. The character-estimate fallback (used only when the envelope fails to
+  // parse) must approximate that same full-conversation size, or it silently undercounts the
+  // budget check by an order of magnitude on a delta call.
+  it('the usage estimate fallback reflects the FULL transcript, not the delta, on a mid-session parse failure', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [
+      { role: 'system', content: 'S'.repeat(2000) },
+      { role: 'user', content: 'U'.repeat(2000) },
+    ];
+
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'first', session_id: 'sess-1' }));
+    await be.chat(messages);
+
+    messages.push({ role: 'assistant', content: 'ok' });
+    cli.mockResolvedValueOnce('not json'); // envelope parse failure -> falls to the estimate
+    const res = await be.chat(messages);
+
+    // A delta-only estimate would be tiny (just "ok" plus the preamble/tool contract). The full
+    // ~4000 chars of original system/user content must show up in the estimate too.
+    expect(res.usage?.promptTokens).toBeGreaterThan(900);
+  });
+});
+
+describe('Claude local-agent session trust boundary', () => {
+  afterEach(() => { delete process.env.T3MP3ST_TRUST_CLAUDE_SESSION; });
+
+  it('does not retain or resume an opaque Claude session by default', async () => {
+    const be = claudeBackbone();
+    const messages: LLMMessage[] = [{ role: 'user', content: 'first' }];
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'one', session_id: 'ambient-session' }));
+    await be.chat(messages);
+    messages.push({ role: 'user', content: 'second' });
+    cli.mockResolvedValueOnce(JSON.stringify({ result: 'two', session_id: 'another-session' }));
+    await be.chat(messages);
+
+    expect(cli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined, fallbackPrompt: undefined });
   });
 });
 

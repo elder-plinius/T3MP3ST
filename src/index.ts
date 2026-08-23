@@ -295,6 +295,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public readonly comms: CommsChannel;
   public readonly analysis: AnalysisEngine;
   public readonly llm: LLMBackbone;
+  // The config `this.llm` was built from — kept so spawnOperator() can build each operator its
+  // OWN LLMBackbone instead of sharing this one. LocalAgentAdapter carries per-conversation Claude
+  // Code session state (session id, sent-message tracking); sharing one instance across operators
+  // let one operator's session state leak into another's calls (PR #149 review follow-up).
+  private readonly llmConfig: TempestConfig['llm'];
 
   /**
    * Stub modules (interface-only).
@@ -371,6 +376,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.taskTimeoutMs = TempestCommand.resolveTaskTimeoutMs(config.llm.provider);
 
     // Initialize LLM backbone
+    this.llmConfig = config.llm;
     this.llm = new LLMBackbone(config.llm);
 
     // Initialize core subsystems
@@ -1022,6 +1028,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
           this.mission.generateNextPhaseTasks(target.address);
         }
 
+        // Local-agent operators are pre-spawned once and reused for the whole mission (see
+        // autoSpawnForPhase below), so a resumed CLI session (Claude Code --resume) would
+        // otherwise span every phase. Drop it here so each phase starts a fresh session instead
+        // of one unbounded session for the entire kill chain.
+        for (const op of this.cell.getAllOperators()) op.resetLLMSession();
+
         // Auto-spawn operators for the new phase
         const nextPhase = mission.currentPhase;
         this.autoSpawnForPhase(nextPhase);
@@ -1259,16 +1271,21 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     callsign: string,
     archetype: OperatorArchetype
   ): OperatorAgent {
-    const operator = this.cell.spawnOperator(callsign, archetype);
+    // Each operator gets its OWN LLMBackbone (same config as the mission's) rather than sharing
+    // this.llm — see the llmConfig field comment. Used for BOTH this operator's AgentLoop and its
+    // own decompose-on-failure fallback, so the two stay consistent with each other while staying
+    // isolated from every other operator in the cell.
+    const operatorLLM = new LLMBackbone(this.llmConfig);
+    const operator = this.cell.spawnOperator(callsign, archetype, undefined, operatorLLM);
     this.setupOperatorEvents(operator);
 
     // Attach the agent loop scoped to this archetype's SPECIALIZED role toolkit (defaultTools =
     // the curated per-operator tool allowlist). toolCategories stays as a coarse fallback.
     const profile = ARCHETYPE_PROFILES[archetype];
-    const maxIterations = this.llm.getProvider() === 'local-agent'
+    const maxIterations = operatorLLM.getProvider() === 'local-agent'
       ? LOCAL_AGENT_MAX_ITERATIONS
       : DEFAULT_AGENT_MAX_ITERATIONS;
-    const agentLoop = new AgentLoop(this.llm, this.arsenal, {
+    const agentLoop = new AgentLoop(operatorLLM, this.arsenal, {
       maxIterations,
       maxTokens: 50000,
       toolCategories: profile.toolCategories,

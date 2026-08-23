@@ -89,6 +89,13 @@ Slow local agents can be given more room with `T3MP3ST_LOCAL_AGENT_TIMEOUT_MS`
 for each CLI call, `T3MP3ST_TASK_TIMEOUT_MS` for mission tasks, and
 `T3MP3ST_GENERAL_TIMEOUT_MS` for planning requests. Values are milliseconds.
 
+Claude Code session reuse is disabled by default because a resumed coding-agent
+session may retain provider-side context and ambient tool authority outside the
+Arsenal receipt boundary. Operators who explicitly trust their local Claude
+Code configuration as a separate execution authority may set
+`T3MP3ST_TRUST_CLAUDE_SESSION=1`; reuse remains isolated to one task and the
+choice must not be treated as an Arsenal-enforced sandbox.
+
 Or run it **fully offline** on your own model — no key, no cloud. Defaults to Ollama; point it at any OpenAI-compatible server (LM Studio, vLLM, llama.cpp):
 
 ```bash

@@ -49,6 +49,8 @@ export interface LLMProviderAdapter {
   chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse>;
   stream?(messages: LLMMessage[], options?: ChatOptions): AsyncGenerator<string, void, unknown>;
   validateConfig(): { valid: boolean; error?: string };
+  /** Drop any resumed backend session so the next chat() starts clean. No-op where not applicable. */
+  resetSession?(): void;
 }
 
 export interface ChatOptions {
@@ -1397,6 +1399,7 @@ class CodexAdapter implements LLMProviderAdapter {
 // see and which measured 4-25k tokens on a single trivial call in testing.
 interface ClaudeJsonEnvelope {
   result?: string;
+  session_id?: string;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -1406,7 +1409,7 @@ interface ClaudeJsonEnvelope {
 }
 
 /** Parse the envelope; invalid usage is omitted so the caller can retain content and estimate. */
-function parseClaudeJsonEnvelope(raw: string): { content: string; usage?: LLMResponse['usage'] } | null {
+function parseClaudeJsonEnvelope(raw: string): { content: string; sessionId?: string; usage?: LLMResponse['usage'] } | null {
   let json: ClaudeJsonEnvelope;
   try {
     json = JSON.parse(raw);
@@ -1414,16 +1417,17 @@ function parseClaudeJsonEnvelope(raw: string): { content: string; usage?: LLMRes
     return null;
   }
   if (typeof json.result !== 'string') return null;
+  const sessionId = typeof json.session_id === 'string' && json.session_id ? json.session_id : undefined;
   const u = json.usage || {};
   const tokenValues = [u.input_tokens, u.output_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens];
   if (!tokenValues.some((v) => v !== undefined)
       || tokenValues.some((v) => v !== undefined && (!Number.isFinite(v) || v < 0))) {
-    return { content: json.result };
+    return { content: json.result, sessionId };
   }
   const promptTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
   const completionTokens = u.output_tokens ?? 0;
-  if (promptTokens + completionTokens === 0) return { content: json.result };
-  return { content: json.result, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
+  if (promptTokens + completionTokens === 0) return { content: json.result, sessionId };
+  return { content: json.result, sessionId, usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
 }
 
 // Character-based fallback ONLY — used when the real envelope can't be parsed (older CLI,
@@ -1442,7 +1446,30 @@ function estimateUsage(promptText: string, completionText: string): LLMResponse[
 class LocalAgentAdapter implements LLMProviderAdapter {
   name = 'local-agent';
   private config: LLMConfig;
+  // Claude Code session to --resume (see local-agents.ts). Lives as long as this adapter does —
+  // one LocalAgentAdapter is held for an operator's whole life, so this naturally spans every task
+  // until the caller (TempestCommand, on phase advance) calls resetSession() to start a new one.
+  private claudeSessionId?: string;
+  // The exact `messages` array object sent last call, and how many of its entries were sent.
+  // A resumed session already HAS everything up to that point server-side — resending it would
+  // duplicate the transcript into the session instead of avoiding the resend (PR #149 review).
+  // Reference equality is deliberate: AgentLoop grows ONE array via push() across a task's
+  // iterations, so `messages === lastSentMessages` means "same task, continuing" and the tail
+  // past `lastSentCount` is the delta. A DIFFERENT array (a new task) means the resumed session
+  // has never seen any of it, so it goes out in full even though the CLI session itself resumes.
+  private lastSentMessages?: LLMMessage[];
+  private lastSentCount = 0;
   constructor(config: LLMConfig) { this.config = config; }
+  private trustedClaudeSessionReuse(): boolean {
+    return ['1', 'true', 'yes', 'on'].includes(
+      (process.env.T3MP3ST_TRUST_CLAUDE_SESSION || '').trim().toLowerCase(),
+    );
+  }
+  resetSession(): void {
+    this.claudeSessionId = undefined;
+    this.lastSentMessages = undefined;
+    this.lastSentCount = 0;
+  }
   // Split "agentId[::model]" → { agentId, agentModel }. No separator = just the agent id (CLI default model).
   private parseAgentSpec(): { agentId: string; agentModel?: string } {
     const raw = this.config.model || 'codex';
@@ -1472,17 +1499,51 @@ class LocalAgentAdapter implements LLMProviderAdapter {
   }
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const { agentId, agentModel } = this.parseAgentSpec();
-    const prompt = this.formatPrompt(messages, options);
+    const reuseSession = agentId === 'claude' && this.trustedClaudeSessionReuse();
+    if (!reuseSession) this.resetSession();
+    // Task boundary: a DIFFERENT messages array means AgentLoop.run() started a new task (it builds
+    // one fresh array per task). Resuming across that boundary would carry the prior task's system
+    // prompt, target data, and tool output — including anything attacker-controlled — into a task
+    // that never earned it, outside T3MP3ST's one sanctioned cross-task channel (PackBoard). Only
+    // resume WITHIN one task's own growing transcript; a new task always starts a fresh session
+    // (PR #149 review).
+    if (reuseSession && this.lastSentMessages !== undefined && messages !== this.lastSentMessages) {
+      this.claudeSessionId = undefined;
+    }
+    const fullPrompt = this.formatPrompt(messages, options);
+    // Resuming AND still the same task's (same array object) growing transcript → send only the
+    // NEW messages since last call. A resumed session already has everything up to lastSentCount;
+    // resending it would duplicate the transcript into the session rather than avoiding the resend.
+    // A different array (a new task) or no session yet falls through to the full prompt.
+    const isDelta = reuseSession && this.claudeSessionId !== undefined && messages === this.lastSentMessages;
+    const sendPrompt = isDelta ? this.formatPrompt(messages.slice(this.lastSentCount), options) : fullPrompt;
     const timeoutMs = typeof this.config.timeout === 'number' && this.config.timeout > 0 ? this.config.timeout : undefined;
-    const raw = (await localAgentChat(agentId, prompt, { model: agentModel, timeoutMs })).trim();
+    const raw = (await localAgentChat(agentId, sendPrompt, {
+      model: agentModel,
+      timeoutMs,
+      sessionId: reuseSession ? this.claudeSessionId : undefined,
+      // The stale-session fallback starts a genuinely fresh session with no history — it needs
+      // the FULL transcript, never the delta computed for the (failed) resumed attempt.
+      fallbackPrompt: isDelta ? fullPrompt : undefined,
+    })).trim();
+    if (reuseSession) { this.lastSentMessages = messages; this.lastSentCount = messages.length; }
     // Claude requests --output-format json (see local-agents.ts) so this parses to REAL usage.
     // Anything else (parse failure, or a non-claude agent) falls back to the raw text — claude
     // additionally gets a character-based usage ESTIMATE so its budget check is never blind again.
     const parsed = agentId === 'claude' ? parseClaudeJsonEnvelope(raw) : null;
     const content = parsed ? parsed.content : raw;
+    // Estimate from the FULL prompt, not sendPrompt: a real envelope's promptTokens on a delta
+    // call is large (input + cache_creation + cache_read for the WHOLE resumed context, confirmed
+    // empirically — a resumed call's real promptTokens tracks the full conversation, not the wire
+    // size of the delta). Estimating from the tiny delta text instead would undercount the budget
+    // check by an order of magnitude in the one case this estimate exists to cover (PR #149 review).
     const usage = agentId === 'claude'
-      ? (parsed?.usage ?? estimateUsage(prompt, parsed?.content ?? raw))
+      ? (parsed?.usage ?? estimateUsage(fullPrompt, parsed?.content ?? raw))
       : undefined;
+    // Carry the session forward so the NEXT call (--resume) picks up where this one left off.
+    // Empirically stable across --resume (confirmed against the real CLI), but re-capture anyway
+    // in case a future CLI version rotates it.
+    if (reuseSession && parsed?.sessionId) this.claudeSessionId = parsed.sessionId;
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
     const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
@@ -1661,6 +1722,11 @@ constructor(config: LLMConfig) {
    */
   getModel(): string {
     return this.config.model;
+  }
+
+  /** Drop any resumed local-agent session (e.g. Claude Code's --resume id) so the next chat() starts fresh. */
+  resetLocalAgentSession(): void {
+    this.adapter.resetSession?.();
   }
 
   /**

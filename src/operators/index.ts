@@ -439,6 +439,16 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.agentLoop = agentLoop;
   }
 
+  /**
+   * Drop any resumed local-agent session (e.g. Claude Code's --resume id). Called at kill-chain
+   * phase boundaries: local-agent operators are pre-spawned once and reused for the whole
+   * mission (auto-spawn-per-phase is disabled for local-agent), so nothing else would naturally
+   * end a resumed session between phases.
+   */
+  resetLLMSession(): void {
+    this.llm?.resetLocalAgentSession();
+  }
+
   /** Attach the shared pack board so this operator sees the swarm's live lead-board (Phase-2). */
   attachBoard(board: PackBoard): void {
     this.board = board;
@@ -888,7 +898,8 @@ export class OperatorCell extends EventEmitter<CellEvents> {
   spawnOperator(
     callsign: string,
     archetype: OperatorArchetype,
-    config?: Partial<OperatorConfig>
+    config?: Partial<OperatorConfig>,
+    llm?: LLMBackbone
   ): OperatorAgent {
     if (this.operators.size >= this.maxOperators) {
       this.emit('cell:capacity_warning', {
@@ -905,7 +916,7 @@ export class OperatorCell extends EventEmitter<CellEvents> {
       }
     }
 
-    const operator = new OperatorAgent(callsign, archetype, config, this.llm);
+    const operator = new OperatorAgent(callsign, archetype, config, llm ?? this.llm);
 
     // Forward operator events
     operator.on('status:changed', ({ oldStatus }) => {

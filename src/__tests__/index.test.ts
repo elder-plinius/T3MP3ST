@@ -4,13 +4,19 @@
  * Basic test suite for core functionality.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Arsenal, BUILTIN_TOOLS, successResult, failResult, createToolContext } from '../arsenal/index.js';
 import { FRONTIER_ARSENAL_MILESTONE, SAFE_COMMANDS, TOOL_ADAPTERS, adaptersForFamily, summarizeToolCatalog } from '../arsenal/catalog.js';
 import { createKnowledgeBase, createEvasionEngine, CVE_DATABASE, MITRE_TECHNIQUES } from '../stubs/index.js';
 import { AGENT_PROMPT_PACKS, FOREFRONT_PRESSURE_LANES, OPERATOR_RUNBOOKS, forefrontPressureForFamily, promptPacksForFamily, runbookForFamily } from '../resources/index.js';
 import { OpGeneral } from '../general/index.js';
 import { LLMBackbone } from '../llm/index.js';
+
+// Scoped to this file's new per-operator-isolation test (PR #149 review follow-up) — every other
+// test here uses provider: 'mock', which never touches this module.
+vi.mock('../agent/local-agents.js', () => ({ localAgentChat: vi.fn() }));
+import { localAgentChat } from '../agent/local-agents.js';
+const localAgentCli = vi.mocked(localAgentChat);
 
 describe('Arsenal', () => {
   let arsenal: Arsenal;
@@ -465,6 +471,56 @@ describe('Wedged-dispatch timeout backstop', () => {
       else process.env.T3MP3ST_TASK_TIMEOUT_MS = prev;
     }
   }, 15000);
+
+  // PR #149 review follow-up: spawnOperator() used to hand every operator the SAME shared
+  // this.llm, so LocalAgentAdapter's Claude Code session-resume state (added for --resume) leaked
+  // across operators — one operator's session could get resumed with a different operator's
+  // unrelated task content. Each operator now gets its own LLMBackbone from the same config.
+  it('spawnOperator() gives each operator its OWN LLMBackbone, not a shared one (no cross-operator Claude session leakage)', async () => {
+    const mod = await import('../index.js');
+    const command = new mod.TempestCommand({
+      name: 'Isolation Op',
+      llm: { provider: 'local-agent', model: 'claude' },
+    });
+
+    const opA = command.spawnOperator('Recon-Iso', 'recon');
+    const opB = command.spawnOperator('Scanner-Iso', 'scanner');
+
+    expect((opA as any).llm).not.toBe((opB as any).llm);
+    expect((opA as any).llm).not.toBe(command.llm);
+
+    localAgentCli.mockResolvedValueOnce(JSON.stringify({ result: 'a1', session_id: 'sess-A' }));
+    await (opA as any).llm.chat([{ role: 'user', content: 'hello A' }]);
+
+    // Operator B has never talked to Claude before — its first call must NOT resume A's session.
+    localAgentCli.mockResolvedValueOnce(JSON.stringify({ result: 'b1', session_id: 'sess-B' }));
+    await (opB as any).llm.chat([{ role: 'user', content: 'hello B' }]);
+
+    expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
+
+  // PR #149 review, round 3 (jmagly): cross-OPERATOR isolation isn't enough — the SAME operator
+  // running a second task must not resume the first task's session either. The old session belongs
+  // to a task (and potentially a target) that never earned a place in the new task's context;
+  // PackBoard is the one sanctioned channel for carrying anything across a task boundary.
+  it('one operator running TWO SEQUENTIAL tasks does not resume task 1\'s session for task 2 (production-shaped)', async () => {
+    const mod = await import('../index.js');
+    const command = new mod.TempestCommand({
+      name: 'Task Boundary Op',
+      llm: { provider: 'local-agent', model: 'claude' },
+    });
+    const op = command.spawnOperator('Recon-Task-Boundary', 'recon');
+
+    localAgentCli.mockResolvedValueOnce(JSON.stringify({ result: 'task1', session_id: 'sess-task-1' }));
+    await (op as any).llm.chat([{ role: 'system', content: 'TASK-1' }, { role: 'user', content: 'do task 1' }]);
+    expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+
+    // AgentLoop.run() builds a brand-new messages array per task — simulate that exactly.
+    localAgentCli.mockResolvedValueOnce(JSON.stringify({ result: 'task2', session_id: 'sess-task-2' }));
+    await (op as any).llm.chat([{ role: 'system', content: 'TASK-2' }, { role: 'user', content: 'do task 2' }]);
+
+    expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
+  });
 });
 
 describe('Codex account provider', () => {

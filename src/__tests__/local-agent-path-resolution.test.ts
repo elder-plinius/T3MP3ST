@@ -284,3 +284,121 @@ describe.runIf(process.platform !== 'win32')('spawn call-sites use the resolved 
     })).resolves.toBe('--no-tools --model openai-codex/gpt-5|long planning prompt');
   });
 });
+
+/**
+ * REGRESSION guard (Tier 2 — #139 follow-up, session resume): confirmed empirically against the
+ * real Claude Code CLI that an unknown/expired --resume id is a hard, fast failure (nonzero exit,
+ * "No conversation found with session ID: ..." on stderr, no JSON on stdout) — the CLI never falls
+ * back to a fresh session on its own. localAgentChat does that fallback itself, once. These tests
+ * drive the REAL function (not mocked) through a fake CLI script so the retry wiring is pinned,
+ * not just the higher-level LocalAgentAdapter call-shape covered in local-agent-tool-calling.test.ts.
+ */
+const FAKE_CLI_RESUME_STALE = `#!/bin/sh
+cat >/dev/null 2>&1
+case "$*" in
+  *--resume*) echo "No conversation found with session ID: fake" >&2; exit 1 ;;
+  *) echo '{"result":"fresh ok","session_id":"new-session-123"}' ;;
+esac
+`;
+
+// Echoes exactly what it received on stdin back to stdout on the fresh (non-resume) path — lets a
+// test prove WHICH prompt string a fresh-session retry actually received, not just that it succeeded.
+const FAKE_CLI_ECHO_ON_FRESH = `#!/bin/sh
+prompt=$(cat)
+case "$*" in
+  *--resume*) echo "No conversation found with session ID: fake" >&2; exit 1 ;;
+  *) printf '%s' "$prompt" ;;
+esac
+`;
+
+// A --resume failure that is NOT the stale-session error. If a fallback retry incorrectly fired,
+// the fresh (non-resume) branch below would resolve successfully — so a test asserting this
+// REJECTS proves no retry happened, not just that the final error text matches.
+const FAKE_CLI_NONSTALE_RESUME_ERROR = `#!/bin/sh
+cat >/dev/null 2>&1
+case "$*" in
+  *--resume*) echo "connection refused" >&2; exit 1 ;;
+  *) echo '{"result":"should not be reached — a retry fired for a non-stale error","session_id":"x"}' ;;
+esac
+`;
+
+describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
+  it('retries WITHOUT --resume when the resumed session is stale, and succeeds', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ping', { sessionId: 'stale-uuid', timeoutMs: 4000 });
+    expect(JSON.parse(out).result).toBe('fresh ok');
+  });
+
+  it('never adds --resume when no sessionId is supplied (no unnecessary retry path)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ping', { timeoutMs: 4000 });
+    expect(JSON.parse(out).result).toBe('fresh ok');
+  });
+
+  it('a genuine failure with no session in play still rejects (no unnecessary-retry regression)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', '#!/bin/sh\ncat >/dev/null 2>&1\necho "boom" >&2\nexit 1\n');
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    await expect(localAgentChat('claude', 'ping', { timeoutMs: 4000 })).rejects.toThrow(/boom/);
+  });
+
+  it('a non-stale failure with a session in play propagates without a fallback retry (narrowed trigger, PR #149 review)', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_NONSTALE_RESUME_ERROR);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    // If the (old, unnarrowed) fallback fired here, this would RESOLVE with the fresh branch's
+    // success text instead of rejecting — a rejection proves no retry happened.
+    await expect(localAgentChat('claude', 'ping', { sessionId: 'whatever', timeoutMs: 4000 }))
+      .rejects.toThrow(/connection refused/);
+  });
+
+  it('the specific stale-session error still triggers exactly one fallback retry', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ping', { sessionId: 'stale-uuid', timeoutMs: 4000 });
+    expect(JSON.parse(out).result).toBe('fresh ok');
+  });
+
+  // PR #149 review (jmagly): the fresh-session retry has no history at all, so it must receive the
+  // FULL transcript (fallbackPrompt) — never the delta sized for the (failed) resumed attempt.
+  it('the fresh-session retry receives fallbackPrompt, not the delta prompt of the failed resumed attempt', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_ECHO_ON_FRESH);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'DELTA-ONLY-CONTENT', {
+      sessionId: 'stale-uuid',
+      fallbackPrompt: 'FULL-TRANSCRIPT-CONTENT',
+      timeoutMs: 4000,
+    });
+
+    expect(out).toBe('FULL-TRANSCRIPT-CONTENT');
+    expect(out).not.toContain('DELTA-ONLY-CONTENT');
+  });
+
+  it('falls back to the (delta) prompt itself when no fallbackPrompt is supplied', async () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_ECHO_ON_FRESH);
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+
+    const out = await localAgentChat('claude', 'ONLY-PROMPT-CONTENT', { sessionId: 'stale-uuid', timeoutMs: 4000 });
+    expect(out).toBe('ONLY-PROMPT-CONTENT');
+  });
+});
