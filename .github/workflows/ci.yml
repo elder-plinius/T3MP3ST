@@ -18,40 +18,47 @@ concurrency:
 
 jobs:
   test:
+    name: Pull request gate
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      # Enforce the 100% coverage gate on the new multi-language ingest files
-      # (vitest exits non-zero if a per-file threshold is missed).
-      - run: npm run test:coverage
-      - run: npm run doctor
-      # Honesty gates: prove the headline numbers re-derive and that no
-      # challenge-fitting has crept in. Public contributors / CI can verify.
-      - run: npm run verify-claims
-      - run: npm run test:no-fitting
-      - run: npm run test:no-self-fitting
-      # The provenance gate itself, in the compiled engine path (builds first).
-      - run: npm run test:gate
-      # The operator doctrine / prompt-pack contract must hold.
-      - run: npm run prompt:audit
-      # Non-network smoke: core traps run deterministically; server/live tiers
-      # auto-skip when no server/LLM is present (they are absent in CI).
-      - run: npm run smoke
+      - name: Run PR correctness gate
+        run: npm run test:pr
+      - name: Resolve comparison base
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          coverage_base="$EVENT_BASE"
+          if ! git rev-parse --verify "${coverage_base}^{commit}" >/dev/null 2>&1; then
+            coverage_base="$(git rev-parse HEAD^)"
+          fi
+          echo "COVERAGE_BASE=$coverage_base" >> "$GITHUB_ENV"
+      - name: Enforce 50% changed-line coverage floor
+        env:
+          PR_CHANGED_LINE_COVERAGE: "50"
+        run: npm run test:pr-coverage
+      - name: Verify changed-line coverage policy tool
+        run: npm run test:changed-coverage-script
 
   release:
+    name: Release certification and ZIP archive
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -61,20 +68,40 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run test:release
-      - run: npm audit --audit-level=high
-      - run: npm run pack:dry-run
-      - run: npm pack --json > pack-result.json
-      - name: Record release checksums
+      - name: Run release-grade test and evidence gates
+        run: npm run test:release
+      - name: Reject high-severity dependency vulnerabilities
+        run: npm audit --audit-level=high
+      - name: Build deterministic source ZIP from tested tag
         run: |
-          package_file="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('pack-result.json')); process.stdout.write(p[0].filename)")"
-          sha256sum "$package_file" > SHA256SUMS
+          mkdir -p release release-evidence
+          archive="release/T3MP3ST-${GITHUB_SHA}.zip"
+          git archive --format=zip --prefix="T3MP3ST-${GITHUB_SHA}/" --output="$archive" "$GITHUB_SHA"
+          unzip -t "$archive" | tee release-evidence/source-zip-check.txt
+          sha256sum "$archive" | tee release-evidence/SHA256SUMS
+      - name: Verify a clean user build from the ZIP
+        run: |
+          install_root="$RUNNER_TEMP/t3mp3st-release-smoke"
+          mkdir -p "$install_root"
+          unzip -q "release/T3MP3ST-${GITHUB_SHA}.zip" -d "$install_root"
+          cd "$install_root/T3MP3ST-${GITHUB_SHA}"
+          npm ci
+          npm run build
+          node dist/cli.js --help > /dev/null
+      - name: Attest tested ZIP provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release-evidence/SHA256SUMS
+      - name: Retain provenance bundle and verify archive checksum
+        run: |
+          cp "${{ steps.provenance.outputs.bundle-path }}" release-evidence/slsa-provenance.sigstore.json
+          sha256sum -c release-evidence/SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tested-package-${{ github.sha }}
+          name: tested-source-zip-${{ github.sha }}
           path: |
-            *.tgz
-            SHA256SUMS
-            pack-result.json
+            release/
+            release-evidence/
           if-no-files-found: error
           retention-days: 14

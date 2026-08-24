@@ -33,4 +33,5 @@ Exact commands and results:
 - [ ] Diff is scoped against current `upstream/main`
 - [ ] No unrelated protected evidence, safety tests, or provider/config files were removed
 - [ ] Published review history was not force-pushed
-- [ ] Exact-head CI must be green before merge
+- [ ] Exact-head PR CI is green (including the 50% changed-line coverage floor)
+- [ ] I understand PR acceptance is not release certification

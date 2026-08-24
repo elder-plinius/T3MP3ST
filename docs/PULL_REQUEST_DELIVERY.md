@@ -39,13 +39,16 @@ both human contributors and coding agents.
 
 4. Run the smallest meaningful verification set.
 
-   For most code changes:
+   For most code changes, run the same correctness gate used by CI:
 
    ```bash
-   npm run typecheck
-   npm test
-   npm run doctor
+   npm run test:pr
    ```
+
+   CI additionally measures changed executable lines against the PR base and
+   requires at least 50% coverage. This permits incremental review without
+   claiming release certification. Release tags rerun the complete coverage,
+   evidence, anti-fitting, smoke, build, audit, and package gates.
 
    For docs-only changes, note why code tests were skipped. For UI-only
    `docs/index.html` changes, extract or otherwise parse-check the page scripts.

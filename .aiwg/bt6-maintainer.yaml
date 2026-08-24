@@ -19,9 +19,15 @@ delivery:
   allowedMergeMethods: ["squash"]
 validation:
   quick:
-    - "npm run typecheck"
+    - "npm run test:pr"
+    - "COVERAGE_BASE=upstream/main PR_CHANGED_LINE_COVERAGE=50 npm run test:pr-coverage"
   full:
-    - "npm test"
+    - "npm run test:release"
+    - "npm audit --audit-level=high"
+  qualityPolicy:
+    pullRequestChangedLineCoverageFloor: 50
+    requireBehaviorTests: true
+    fullSuiteTrigger: "release-tag-certification"
   documentation:
     - "npm run docs:check"
   researchIntegrity:
@@ -107,6 +113,13 @@ research:
     - "notes/**"
   provenanceRequired: true
   citationVerificationRequired: true
+releaseEvidence:
+  artifactType: "source-zip"
+  hashAlgorithm: "sha256"
+  provenanceFormat: "slsa-v1"
+  attestationFormat: "sigstore-bundle"
+  snapshotOnce: true
+  verifyBeforePromotion: true
 security:
   disclosureUrl: "https://forms.gle/QvKoijJMtEhLG7nf8"
   sensitiveDataPaths:
