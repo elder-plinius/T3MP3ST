@@ -630,6 +630,13 @@ export const BUILTIN_TOOLS: CustomTool[] = [
         return {
           success: true,
           output: `DNS ${recordType} lookup for ${domain}:\n${records.join('\n')}`,
+          // DNS records are target discoveries — emit them so they land in the evidence
+          // vault (tool-provenanced) instead of living only in this tool's output text.
+          findings: records.length > 0 ? [{
+            title: `DNS ${recordType} Records — ${domain}`,
+            severity: 'info',
+            details: `${recordType} records for ${domain}: ${records.join('; ')}`,
+          }] : undefined,
         };
       } catch (error) {
         return {
@@ -842,6 +849,13 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           resolve({
             success: true,
             output: `WHOIS for ${domain} (via ${whoisServer}):\n\n${output}${extracted.length > 20 ? '\n... (truncated)' : ''}`,
+            // Registration intel (registrar, nameservers, expiry) is a target discovery —
+            // emit it so it reaches the evidence vault with tool provenance.
+            findings: extracted.length > 0 ? [{
+              title: `WHOIS Registration — ${domain}`,
+              severity: 'info',
+              details: `WHOIS for ${domain}: ${extracted.slice(0, 12).join(' | ')}`,
+            }] : undefined,
           });
         });
 
@@ -928,9 +942,17 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const value = response.headers.get(h);
           return `${h}: ${value ? `✓ ${value}` : '✗ Missing'}`;
         });
+        // Missing security headers are a (low-severity) discovery — emit them so they land
+        // in the evidence vault instead of only in the tool's output text.
+        const missing = securityHeaders.filter(h => !response.headers.get(h));
         return {
           success: true,
           output: `Security Header Analysis for ${url}:\n${analysis.join('\n')}`,
+          findings: missing.length > 0 ? [{
+            title: `Missing Security Headers — ${url}`,
+            severity: 'low',
+            details: `${missing.length} security header(s) missing: ${missing.join(', ')}`,
+          }] : undefined,
         };
       } catch (error) {
         return { success: false, error: `Failed: ${error instanceof Error ? error.message : String(error)}` };

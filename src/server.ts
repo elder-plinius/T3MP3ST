@@ -12,29 +12,40 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { execFile, spawn } from 'child_process';
-import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { existsSync } from 'fs';
+import { appendFile, chmod, mkdir, readFile, writeFile } from 'fs/promises';
+import { homedir } from 'os';
+import { connect as tcpConnect } from 'net';
+import { dirname, join } from 'path';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
 import { config, AVAILABLE_MODELS } from './config/index.js';
+import { loadSupabaseState, persistSupabaseState, bufferSupabaseEvent, flushSupabaseEvents } from './storage/supabase.js';
 import { resolveModels } from './config/provider-models.js';
 import { initProxyFromConfig, configureProxy, getProxyStatus, checkIp, invalidateIpCache } from './net/proxy.js';
 import { redactString, redactLedgerText, redactSecrets } from './redact.js';
 import { LLMBackbone } from './llm/index.js';
-import { TempestCommand } from './index.js';
+import { TempestCommand, isToolAvailable } from './index.js';
 import { OpGeneral } from './general/index.js';
 import type { Directive } from './general/index.js';
-import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelection } from './agent/local-agents.js';
+import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelection, loadCustomAgents, saveCustomAgents, normalizeCustomAgent } from './agent/local-agents.js';
 import { FRONTIER_ARSENAL_MILESTONE, NETWORK_COMMANDS, SAFE_COMMANDS, TOOL_ADAPTERS, adapterForBinary, adaptersForFamily, summarizeToolCatalog } from './arsenal/catalog.js';
 import { AGENT_PROMPT_PACKS, FOREFRONT_PRESSURE_LANES, OPERATOR_RUNBOOKS, RESOURCE_PACKS, WORKFLOW_PRESETS, forefrontPressureForFamily, promptPacksForFamily, resourcesForFamily, runbookForFamily, searchResources, workflowPresetsForFamily } from './resources/index.js';
 import { AI_REDTEAM_PLAYBOOK, AI_REDTEAM_TECHNIQUE_IDS, aiRedTeamBriefing } from './resources/ai-redteam-playbook.js';
 import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT } from './prompts/index.js';
 import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
-import type { OperatorArchetype, LLMProvider } from './types/index.js';
+import type { OperatorArchetype, LLMProvider, FallbackEntry } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveRepoSourceForAnalysis, RepoCloneError, RepoPathError } from './recon/whitebox.js';
 import { initGrammars } from './recon/ts-grammars.js';
 import { redactCredential } from './evidence/index.js';
+import { SploitusClient } from './tools/sploitus.js';
+import { RapidResponseEngine, RAPID_RESPONSE_CATALOG } from './tools/rapid-response.js';
+import { TripwireManager, type TripwireTriggerEvent } from './tools/tripwires.js';
+import { WebhookDispatcher } from './config/webhooks.js';
+import { CveFeedEngine } from './tools/cve-feed.js';
+import { CveCorrelator } from './recon/cve-correlator.js';
+import { DFIRManager, type PlaybookType, type IOCType } from './tools/dfir.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -350,6 +361,11 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
       model,
       apiKey,
       baseUrl: baseConfig.baseUrl,
+      // Model-failure ladder (TEMPEST_MODEL_FALLBACK): a local timeout/refused
+      // connection must fail over to the next configured provider (e.g. OpenRouter)
+      // instead of killing the mission — this config flows to the command backbone
+      // AND to every spawned operator's own backbone.
+      fallbackChain: baseConfig.fallbackChain,
       // Only a LOCAL provider honors a per-request base URL (the operator's own
       // llama.cpp / Ollama host). Never set it for cloud providers — that would
       // let a request redirect a cloud call to an attacker-chosen endpoint.
@@ -362,11 +378,47 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
   // Wire all events to SSE broadcast
   tempestCommand.connectBroadcast(broadcastEvent);
 
+  // So infiltration can continue prior work: wire the durable per‑target scan notes provider
+  // (5 notes / 1200 chars, same cap the AgentLoop prompt shows) into every dispatch.
+  try { tempestCommand.setScanNotesProvider((target: string) => scanNotesForTarget(target, { maxNotes: 5, charCap: 1200 })); } catch {}
+
+  // Record EVERY task's tool results + summary into the Evidence Vault (by domain)
+  // while the mission runs — findings alone only capture the formal claims, not the
+  // scan outputs and discovered assets behind them.
+  tempestCommand.on('task:completed', (evt) => {
+    try {
+      for (const step of evt.toolResults || []) {
+        if (!step.output || step.output.length < 4) continue;
+        recordScanEvidence({
+          source: 'tool',
+          kind: 'scan',
+          tool: step.toolName,
+          summary: step.ok
+            ? `Tool result from ${evt.callsign} (${evt.taskName || 'task'})`
+            : `Tool FAILED on ${evt.callsign} (${evt.taskName || 'task'})`,
+          detail: step.output,
+          command: step.argsHint,
+        });
+      }
+      if (evt.summary) {
+        recordScanEvidence({
+          source: 'system',
+          kind: 'task',
+          tool: evt.taskName || 'task',
+          summary: `${evt.success ? 'Task completed' : 'Task failed'} — ${evt.callsign} (${evt.archetype})`,
+          detail: evt.summary,
+        });
+      }
+    } catch (e) {
+      console.warn('[mission] failed to record task evidence:', (e as Error).message);
+    }
+  });
+
   // Mirror each discovered mission finding into the persistent findingsLedger so the
   // Evidence Vault (/api/findings) reflects the run instead of showing 0 afterward.
   tempestCommand.on('finding:discovered', ({ finding }) => {
     try {
-      upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id);
+      upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id, tempestCommand ?? undefined);
     } catch (err) {
       console.error('[T3MP3ST] failed to persist mission finding to ledger:', err instanceof Error ? err.message : err);
     }
@@ -823,6 +875,23 @@ interface MemoryProposal {
   memoryEntryId?: string;
 }
 
+type ScanNoteKind = 'recon' | 'infiltration' | 'general';
+interface ScanNote {
+  id: string;
+  target: string;
+  missionId?: string;
+  operationId?: string;
+  kind: ScanNoteKind;
+  title: string;
+  body: string;
+  source: 'human' | 'agent' | 'tool' | 'system';
+  authorAgentId?: string;
+  findingIds: string[];
+  evidenceIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 const missionDrafts = new Map<string, MissionDraft>();
 const improvementProposals = new Map<string, ImprovementProposal>();
 const approvalRequests = new Map<string, ApprovalRequest>();
@@ -834,6 +903,7 @@ const workOrderLedger = new Map<string, WorkOrderRecord>();
 const watchCycleLedger = new Map<string, WatchCycleRecord>();
 const memoryCapsule = new Map<string, MemoryEntry>();
 const memoryProposals = new Map<string, MemoryProposal>();
+const scanNoteLedger = new Map<string, ScanNote>();
 
 /**
  * Mirror a live mission finding into the persistent findingsLedger (the one the
@@ -847,9 +917,21 @@ function upsertMissionFindingToLedger(finding: {
   description?: string;
   severity?: unknown;
   targetId?: string;
-}, missionId?: string): void {
+  remediation?: string;
+  operatorId?: string;
+  evidence?: Array<{ type?: string; content?: string; timestamp?: number; metadata?: { tool?: string } }>;
+}, missionId?: string, command?: { targetEnv?: { getAllTargets?: () => Array<{ id?: string; address?: string }> } }): void {
   const title = typeof finding.title === 'string' && finding.title.trim() ? finding.title.trim() : 'Untitled finding';
-  const target = normalizeTargetValue(finding.targetId);
+  const rawTargetId = typeof finding.targetId === 'string' ? finding.targetId.trim() : '';
+  let target = normalizeTargetValue(rawTargetId);
+  if (command && rawTargetId) {
+    // finding.targetId is the TargetEnvironment UUID — resolve it to the operator-visible
+    // address so vault rows and per-scan notes key by host (the notes provider looks up by address).
+    try {
+      const t = command.targetEnv?.getAllTargets?.().find(x => x && x.id === rawTargetId);
+      if (t && typeof t.address === 'string' && t.address.trim()) target = t.address.trim();
+    } catch {}
+  }
   const dedupeKey = `${title.toLowerCase()}::${target.toLowerCase()}`;
   const existing = [...findingsLedger.values()].find(
     record => `${record.title.toLowerCase()}::${record.target.toLowerCase()}` === dedupeKey,
@@ -859,11 +941,42 @@ function upsertMissionFindingToLedger(finding: {
   const claim = typeof finding.description === 'string' && finding.description.trim()
     ? redactLedgerText(finding.description.trim())
     : 'Claim pending evidence review.';
+  const toolBacked = Array.isArray(finding.evidence) && finding.evidence.some(ev => typeof ev?.content === 'string' && ev.content.trim());
+
+  // Attach the finding's tool output as real EvidenceEntry records so the vault
+  // shows WHAT the tool saw, not just the claim. Best-effort: a malformed
+  // evidence item is skipped, never fatal.
+  const attachEvidence = (record: FindingRecord): void => {
+    if (!Array.isArray(finding.evidence)) return;
+    for (const ev of finding.evidence.slice(0, 6)) {
+      const content = typeof ev?.content === 'string' ? ev.content.trim() : '';
+      if (!content) continue;
+      const evidenceId = newId('evidence');
+      evidenceLedger.set(evidenceId, {
+        id: evidenceId,
+        missionId: record.missionId,
+        findingId: record.id,
+        type: 'log',
+        title: ev.metadata?.tool ? `Tool output — ${ev.metadata.tool}` : 'Tool output',
+        summary: redactLedgerText(content.slice(0, 2000)),
+        source: 'tool',
+        command: ev.metadata?.tool ? redactLedgerText(ev.metadata.tool, 240) : undefined,
+        provenanceStrength: 'tool',
+        resourceIds: [],
+        createdAt: now,
+      });
+      if (!record.evidenceIds.includes(evidenceId)) record.evidenceIds.push(evidenceId);
+    }
+  };
 
   if (existing) {
     existing.severity = severity;
     existing.claim = claim;
+    if (toolBacked) existing.confidence = 0.9;
+    if (typeof finding.remediation === 'string' && finding.remediation.trim()) existing.recommendedFix = redactLedgerText(finding.remediation.trim());
+    if (finding.operatorId) existing.owner = finding.operatorId;
     if (missionId) existing.missionId = missionId;
+    attachEvidence(existing);
     existing.updatedAt = now;
     findingsLedger.set(existing.id, existing);
     return;
@@ -879,9 +992,205 @@ function upsertMissionFindingToLedger(finding: {
     claim,
     impact: '',
     severity,
-    confidence: 0.5,
+    confidence: toolBacked ? 0.9 : 0.5,
     status: 'open',
     evidenceIds: [],
+    resourceIds: [],
+    recommendedFix: typeof finding.remediation === 'string' && finding.remediation.trim() ? redactLedgerText(finding.remediation.trim()) : '',
+    acceptanceCriteria: [],
+    owner: finding.operatorId,
+    createdAt: now,
+    updatedAt: now,
+    retestIds: [],
+  };
+  attachEvidence(record);
+  findingsLedger.set(record.id, record);
+  // Best-effort durable per-target scan note so a later scan of the same target can
+  // resume without re-probing already-mapped surface. Deduped + capped.
+  try { autoScanNoteForFinding(record, finding); } catch {}
+}
+
+/** Extract the most domain-like token (URL host / domain / IP) from free scan text — keys evidence by asset. */
+function extractScanTarget(text: string): string {
+  const m = String(text || '').match(/https?:\/\/[^\s,;'"]+|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b/i);
+  if (!m) return '';
+  let t = m[0];
+  try { if (/^https?:\/\//i.test(t)) t = new URL(t).host; } catch { /* keep raw */ }
+  return t.slice(0, 200);
+}
+
+// ── Persistent per-scan (per-target) notes — so the next scan of the SAME host can continue
+// instead of re-enumerating. Append-only, bounded, deduped by title::target. Wired into
+// buildStateSnapshot/loadPersistedState and hydrated into AgentLoop prompts as ### Prior scan notes.
+function normalizeScanNoteKind(value: unknown): ScanNoteKind {
+  return ['recon', 'infiltration', 'general'].includes(String(value)) ? value as ScanNoteKind : 'general';
+}
+function upsertScanNote(params: {
+  target: string;
+  title: string;
+  body: string;
+  kind?: ScanNoteKind;
+  source?: ScanNote['source'];
+  missionId?: string;
+  operationId?: string;
+  authorAgentId?: string;
+  findingIds?: string[];
+  evidenceIds?: string[];
+}): ScanNote | null {
+  const target = normalizeTargetValue(params.target).trim();
+  const title = String(params.title || '').trim();
+  if (!target || !title) return null;
+  const body = redactLedgerText(String(params.body || '').slice(0, 4000));
+  const kind = normalizeScanNoteKind(params.kind);
+  const dedupeKey = `${normalizeTargetValue(target).toLowerCase()}::${title.toLowerCase()}`;
+  const existing = [...scanNoteLedger.values()].find(
+    n => `${normalizeTargetValue(n.target).toLowerCase()}::${n.title.toLowerCase()}` === dedupeKey,
+  );
+  const now = nowIso();
+  if (existing) {
+    existing.body = body;
+    existing.kind = kind;
+    if (params.missionId) existing.missionId = params.missionId;
+    if (params.operationId) existing.operationId = params.operationId;
+    if (params.authorAgentId) existing.authorAgentId = params.authorAgentId;
+    if (Array.isArray(params.findingIds) && params.findingIds.length) existing.findingIds = [...new Set([...existing.findingIds, ...params.findingIds])].slice(0, 12);
+    if (Array.isArray(params.evidenceIds) && params.evidenceIds.length) existing.evidenceIds = [...new Set([...existing.evidenceIds, ...params.evidenceIds])].slice(0, 12);
+    existing.updatedAt = now;
+    scanNoteLedger.set(existing.id, existing);
+    return existing;
+  }
+  const note: ScanNote = {
+    id: newId('note'),
+    target: normalizeTargetValue(target),
+    missionId: params.missionId,
+    operationId: params.operationId,
+    kind,
+    title: redactLedgerText(title, 240),
+    body,
+    source: params.source || 'system',
+    authorAgentId: params.authorAgentId,
+    findingIds: [...new Set((params.findingIds || []).filter(Boolean))].slice(0, 12),
+    evidenceIds: [...new Set((params.evidenceIds || []).filter(Boolean))].slice(0, 12),
+    createdAt: now,
+    updatedAt: now,
+  };
+  scanNoteLedger.set(note.id, note);
+  return note;
+}
+function autoScanNoteForFinding(record: FindingRecord, finding: Record<string, unknown>): void {
+  const title = String((finding as Record<string, unknown>).title || record.title || '').trim();
+  if (!title) return;
+  const target = String(record.target || normalizeTargetValue((finding as Record<string, unknown>).targetId)).trim();
+  if (!target || target === 'local-lab') return;
+  // Cap auto-notes per target so one noisy run can't flood the ledger.
+  const key = normalizeTargetValue(target).toLowerCase();
+  let autoCount = 0;
+  for (const n of scanNoteLedger.values()) if (normalizeTargetValue(n.target).toLowerCase() === key && n.source === 'tool') autoCount++;
+  if (autoCount >= 10) return;
+  const claim = String(record.claim || (finding as Record<string, unknown>).description || title).slice(0, 800);
+  upsertScanNote({
+    target,
+    title,
+    body: claim,
+    kind: /infiltrat|lateral|priv-esc|c2|post-compromise/i.test(String((finding as Record<string, unknown>).phase || '')) ? 'infiltration' : 'recon',
+    source: 'tool',
+    missionId: record.missionId,
+    operationId: record.operationId,
+    findingIds: [record.id],
+    evidenceIds: record.evidenceIds.slice(0, 4),
+  });
+  // Persist + stream are caller's job (upsertMissionFindingToLedger's caller already does).
+}
+function scanNotesForTarget(target: string, opts: { maxNotes?: number; charCap?: number } = {}): string {
+  const maxNotes = Math.max(0, opts.maxNotes ?? 5);
+  const cap = Math.max(200, opts.charCap ?? 1200);
+  const host = normalizeTargetValue(target).toLowerCase();
+  if (!host || host === 'local-lab') return '';
+  const notes = [...scanNoteLedger.values()]
+    .filter(n => normalizeTargetValue(n.target).toLowerCase() === host)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, maxNotes);
+  if (!notes.length) return '';
+  const lines: string[] = ['PRIOR SCAN NOTES — durable (same target, earlier runs — do NOT re-probe what is already covered; continue from here):'];
+  for (const n of notes) {
+    const snippet = n.body.replace(/\s+/g, ' ').trim().slice(0, 280);
+    lines.push(`- [${n.kind}/${n.source} ${n.updatedAt.slice(0, 10)}] ${n.title}: ${snippet}`);
+  }
+  let full = lines.join('\n');
+  if (full.length > cap) {
+    const marker = '\n…(truncated)';
+    const budget = cap - marker.length;
+    const out: string[] = [];
+    let used = 0;
+    for (const line of lines) {
+      const add = out.length === 0 ? line.length : line.length + 1;
+      if (used + add > budget) break;
+      out.push(line);
+      used += add;
+    }
+    full = out.join('\n') + marker;
+    if (full.length > cap) full = full.slice(0, cap);
+  }
+  return full;
+}
+
+/**
+ * Record a scan/agent/task result into the persistent ledgers so the Evidence Vault
+ * shows EVERY scan — not just formal findings. Writes an EvidenceEntry (the raw
+ * output) plus an info-severity FindingRecord (the domain-keyed row the vault grid
+ * renders), then broadcasts both over SSE so open pages update live. Records that
+ * duplicate an entry written <30s ago are dropped (scan double-fire protection).
+ */
+function recordScanEvidence(params: {
+  source: 'tool' | 'agent' | 'system';
+  kind: 'scan' | 'task';
+  tool: string;
+  target?: string;
+  summary: string;
+  detail?: string;
+  command?: string;
+  missionId?: string;
+  operationId?: string;
+}): { evidenceId: string; findingId: string } | null {
+  const target = (params.target || extractScanTarget(`${params.summary}\n${params.detail || ''}`) || 'unknown-asset').toLowerCase();
+  const title = redactLedgerText(`[${target}] ${params.kind}: ${params.tool}`.slice(0, 240));
+  const now = nowIso();
+  const nowMs = Date.now();
+  // 30s dedupe window per title — a scan fired twice shouldn't double-write the vault.
+  for (const existing of findingsLedger.values()) {
+    if (existing.title === title && nowMs - Date.parse(existing.createdAt) < 30_000) return null;
+  }
+  const detail = redactLedgerText(String(params.detail || '').trim());
+  const evidence: EvidenceEntry = {
+    id: newId('evidence'),
+    missionId: params.missionId,
+    operationId: params.operationId,
+    findingId: undefined,
+    type: params.command ? 'command' : 'log',
+    title,
+    summary: detail || redactLedgerText(String(params.summary || '').slice(0, 4000)),
+    source: params.source,
+    provenanceStrength: 'tool',
+    uri: target !== 'unknown-asset' ? target : undefined,
+    command: params.command ? redactLedgerText(params.command.slice(0, 1200)) : undefined,
+    resourceIds: [],
+    createdAt: now,
+  };
+  evidenceLedger.set(evidence.id, evidence);
+
+  const finding: FindingRecord = {
+    id: newId('finding'),
+    missionId: params.missionId,
+    operationId: params.operationId,
+    family: 'web_api',
+    title,
+    target,
+    claim: redactLedgerText(String(params.summary || '').slice(0, 2000)) || 'Scan result recorded automatically.',
+    impact: 'Informational — recorded automatically from scan output.',
+    severity: 'info',
+    confidence: 0.5,
+    status: 'open',
+    evidenceIds: [evidence.id],
     resourceIds: [],
     recommendedFix: '',
     acceptanceCriteria: [],
@@ -889,7 +1198,10 @@ function upsertMissionFindingToLedger(finding: {
     updatedAt: now,
     retestIds: [],
   };
-  findingsLedger.set(record.id, record);
+  findingsLedger.set(finding.id, finding);
+
+  emitContractEvent('evidence.created', { evidenceId: evidence.id, findingId: finding.id, target, source: params.source, tool: params.tool });
+  return { evidenceId: evidence.id, findingId: finding.id };
 }
 
 const ROUTE_SCORECARDS: Record<string, Record<string, number | string>> = {
@@ -1108,14 +1420,22 @@ function buildStateSnapshot(): Record<string, unknown> {
     watchCycleLedger: [...watchCycleLedger.values()],
     memoryCapsule: [...memoryCapsule.values()],
     memoryProposals: [...memoryProposals.values()],
+    scanNotes: [...scanNoteLedger.values()],
   };
 }
 
 async function persistState(reason = 'state.updated'): Promise<void> {
+  const snapshot = redactSecrets(buildStateSnapshot()) as Record<string, unknown>;
+  // Supabase (database memory/storage): the same redacted snapshot is upserted as a
+  // single 'latest' row — best-effort, never blocks the request path.
+  await persistSupabaseState(snapshot, reason).catch(error => {
+    console.warn(`[T3MP3ST] Supabase state persist failed: ${(error as Error).message}`);
+  });
+  await flushSupabaseEvents().catch(() => {});
   const file = stateFilePath();
   if (!file) return;
   await mkdir(stateRoot(), { recursive: true });
-  await writeFile(file, JSON.stringify(redactSecrets({ ...buildStateSnapshot(), reason }), null, 2));
+  await writeFile(file, JSON.stringify({ ...snapshot, reason }, null, 2));
 }
 
 // Debounced full-snapshot writer. persistState re-serializes the ENTIRE (growing) snapshot,
@@ -1151,39 +1471,55 @@ async function flushPersist(): Promise<void> {
     persistPending = false;
     await persistState(persistReason);
   }
+  // Buffered contract events ride out with the shutdown flush too.
+  await flushSupabaseEvents().catch(() => {});
 }
 
 async function appendStateEvent(type: string, payload: Record<string, unknown>): Promise<void> {
+  const event = redactSecrets({ ts: nowIso(), type, payload });
+  // Supabase audit log: buffered, flushed with the debounced persist tick.
+  bufferSupabaseEvent(type, payload);
   const file = eventsFilePath();
   if (!file) return;
   await mkdir(stateRoot(), { recursive: true });
-  const event = redactSecrets({ ts: nowIso(), type, payload });
   await appendFile(file, `${JSON.stringify(event)}\n`);
 }
 
 async function loadPersistedState(): Promise<void> {
+  // Supabase first (database memory survives restarts/moves); file fallback second.
+  const supabaseSnapshot = await loadSupabaseState().catch(() => null);
+  if (supabaseSnapshot && typeof supabaseSnapshot === 'object') {
+    restoreStateSnapshot(supabaseSnapshot);
+    console.log('[T3MP3ST] State restored from Supabase');
+    return;
+  }
   const file = stateFilePath();
   if (!file) return;
   try {
     const raw = await readFile(file, 'utf8');
     const state = JSON.parse(raw) as Record<string, unknown>;
-    replaceMapContents(missionDrafts, state.missionDrafts);
-    replaceMapContents(improvementProposals, state.improvementProposals);
-    replaceMapContents(approvalRequests, state.approvalRequests);
-    replaceMapContents(evidenceLedger, state.evidenceLedger);
-    replaceMapContents(findingsLedger, state.findingsLedger);
-    replaceMapContents(retestLedger, state.retestLedger);
-    replaceMapContents(hypothesisLedger, state.hypothesisLedger);
-    replaceMapContents(workOrderLedger, state.workOrderLedger);
-    replaceMapContents(watchCycleLedger, state.watchCycleLedger);
-    replaceMapContents(memoryCapsule, state.memoryCapsule);
-    replaceMapContents(memoryProposals, state.memoryProposals);
+    restoreStateSnapshot(state);
     console.log(`[T3MP3ST] State restored from ${file}`);
   } catch (error: any) {
     if (error?.code !== 'ENOENT') {
       console.warn(`[T3MP3ST] State restore skipped: ${error.message || error}`);
     }
   }
+}
+
+function restoreStateSnapshot(state: Record<string, unknown>): void {
+  replaceMapContents(missionDrafts, state.missionDrafts);
+  replaceMapContents(improvementProposals, state.improvementProposals);
+  replaceMapContents(approvalRequests, state.approvalRequests);
+  replaceMapContents(evidenceLedger, state.evidenceLedger);
+  replaceMapContents(findingsLedger, state.findingsLedger);
+  replaceMapContents(retestLedger, state.retestLedger);
+  replaceMapContents(hypothesisLedger, state.hypothesisLedger);
+  replaceMapContents(workOrderLedger, state.workOrderLedger);
+  replaceMapContents(watchCycleLedger, state.watchCycleLedger);
+  replaceMapContents(memoryCapsule, state.memoryCapsule);
+  replaceMapContents(memoryProposals, state.memoryProposals);
+  replaceMapContents(scanNoteLedger, (state as Record<string, unknown>).scanNotes);
 }
 
 function normalizeTargetValue(value: unknown): string {
@@ -4783,6 +5119,21 @@ function emitContractEvent(type: string, payload: Record<string, unknown>): void
   schedulePersist(type);
 }
 
+// Hook Tripwire & Cyber Deception engine into SSE event bus and Webhook dispatcher
+TripwireManager.onTrigger((event: TripwireTriggerEvent) => {
+  emitContractEvent('tripwire.triggered', { ...event });
+  WebhookDispatcher.broadcast({
+    event: 'tripwire_triggered',
+    title: `Tripwire Trap Triggered: ${event.tripwireName}`,
+    severity: 'critical',
+    target: event.attackerIp,
+    details: `Attacker IP ${event.attackerIp} interacted with honeytoken "${event.tripwireName}" (${event.tripwireType}) at ${event.timestamp}. Method: ${event.method} ${event.path}.`,
+    proof: event.bodySnippet || (event.headers ? JSON.stringify(event.headers, null, 2) : undefined),
+    metadata: { ...event },
+    timestamp: event.timestamp
+  }).catch(() => {});
+});
+
 // =============================================================================
 // SERVER-SENT EVENTS (SSE) - REAL-TIME EVENT STREAMING
 // =============================================================================
@@ -4952,6 +5303,59 @@ app.post('/api/arsenal/plan', (req: Request, res: Response) => {
 
 app.get('/api/arsenal/activation', (_req: Request, res: Response) => {
   res.json(buildArsenalActivationPlan());
+});
+
+// GET /api/arsenal/phase-readiness?phase=<canonical kill-chain phase>
+// Honest per-phase capability check for the War Room SITREP: when the operator focuses an offensive
+// phase (exploitation / installation / command_and_control / actions_on_objectives), report whether a
+// REAL credential/post-ex path actually exists — i.e. is the specialist arsenal armed
+// (T3MP3ST_FULL_ARSENAL) and are the underlying binaries installed — so ENGAGE never implies a
+// capability the box can't back. Read-only; runs a few PATH lookups.
+const PHASE_TOOLKITS: Record<string, Array<{ id: string; name: string; risk: string; binary: string; note: string }>> = {
+  exploitation: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'exploit + credential-harvest / hashdump post modules' },
+    { id: 'hydra_bruteforce', name: 'THC-Hydra', risk: 'credential', binary: 'hydra', note: 'online credential brute-force; parses recovered login:password' },
+  ],
+  installation: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'persistence / post modules' },
+  ],
+  command_and_control: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'session handling / C2' },
+  ],
+  actions_on_objectives: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'loot / credential gather post modules' },
+    { id: 'hydra_bruteforce', name: 'THC-Hydra', risk: 'credential', binary: 'hydra', note: 'lateral credential brute-force' },
+  ],
+};
+app.get('/api/arsenal/phase-readiness', async (req: Request, res: Response): Promise<void> => {
+  const phase = typeof req.query.phase === 'string' ? req.query.phase : '';
+  const armed = /^(1|true|on)$/i.test(process.env.T3MP3ST_FULL_ARSENAL ?? '');
+  const toolkit = PHASE_TOOLKITS[phase] || [];
+  const tools = await Promise.all(toolkit.map(async (t) => {
+    const binaryAvailable = await isToolAvailable(t.binary).catch(() => false);
+    // A real path needs BOTH the specialist arsenal armed AND the binary installed. Approval is a
+    // separate per-action gate at run time.
+    const status = !armed ? 'not-armed' : (!binaryAvailable ? 'binary-missing' : 'ready');
+    return { id: t.id, name: t.name, risk: t.risk, binary: t.binary, note: t.note, armed, binaryAvailable, status };
+  }));
+  const offensive = toolkit.length > 0;
+  const ready = tools.some((t) => t.status === 'ready');
+  res.json({
+    phase,
+    offensive,
+    fullArsenalArmed: armed,
+    approvalGated: true,
+    tools,
+    ready,
+    // A short honest headline the UI can show verbatim.
+    summary: !offensive
+      ? 'This phase runs on built-in recon/analysis tools.'
+      : ready
+        ? 'A real credential/post-ex path is available (armed + binary present). Actions are still approval-gated at run time.'
+        : !armed
+          ? 'No live credential/post-ex path: the specialist arsenal is not armed (set T3MP3ST_FULL_ARSENAL=1).'
+          : 'Specialist arsenal armed, but the required binaries are not installed on this host.',
+  });
 });
 
 // Capability-approval gate state (TOOL-level, distinct from the action-level /api/approvals
@@ -6143,6 +6547,240 @@ app.get('/api/selfimprove/ledger', async (_req: Request, res: Response): Promise
   });
 });
 
+// =============================================================================
+// SETTINGS → .env BRIDGE (GitHub-safe)
+// =============================================================================
+// The Settings page historically wrote keys only into window.localStorage
+// (UI-local). For a clean `git push` we persist every provider key into a
+// SINGLE real `.env` file — NOT into tracked source. Secrets must never live
+// in code and `.env` stays gitignored so the public repo carries only
+// `.env.example`. Storage rule: Settings keys → .env (source of truth);
+// localStorage is a non-authoritative mirror at most. No secret is ever
+// returned in cleartext over the API — status endpoints mask.
+
+const ENV_APIKEY_MAP: Record<string, string> = {
+  openrouter: 'OPENROUTER_API_KEY',
+  venice: 'VENICE_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  xai: 'XAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  huggingface: 'HF_TOKEN',
+  nanogpt: 'NANOGPT_API_KEY',
+  novita: 'NOVITA_API_KEY',
+  litellm: 'LITELLM_API_KEY',
+  groq: 'GROQ_API_KEY',
+  together: 'TOGETHER_API_KEY',
+  replicate: 'REPLICATE_API_TOKEN',
+  github: 'GITHUB_TOKEN',
+  local: 'TEMPEST_LOCAL_API_KEY',
+  discord_webhook: 'DISCORD_WEBHOOK_URL',
+  slack_webhook: 'SLACK_WEBHOOK_URL',
+  siem_webhook: 'SIEM_WEBHOOK_URL',
+};
+
+function resolveEnvFile(): string {
+  // T3MP3ST-owned env lives at repo root /.env in dev, and at ~/.t3mp3st/.env on
+  // a user's machine — same locations ConfigManager reads (homedir) plus the
+  // repo file so "Settings → .env" is visible/edited where CI/local dev expects.
+  // Prefer the repo .env when cwd looks like the project; otherwise homedir.
+  const repoEnv = join(process.cwd(), '.env');
+  // Heuristic: if CWD contains package.json named t3mp3st, treat it as the repo.
+  try {
+    if (existsSync(join(process.cwd(), 'package.json')) && existsSync(repoEnv)) return repoEnv;
+  } catch { /* ignore */ }
+  // If no repo .env exists yet, still write it at repo root in dev so the
+  // docs and gitignore line up; fallback to homedir only when outside a repo.
+  try {
+    const hasPkg = existsSync(join(process.cwd(), 'package.json'));
+    if (hasPkg) return repoEnv;
+  } catch { /* ignore */ }
+  return join(homedir(), '.t3mp3st', '.env');
+}
+
+function maskKey(v: string | undefined): string {
+  if (!v || v.length < 4) return v ? '****' : '';
+  return `****${v.slice(-4)}`;
+}
+
+async function readEnvFileMap(filePath: string): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  if (!existsSync(filePath)) return m;
+  const raw = await readFile(filePath, 'utf8');
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const eq = t.indexOf('=');
+    if (eq === -1) continue;
+    const k = t.slice(0, eq).trim();
+    let v = t.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    m.set(k, v);
+  }
+  return m;
+}
+
+async function writeEnvKey(envVar: string, value: string): Promise<string> {
+  const filePath = resolveEnvFile();
+  await mkdir(dirname(filePath), { recursive: true });
+  const exists = existsSync(filePath);
+  let lines: string[] = [];
+  let raw = '';
+  if (exists) raw = await readFile(filePath, 'utf8');
+  // Preserve file as-is; only touch the one key line (or append).
+  if (raw) {
+    lines = raw.split(/\r?\n/);
+    // Drop trailing empty caused by final newline for clean rejoin.
+    if (lines.length && lines[lines.length - 1] === '' && raw.endsWith('\n')) lines.pop();
+  }
+  const needle = `${envVar}=`;
+  let idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t || t.startsWith('#')) continue;
+    if (t === envVar || t.startsWith(needle)) { idx = i; break; }
+  }
+  // Quote if value contains # or leading/trailing space or quotes — keep it simple.
+  const needsQuote = /[#\n\r"]/g.test(value) || /^\s|\s$/.test(value);
+  const serialized = needsQuote ? `${envVar}="${value.replace(/"/g, '\\"')}"` : `${envVar}=${value}`;
+  if (idx >= 0) lines[idx] = serialized;
+  else {
+    if (lines.length && lines[lines.length - 1].trim() !== '') lines.push('');
+    lines.push(serialized);
+  }
+  const out = lines.join('\n') + '\n';
+  await writeFile(filePath, out, 'utf8');
+  try { await chmod(filePath, 0o600); } catch { /* non-posix fs — ignore */ }
+  // Make it live for this process without persisting to Conf store (env has priority there).
+  process.env[envVar] = value;
+  return filePath;
+}
+
+// Boot-time persistence: keys injected via the environment (launcher shell, CI,
+// container) exist only in process.env — the durable gitignored .env never sees
+// them. Persist every real env key into .env once at startup so the file the
+// operator (and GitHub-safe workflow) expects actually holds the secrets.
+// Placeholders (sk-or-v1-xxxx…) and short values are skipped.
+async function persistEnvKeysToEnvFile(): Promise<void> {
+  try {
+    const filePath = resolveEnvFile();
+    const envMap = await readEnvFileMap(filePath);
+    for (const [provider, envVar] of Object.entries(ENV_APIKEY_MAP)) {
+      const val = (process.env[envVar] || '').trim();
+      if (val.length > 10 && !/x{4,}/i.test(val) && envMap.get(envVar) !== val) {
+        await writeEnvKey(envVar, val);
+        console.log(`[config:env] boot-migrated ${provider} (${envVar}) from process.env into ${filePath} (masked ${maskKey(val)})`);
+      }
+    }
+  } catch (e) {
+    console.error('[config:env] boot migration failed:', String((e as Error).message || e));
+  }
+}
+
+app.get('/api/config/env', async (_req: Request, res: Response) => {
+  // Never emit raw secrets. Return masked map + which providers are configured.
+  try {
+    const filePath = resolveEnvFile();
+    const envMap = await readEnvFileMap(filePath);
+    const providers: Record<string, { configured: boolean; masked: string; envVar: string }> = {};
+    for (const [provider, envVar] of Object.entries(ENV_APIKEY_MAP)) {
+      // Effective value: process.env wins (may be injected at launch), else file.
+      const effective = (process.env[envVar]?.trim() || envMap.get(envVar) || '').trim();
+      // Also consider Conf store for completeness (legacy local write) — but never leak it.
+      const confVal = (() => { try { return (config.getApiKey(provider as any) || '').trim(); } catch { return ''; } })();
+      const val = effective || confVal;
+      // Template placeholders (sk-or-v1-xxxx…, hf_xxxx…) are not real keys —
+      // counting them as configured would make the UI skip migrating the real
+      // key it holds in localStorage into .env.
+      const isPlaceholder = /x{4,}/i.test(val);
+      providers[provider] = { configured: val.length > 10 && !isPlaceholder, masked: maskKey(isPlaceholder ? '' : val), envVar };
+    }
+    res.setHeader('Access-Control-Allow-Origin', _req.headers.origin || '*');
+    res.json({ file: filePath, exists: existsSync(filePath), providers });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+app.post('/api/config/env', async (req: Request, res: Response): Promise<void> => {
+  // Body: { provider: 'openrouter'|'venice'|..., key: '<raw>', baseUrl?: string }
+  // baseUrl is stored separately (currently localStorage-driven); we persist only the key into .env here.
+  try {
+    const body = (req.body ?? {}) as { provider?: string; key?: string; apiKey?: string; baseUrl?: string };
+    const provider = String(body.provider || '').trim().toLowerCase();
+    const rawKey = String(body.key ?? body.apiKey ?? '').trim();
+    if (!provider || !ENV_APIKEY_MAP[provider]) {
+      res.status(400).json({ error: `Unknown provider '${provider}'. Allowed: ${Object.keys(ENV_APIKEY_MAP).join(', ')}` });
+      return;
+    }
+    if (!rawKey || rawKey.length < 8) {
+      res.status(400).json({ error: 'Key too short — refusing to write.' });
+      return;
+    }
+    const envVar = ENV_APIKEY_MAP[provider];
+    const filePath = await writeEnvKey(envVar, rawKey);
+    // Optional: also mirror into Conf's apiKeys store so getApiKey() is coherent before next restart,
+    // but the durable truth is the .env file. Do NOT log the raw key.
+    try { (config as any).setApiKey?.(provider, rawKey); } catch { /* ignore */ }
+    console.log(`[config:env] ${provider} → ${envVar} written to ${filePath} (masked ${maskKey(rawKey)})`);
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.json({ ok: true, provider, envVar, file: filePath, masked: maskKey(rawKey) });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// Browser preflight for the cross-origin case (UI served from a different
+// origin/port than the API base). Without this, Chrome kills the POST before
+// it ever reaches the handler and the Settings sync dies silently.
+app.options('/api/config/env', (_req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', _req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.status(204).end();
+});
+
+// Unified key-delete: remove from .env + process.env + Conf store.
+app.delete('/api/config/env/:provider', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const provider = String(req.params.provider || '').trim().toLowerCase();
+    if (!ENV_APIKEY_MAP[provider]) {
+      res.status(400).json({ error: `Unknown provider '${provider}'` });
+      return;
+    }
+    const envVar = ENV_APIKEY_MAP[provider];
+    const filePath = resolveEnvFile();
+    if (existsSync(filePath)) {
+      const raw = await readFile(filePath, 'utf8');
+      const lines = raw.split(/\r?\n/);
+      const out = lines.filter(l => {
+        const t = l.trim();
+        if (!t || t.startsWith('#')) return true;
+        const k = t.split('=')[0]?.trim();
+        return k !== envVar;
+      }).join('\n');
+      const normalized = out.endsWith('\n') ? out : out + '\n';
+      await writeFile(filePath, normalized, 'utf8');
+    }
+    delete process.env[envVar];
+    // HuggingFace aliases
+    if (provider === 'huggingface') {
+      delete process.env.HUGGINGFACE_API_KEY;
+      delete process.env.HUGGINGFACE_TOKEN;
+      delete process.env.HUGGINGFACEHUB_API_TOKEN;
+    }
+    if (provider === 'local') {
+      delete process.env.ZAI_API_KEY;
+      delete process.env.ZHIPUAI_API_KEY;
+    }
+    try { (config as any).removeApiKey?.(provider); } catch { /* ignore */ }
+    console.log(`[config:env] ${provider} (${envVar}) removed from ${filePath}`);
+    res.json({ ok: true, provider, envVar, file: filePath });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
 app.get('/api/llm/status', (_req: Request, res: Response) => {
   const llmConfig = config.getLLMConfig();
   res.json({
@@ -6223,6 +6861,605 @@ app.post('/api/tools/recon', async (req: Request, res: Response): Promise<void> 
   res.json({ success: true, target: targetHost, scan_type, approvalId: guard.approval?.id || null, results: { dns, ports } });
 });
 
+app.post('/api/tools/sploitus', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const query = typeof body.query === 'string' ? body.query : '';
+  const type = (body.type === 'tools' ? 'tools' : 'exploits') as 'exploits' | 'tools';
+  const sort = (body.sort === 'date' || body.sort === 'score' ? body.sort : 'default') as 'default' | 'date' | 'score';
+  const maxResults = typeof body.maxResults === 'number' ? body.maxResults : 10;
+  if (!query || !query.trim()) {
+    res.status(400).json({ error: 'Query parameter required' });
+    return;
+  }
+  try {
+    const data = await SploitusClient.search({ query, type, sort, maxResults });
+    res.json({ success: true, query, total: data.total, results: data.results });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Sploitus query failed: ' + (err?.message || err) });
+  }
+});
+
+// =============================================================================
+// CVE THREAT INTELLIGENCE VAULT & CISA KEV FEEDS
+// =============================================================================
+
+app.get('/api/cves/feed', (req: Request, res: Response) => {
+  const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+  const filter = typeof req.query.filter === 'string' ? (req.query.filter as any) : 'all';
+  const vendor = typeof req.query.vendor === 'string' ? req.query.vendor : undefined;
+  const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;
+  const offset = req.query.offset ? parseInt(String(req.query.offset), 10) : 0;
+
+  const result = CveFeedEngine.query({ search, filter, vendor, limit, offset });
+  const summary = CveFeedEngine.loadFeed();
+
+  res.json({
+    success: true,
+    totalCount: summary.totalCount,
+    ransomwareCount: summary.ransomwareCount,
+    highEpssCount: summary.highEpssCount,
+    probesAvailableCount: summary.probesAvailableCount,
+    lastSyncedAt: summary.lastSyncedAt,
+    filteredCount: result.filteredCount,
+    offset,
+    limit,
+    items: result.items
+  });
+});
+
+app.post('/api/cves/sync', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await CveFeedEngine.syncLiveFeed(15000);
+    emitContractEvent('cve_feed.synced', { count: result.count, timestamp: new Date().toISOString() });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: 'CVE feed sync failed: ' + (err?.message || err) });
+  }
+});
+
+app.get('/api/cves/:cveId/epss', async (req: Request, res: Response): Promise<void> => {
+  const cveId = req.params.cveId;
+  if (!cveId) {
+    res.status(400).json({ error: 'cveId required' });
+    return;
+  }
+  const epss = await CveFeedEngine.queryEpss(cveId);
+  res.json({ success: true, ...epss });
+});
+
+app.post('/api/recon/correlate-cves', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const target = typeof body.target === 'string' && body.target.trim() ? body.target.trim() : 'target';
+  const technologies = Array.isArray(body.technologies) ? body.technologies.map(String) : undefined;
+  const banner = typeof body.banner === 'string' ? body.banner : undefined;
+  const headers = typeof body.headers === 'object' && body.headers !== null ? (body.headers as Record<string, string>) : undefined;
+  const autoProbe = Boolean(body.autoProbe);
+
+  try {
+    const result = CveCorrelator.correlate({ target, technologies, banner, headers });
+    
+    // Broadcast intel alert if ransomware-linked or critical KEVs detected
+    if (result.matchedCount > 0) {
+      emitContractEvent('intel.kev_match', {
+        target,
+        matchedCount: result.matchedCount,
+        ransomwareCount: result.ransomwareCount,
+        highestEpss: result.highestEpss,
+        timestamp: result.timestamp
+      });
+    }
+
+    let probeResults = undefined;
+    if (autoProbe && result.suggestedProbeIds.length > 0) {
+      probeResults = await CveCorrelator.executeSuggestedProbes(target, result.suggestedProbeIds);
+    }
+
+    res.json({
+      success: true,
+      ...result,
+      probeResults
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'CVE correlation failed: ' + (err?.message || err) });
+  }
+});
+
+// =============================================================================
+// RAPID RESPONSE & TARGETED CVE SWEEPS (Horizon3.ai NodeZero inspired)
+// =============================================================================
+
+app.get('/api/tools/rapid-response/catalog', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    totalChecks: RAPID_RESPONSE_CATALOG.length,
+    catalog: RapidResponseEngine.getCatalog()
+  });
+});
+
+app.post('/api/tools/rapid-response/sweep', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const targets = Array.isArray(body.targets) ? body.targets.map(String).filter(Boolean) : (typeof body.target === 'string' && body.target.trim() ? [body.target.trim()] : []);
+  const checkIds = Array.isArray(body.checkIds) ? body.checkIds.map(String) : undefined;
+  const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 8000;
+
+  if (targets.length === 0) {
+    res.status(400).json({ error: 'At least one target URL/host is required for Rapid Response sweep.' });
+    return;
+  }
+
+  try {
+    const sweepResult = await RapidResponseEngine.sweep({ targets, checkIds, timeoutMs });
+    
+    for (const vuln of sweepResult.results.filter(r => r.vulnerable)) {
+      emitContractEvent('rapid_response.vulnerable', { ...vuln });
+      WebhookDispatcher.broadcast({
+        event: 'rapid_response_alert',
+        title: `Rapid Response Vulnerability: ${vuln.checkId} on ${vuln.target}`,
+        severity: vuln.severity,
+        target: vuln.target,
+        details: vuln.details,
+        proof: vuln.proof,
+        timestamp: vuln.timestamp
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, ...sweepResult });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Rapid response sweep failed: ' + (err?.message || err) });
+  }
+});
+
+app.post('/api/tools/rapid-response/check', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const checkId = typeof body.checkId === 'string' ? body.checkId : '';
+  const target = typeof body.target === 'string' ? body.target.trim() : '';
+  const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 8000;
+
+  if (!checkId || !target) {
+    res.status(400).json({ error: 'checkId and target required' });
+    return;
+  }
+
+  try {
+    const result = await RapidResponseEngine.runCheck(checkId, target, timeoutMs);
+    if (result.vulnerable) {
+      emitContractEvent('rapid_response.vulnerable', { ...result });
+    }
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Rapid response check failed: ' + (err?.message || err) });
+  }
+});
+
+// =============================================================================
+// TRIPWIRES & CYBER DECEPTION (Horizon3.ai NodeZero inspired)
+// =============================================================================
+
+app.get('/api/tripwires', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    tripwires: TripwireManager.listTripwires()
+  });
+});
+
+app.post('/api/tripwires/generate', (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'Canary Tripwire';
+  const type = (['aws_key', 'webhook_beacon', 'db_credential', 'bearer_token', 'ad_service_account'].includes(String(body.type))
+    ? body.type : 'webhook_beacon') as any;
+  const description = typeof body.description === 'string' ? body.description : undefined;
+  const targetEnvironment = typeof body.targetEnvironment === 'string' ? body.targetEnvironment : undefined;
+  const hostHeader = req.get('host') || 'localhost:3333';
+  const protocol = req.protocol || 'http';
+  const baseUrl = `${protocol}://${hostHeader}`;
+
+  const tripwire = TripwireManager.generateTripwire({
+    name,
+    type,
+    description,
+    targetEnvironment,
+    baseUrl
+  });
+
+  emitContractEvent('tripwire.created', { tripwireId: tripwire.id, name: tripwire.name, type: tripwire.type });
+  res.status(201).json({ success: true, tripwire });
+});
+
+app.delete('/api/tripwires/:id', (req: Request, res: Response) => {
+  const deleted = TripwireManager.deleteTripwire(req.params.id);
+  res.json({ success: deleted });
+});
+
+app.all(['/api/tripwires/beacon/:token', '/beacon/:token'], (req: Request, res: Response) => {
+  const token = req.params.token;
+  const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || req.ip || 'unknown';
+  const userAgent = req.get('user-agent') || 'unknown';
+  const method = req.method;
+  const path = req.originalUrl || req.url;
+
+  const event = TripwireManager.trigger(token, {
+    ip: clientIp,
+    userAgent,
+    method,
+    path,
+    query: req.query as Record<string, any>,
+    headers: req.headers as Record<string, string>,
+    body: req.body
+  });
+
+  if (!event) {
+    res.status(404).send('Not Found');
+    return;
+  }
+
+  const transparentGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+  if (req.accepts('image/gif') || req.path.endsWith('.gif') || req.path.endsWith('.png') || req.method === 'GET') {
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.send(transparentGif);
+  } else {
+    res.json({ status: 'ok', recorded: true, id: event.id });
+  }
+});
+
+// =============================================================================
+// DFIR (DIGITAL FORENSICS & INCIDENT RESPONSE) — POST-ATTACK RESOLUTION ENGINE
+// =============================================================================
+
+app.get('/api/dfir/metrics', (_req: Request, res: Response) => {
+  try {
+    const metrics = DFIRManager.getMetrics();
+    res.json(metrics);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch DFIR metrics' });
+  }
+});
+
+app.get('/api/dfir/incidents', (req: Request, res: Response) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const severity = typeof req.query.severity === 'string' ? req.query.severity : undefined;
+    const search = typeof req.query.q === 'string' ? req.query.q : undefined;
+
+    const incidents = DFIRManager.listIncidents({ status, severity, search });
+    const metrics = DFIRManager.getMetrics();
+    res.json({ incidents, metrics });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to list DFIR incidents' });
+  }
+});
+
+app.get('/api/dfir/incidents/:id', (req: Request, res: Response): void => {
+  try {
+    const incident = DFIRManager.getIncident(req.params.id);
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch DFIR incident' });
+  }
+});
+
+app.post('/api/dfir/incidents', (req: Request, res: Response) => {
+  try {
+    const created = DFIRManager.createIncident(req.body || {});
+    res.status(201).json(created);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create DFIR incident' });
+  }
+});
+
+app.put('/api/dfir/incidents/:id', (req: Request, res: Response): void => {
+  try {
+    const updated = DFIRManager.updateIncident(req.params.id, req.body || {});
+    if (!updated) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update DFIR incident' });
+  }
+});
+
+app.delete('/api/dfir/incidents/:id', (req: Request, res: Response): void => {
+  try {
+    const ok = DFIRManager.deleteIncident(req.params.id);
+    if (!ok) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json({ deleted: true, id: req.params.id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete DFIR incident' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/contain', (req: Request, res: Response): void => {
+  try {
+    const isolate = req.body?.isolate !== false;
+    const blockFirewall = req.body?.blockFirewall !== false;
+    const killProcs = !!req.body?.killProcs;
+
+    const incident = DFIRManager.setContainment(req.params.id, isolate, { blockFirewall, killProcs });
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json({ success: true, incident });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Containment action failed' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/playbook', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const playbookType = req.body?.playbookType as PlaybookType;
+    if (!playbookType) {
+      res.status(400).json({ error: 'Missing playbookType parameter' });
+      return;
+    }
+
+    const result = await DFIRManager.runPlaybook(req.params.id, playbookType, {
+      targetHost: req.body?.targetHost,
+      customScript: req.body?.customScript
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Playbook execution failed' });
+  }
+});
+
+app.post('/api/dfir/ioc-extract', (req: Request, res: Response): void => {
+  try {
+    const rawText = typeof req.body?.rawText === 'string' ? req.body.rawText : '';
+    if (!rawText.trim()) {
+      res.json({ iocs: [] });
+      return;
+    }
+
+    const extracted = DFIRManager.extractIOCs(rawText);
+    res.json({ iocs: extracted, count: extracted.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to extract IOCs' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/ioc', (req: Request, res: Response): void => {
+  try {
+    const { type, value, notes } = req.body || {};
+    if (!type || !value) {
+      res.status(400).json({ error: 'type and value are required for IOC' });
+      return;
+    }
+
+    const incident = DFIRManager.addIOC(req.params.id, { type: type as IOCType, value, notes });
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to add IOC' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/ioc/:iocId/toggle-block', (req: Request, res: Response): void => {
+  try {
+    const blocked = typeof req.body?.blocked === 'boolean' ? req.body.blocked : undefined;
+    const incident = DFIRManager.toggleIOCBlock(req.params.id, req.params.iocId, blocked);
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to toggle IOC block' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/timeline', (req: Request, res: Response): void => {
+  try {
+    const { phase, description, actor, evidenceRef, mitreTactic } = req.body || {};
+    if (!phase || !description) {
+      res.status(400).json({ error: 'phase and description are required for timeline event' });
+      return;
+    }
+
+    const incident = DFIRManager.addTimelineEvent(req.params.id, {
+      timestamp: req.body?.timestamp || new Date().toISOString(),
+      phase,
+      description,
+      actor,
+      evidenceRef,
+      mitreTactic
+    });
+
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to add timeline event' });
+  }
+});
+
+app.get('/api/dfir/incidents/:id/report', (req: Request, res: Response): void => {
+  try {
+    const report = DFIRManager.generatePostMortemReport(req.params.id);
+    if (!report) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to generate post-mortem report' });
+  }
+});
+
+app.post('/api/dfir/incidents/create-from-finding', (req: Request, res: Response): void => {
+  try {
+    const findingId = req.body?.findingId;
+    const finding = findingId ? findingsLedger.get(findingId) : undefined;
+
+    const incident = DFIRManager.createIncident({
+      title: finding ? `Incident Resolution: ${finding.claim.slice(0, 70)}` : (req.body?.title || 'Security Finding Incident'),
+      severity: finding?.severity === 'critical' ? 'CRITICAL' : finding?.severity === 'high' ? 'HIGH' : 'MEDIUM',
+      status: 'TRIAGE',
+      targetHost: finding?.target || req.body?.targetHost || 'localhost',
+      environment: 'Reported Security Scope',
+      attackVector: finding?.family || 'Vulnerability Exploitation',
+      mitreTechniques: [finding?.claim ? `Exploit: ${finding.claim.slice(0, 40)}` : 'T1190 - Exploit Public-Facing Application'],
+      forensicNotes: `Auto-generated from finding ID: ${findingId || 'N/A'}. Contract claim: ${finding?.claim || 'N/A'}`
+    });
+
+    res.status(201).json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create incident from finding' });
+  }
+});
+
+// =============================================================================
+// "HACK, FIX, VERIFY" 1-CLICK RETEST ENGINE & EXPOSURE SCORE
+// =============================================================================
+
+app.post('/api/findings/:id/verify', async (req: Request, res: Response): Promise<void> => {
+  const finding = findingsLedger.get(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const targetUrl = typeof body.target === 'string' && body.target.trim()
+    ? body.target.trim()
+    : (finding?.target ? (finding.target.startsWith('http') ? finding.target : `http://${finding.target}`) : '');
+
+  if (!targetUrl && !finding) {
+    res.status(404).json({ error: 'Finding or target URL not found for re-verification.' });
+    return;
+  }
+
+  const start = Date.now();
+  let isVulnerable = false;
+  let statusText = 'Target verified and responded normally.';
+  let statusCode = 200;
+  let proof = '';
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    const probeRes = await fetch(targetUrl, {
+      method: (typeof body.method === 'string' ? body.method : 'GET'),
+      headers: { 'User-Agent': 'T3MP3ST/2.0 (Retest Engine)' },
+      signal: controller.signal
+    }).catch(err => {
+      return { ok: false, status: 0, text: async () => err.message || 'Connection failed' } as any;
+    });
+    clearTimeout(timer);
+
+    statusCode = probeRes.status || 0;
+    const bodyText = await probeRes.text().catch(() => '');
+    const expectedPattern = typeof body.pattern === 'string' ? body.pattern : (finding?.claim || '');
+
+    if (expectedPattern && bodyText.includes(expectedPattern)) {
+      isVulnerable = true;
+      statusText = `Vulnerability pattern "${expectedPattern.slice(0, 40)}" still reproduces in target response.`;
+      proof = bodyText.slice(0, 300);
+    } else {
+      isVulnerable = false;
+      statusText = `Vulnerability not reproduced. Target returned HTTP ${statusCode} without matching finding signature.`;
+      proof = `HTTP ${statusCode} in ${Date.now() - start}ms`;
+    }
+  } catch (err: any) {
+    isVulnerable = false;
+    statusText = `Target probe failed/closed: ${err.message || err}`;
+  }
+
+  const latencyMs = Date.now() - start;
+  const resultStatus = isVulnerable ? 'failed' : 'passed';
+
+  if (finding) {
+    finding.status = isVulnerable ? 'validated' : 'resolved';
+    finding.updatedAt = nowIso();
+    findingsLedger.set(finding.id, finding);
+
+    const retestRecord: RetestRecord = {
+      id: clientLedgerId(body.retestId, 'retest'),
+      findingId: finding.id,
+      missionId: finding.missionId,
+      operationId: finding.operationId,
+      status: resultStatus,
+      method: `1-Click Retest Probe against ${targetUrl}`,
+      acceptanceCriteria: ['Re-verify vulnerability signature against target endpoint'],
+      evidenceIds: finding.evidenceIds || [],
+      resultSummary: statusText,
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    retestLedger.set(retestRecord.id, retestRecord);
+    finding.retestIds.push(retestRecord.id);
+
+    emitContractEvent('retest.completed', { retestId: retestRecord.id, findingId: finding.id, status: resultStatus });
+  }
+
+  res.json({
+    success: true,
+    findingId: finding?.id || req.params.id,
+    target: targetUrl,
+    isFixed: !isVulnerable,
+    verificationStatus: isVulnerable ? 'STILL_VULNERABLE' : 'RESOLVED_FIXED',
+    latencyMs,
+    statusCode,
+    details: statusText,
+    proof,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/mission/exposure-score', (_req: Request, res: Response) => {
+  const allFindings = [...findingsLedger.values()];
+  const openFindings = allFindings.filter(f => f.status !== 'resolved' && f.status !== 'false_positive');
+
+  let rawScore = 0;
+  let criticalCount = 0;
+  let highCount = 0;
+  let mediumCount = 0;
+  let lowCount = 0;
+
+  for (const f of openFindings) {
+    if (f.severity === 'critical') { rawScore += 25; criticalCount++; }
+    else if (f.severity === 'high') { rawScore += 15; highCount++; }
+    else if (f.severity === 'medium') { rawScore += 7; mediumCount++; }
+    else { rawScore += 2; lowCount++; }
+  }
+
+  const credCount = evidenceLedger ? [...evidenceLedger.values()].filter(e => e.type === 'receipt' || e.type === 'artifact').length : 0;
+  rawScore += Math.min(30, credCount * 5);
+
+  const exposureScore = Math.min(100, Math.round(rawScore));
+  let level: 'CRITICAL' | 'HIGH' | 'ELEVATED' | 'GUARDED' | 'SECURE' = 'SECURE';
+  if (exposureScore >= 80) level = 'CRITICAL';
+  else if (exposureScore >= 50) level = 'HIGH';
+  else if (exposureScore >= 25) level = 'ELEVATED';
+  else if (exposureScore > 0) level = 'GUARDED';
+
+  res.json({
+    success: true,
+    exposureScore,
+    level,
+    breakdown: {
+      totalFindings: allFindings.length,
+      openFindings: openFindings.length,
+      criticalCount,
+      highCount,
+      mediumCount,
+      lowCount,
+      harvestedCredentials: credCount
+    },
+    formula: 'Exploitability × Asset Criticality + Harvested Access'
+  });
+});
+
 app.get('/api/tools', (_req: Request, res: Response) => {
   res.json({
     success: true,
@@ -6258,11 +7495,58 @@ app.post('/api/llm/chat', async (req: Request, res: Response): Promise<void> => 
 // MISSION DISPATCH & OPERATOR MANAGEMENT ENDPOINTS
 // =============================================================================
 
+// Canonical kill-chain phases the War Room SITREP can pin as a mission focus. The UI sends
+// the canonical name (its stage icons map to these). Anything outside this set is ignored.
+const MISSION_FOCUS_PHASES = new Set<string>([
+  'reconnaissance', 'weaponization', 'delivery', 'exploitation',
+  'installation', 'command_and_control', 'actions_on_objectives',
+]);
+
+/**
+ * GET /api/mission/prior-notes?target=<host> — does this target have durable prior scan
+ * notes from earlier runs? Powers the War Room "Resuming <target>" banner so the operator
+ * can see that a re-engagement will continue from prior progress rather than start over.
+ * Read-only; never mutates state.
+ */
+app.get('/api/mission/prior-notes', (req: Request, res: Response): void => {
+  const target = typeof req.query.target === 'string' ? req.query.target : '';
+  const host = normalizeTargetValue(target).toLowerCase();
+  if (!host || host === 'local-lab') { res.json({ target: host, hasPriorNotes: false, count: 0 }); return; }
+  const notes = [...scanNoteLedger.values()].filter(n => normalizeTargetValue(n.target).toLowerCase() === host);
+  res.json({
+    target: host,
+    hasPriorNotes: notes.length > 0,
+    count: notes.length,
+    lastUpdated: notes.length ? notes.map(n => n.updatedAt).sort().slice(-1)[0] : null,
+  });
+});
+
+/**
+ * GET /api/mission/targets — distinct targets that have durable scan history, newest first.
+ * Powers the War Room target dropdown so the operator can pick a past scan to resume rather
+ * than retype it. Read-only.
+ */
+app.get('/api/mission/targets', (_req: Request, res: Response): void => {
+  // Some scan notes are keyed by an internal target UUID rather than a hostname/IP — those are
+  // not something an operator would re-engage, so keep the dropdown to real hosts only.
+  const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s);
+  const byTarget = new Map<string, { target: string; count: number; lastUpdated: string }>();
+  for (const n of scanNoteLedger.values()) {
+    const host = normalizeTargetValue(n.target).toLowerCase();
+    if (!host || host === 'local-lab' || isUuid(host)) continue;
+    const cur = byTarget.get(host);
+    if (cur) { cur.count += 1; if (n.updatedAt > cur.lastUpdated) cur.lastUpdated = n.updatedAt; }
+    else byTarget.set(host, { target: host, count: 1, lastUpdated: n.updatedAt });
+  }
+  const targets = [...byTarget.values()].sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated));
+  res.json({ targets });
+});
+
 /**
  * POST /api/mission/start — Start a mission with real backend operators
  *
  * Body: { name, targets: [{ host, scope?, ports? }], operators: string[],
- *         apiKey, provider?, model?, opsecLevel? }
+ *         apiKey, provider?, model?, opsecLevel?, focusPhase? }
  */
 app.post('/api/mission/start', async (req: Request, res: Response): Promise<void> => {
   const {
@@ -6278,6 +7562,9 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     // command via setWhiteboxSource BEFORE start(), so operators reason over the
     // real source instead of black-box probing. Absent = unchanged behavior.
     repoPath,
+    // OPTIONAL kill-chain focus (War Room SITREP selection). One of MISSION_FOCUS_PHASES.
+    // Steers operator effort toward that phase — it does NOT skip the upstream chain.
+    focusPhase,
   } = req.body;
 
   // Use the request-selected backend, or fall back to the server's configured default.
@@ -6297,6 +7584,13 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     const localAgent = await requireLiveLocalAgent(missionLLMConfig.model);
     if (!localAgent.ok) {
       res.status(503).json({ error: localAgent.error });
+      return;
+    }
+  }
+  if (missionLLMConfig.provider === 'local') {
+    const localErr = await verifyLocalLLMServed(missionLLMConfig as any);
+    if (localErr) {
+      res.status(503).json({ error: localErr });
       return;
     }
   }
@@ -6377,14 +7671,45 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
     }
 
+    // Kill-chain focus (OPTIONAL): if the operator picked a SITREP phase, steer the mission
+    // toward it before start(). Validated against the canonical phase set; anything else is ignored.
+    if (typeof focusPhase === 'string' && MISSION_FOCUS_PHASES.has(focusPhase)) {
+      cmd.setMissionFocus(focusPhase);
+    }
+
     // Start the command loop (auto-creates mission, auto-dispatches tasks)
     cmd.start();
+
+    const proxyStatus = getProxyStatus();
+    let opsecWarning: string | undefined;
+    if (!proxyStatus.enabled) {
+      opsecWarning = 'SOCKS proxy is offline/inactive — outbound scan traffic is direct (real IP exposed)';
+      console.warn(`[T3MP3ST][OPSEC] ⚠️ Mission "${name}" started with SOCKS proxy inactive — outbound traffic is direct/unproxied (real IP exposed)`);
+      broadcastEvent('intel', {
+        id: `opsec-warn-${Date.now()}`,
+        source: 'OPSEC',
+        severity: 'warning',
+        text: '⚠️ SOCKS proxy is offline/inactive — scan traffic is direct from host IP (real IP exposed)',
+        timestamp: Date.now(),
+      });
+      broadcastEvent('progress', {
+        id: `opsec-prog-${Date.now()}`,
+        timestamp: Date.now(),
+        kind: 'task_started',
+        operatorId: 'opsec',
+        callsign: 'OPSEC',
+        taskName: 'proxy_warning',
+        detail: '⚠️ OPSEC Warning: SOCKS proxy is offline/inactive — outbound scan traffic is unproxied (real IP exposed)',
+      });
+    }
 
     broadcastEvent('mission:started', {
       name,
       targets: targets.map((t: any) => t.host || t),
       operators: spawnedOps,
       timestamp: Date.now(),
+      proxyActive: proxyStatus.enabled,
+      ...(opsecWarning ? { opsecWarning } : {}),
     });
 
     res.json({
@@ -6393,6 +7718,8 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       operators: spawnedOps,
       targets: cmd.targetEnv.getAllTargets().map(t => ({ id: t.id, address: t.address, type: t.type })),
       status: cmd.getStatus(),
+      proxyActive: proxyStatus.enabled,
+      ...(opsecWarning ? { opsecWarning } : {}),
       ...(whitebox ? { whitebox } : {}),
     });
   } catch (error: any) {
@@ -6537,7 +7864,10 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
       name: mission.name,
       status: mission.status,
       currentPhase: mission.currentPhase,
-      progress: mission.progress,
+      // Real progress = processed tasks (see TempestCommand.getTaskProgress) — the raw
+      // mission.progress is phase position and reads 0% for all of reconnaissance.
+      progress: status.taskProgress ?? mission.progress ?? 0,
+      phaseProgress: mission.progress,
       startedAt: mission.startedAt,
     } : null,
     operators: {
@@ -6545,6 +7875,7 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
       details: allOperators,
     },
     targets: status.targets,
+    targetsList: (status as any).targetsList || [],
     vault: status.vault,
     opsec: status.opsec,
     tasks: status.tasks,
@@ -6565,6 +7896,126 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
  *
  * Body: { archetype: string, callsign?: string }
  */
+// ── Swarm Cognition Loop — live pack-board + per-scan notes APIs ──
+app.get('/api/pack/status', (_req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  const stats = cmd ? cmd.getCoordinationStats() : { enabled: false, leadsPosted: 0, followupsSpawned: 0, uniqueFindingsChased: 0 };
+  let leads: { open: number; claimed: number; confirmed: number; refuted: number; dead: number; total: number } = { open: 0, claimed: 0, confirmed: 0, refuted: 0, dead: 0, total: 0 };
+  let liveAgents = 0;
+  try {
+    if (cmd) {
+      const board = cmd.getPackBoard();
+      for (const l of board.getAllLeads()) {
+        leads.total++;
+        if (l.status === 'open') leads.open++;
+        else if (l.status === 'claimed') leads.claimed++;
+        else if (l.status === 'confirmed') leads.confirmed++;
+        else if (l.status === 'refuted') leads.refuted++;
+        else if (l.status === 'dead') leads.dead++;
+      }
+      liveAgents = board.getLiveAgents().length;
+    }
+  } catch {}
+  res.json({
+    enabled: stats.enabled,
+    leadsPosted: stats.leadsPosted,
+    followupsSpawned: stats.followupsSpawned,
+    uniqueFindingsChased: stats.uniqueFindingsChased,
+    leads,
+    liveAgents,
+    stateRoot: stateRoot(),
+    stateFile: stateFilePath(),
+  });
+});
+app.get('/api/pack/leads', (req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  if (!cmd) { res.json({ leads: [] }); return; }
+  const board = cmd.getPackBoard();
+  let leads = board.getAllLeads();
+  const status = typeof req.query.status === 'string' ? String(req.query.status) : '';
+  if (status && status !== 'all') leads = leads.filter(l => l.status === status);
+  leads = leads.sort((a, b) => b.smoke - a.smoke || b.updatedAt - a.updatedAt);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  res.json({ leads: leads.slice(0, limit) });
+});
+app.get('/api/pack/log', (req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  if (!cmd) { res.json({ events: [] }); return; }
+  const log = cmd.getPackBoard().getLog();
+  const limit = Math.min(300, Math.max(1, Number(req.query.limit) || 100));
+  res.json({ events: log.slice(-limit) });
+});
+app.get('/api/pack/report', (req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  if (!cmd) { res.json({ report: '' }); return; }
+  const agentId = typeof req.query.agentId === 'string' && req.query.agentId.trim() ? req.query.agentId.trim() : 'viewer';
+  res.json({ report: cmd.getPackBoard().situationReport(agentId) });
+});
+app.get('/api/scan-notes', (req: Request, res: Response): void => {
+  const target = typeof req.query.target === 'string' ? String(req.query.target) : '';
+  const kind = typeof req.query.kind === 'string' ? String(req.query.kind) : '';
+  const missionId = typeof req.query.missionId === 'string' ? String(req.query.missionId) : '';
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  let notes = [...scanNoteLedger.values()];
+  if (target) notes = notes.filter(n => normalizeTargetValue(n.target).toLowerCase() === normalizeTargetValue(target).toLowerCase());
+  if (kind) notes = notes.filter(n => n.kind === kind);
+  if (missionId) notes = notes.filter(n => n.missionId === missionId);
+  notes = notes.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+  res.json({ notes });
+});
+app.get('/api/scan-notes/history', (req: Request, res: Response): void => {
+  const target = typeof req.query.target === 'string' ? String(req.query.target) : '';
+  if (!target) { res.status(400).json({ error: 'target query param required' }); return; }
+  const key = normalizeTargetValue(target).toLowerCase();
+  const notes = [...scanNoteLedger.values()].filter(n => normalizeTargetValue(n.target).toLowerCase() === key).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const runsMap = new Map<string, { missionId: string; noteCount: number; latestAt: string; kinds: string[] }>();
+  for (const n of notes) {
+    const mid = n.missionId || 'unscoped';
+    let run = runsMap.get(mid);
+    if (!run) { run = { missionId: mid, noteCount: 0, latestAt: n.updatedAt, kinds: [] }; runsMap.set(mid, run); }
+    run.noteCount++;
+    if (n.updatedAt > run.latestAt) run.latestAt = n.updatedAt;
+    if (!run.kinds.includes(n.kind)) run.kinds.push(n.kind);
+  }
+  res.json({ target: normalizeTargetValue(target), runs: [...runsMap.values()], notes });
+});
+app.post('/api/scan-notes', (req: Request, res: Response): void => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const target = String(body.target || '').trim();
+  const title = String(body.title || '').trim();
+  if (!target || !title) { res.status(400).json({ error: 'target and title are required' }); return; }
+  const note = upsertScanNote({
+    target,
+    title,
+    body: String(body.body ?? body.summary ?? ''),
+    kind: typeof body.kind === 'string' ? body.kind as ScanNoteKind : undefined,
+    source: typeof body.source === 'string' ? body.source as ScanNote['source'] : 'human',
+    missionId: typeof body.missionId === 'string' ? body.missionId : undefined,
+    operationId: typeof body.operationId === 'string' ? body.operationId : undefined,
+    authorAgentId: typeof body.authorAgentId === 'string' ? body.authorAgentId : undefined,
+    findingIds: Array.isArray(body.findingIds) ? (body.findingIds as string[]).filter(Boolean) : undefined,
+    evidenceIds: Array.isArray(body.evidenceIds) ? (body.evidenceIds as string[]).filter(Boolean) : undefined,
+  });
+  if (!note) { res.status(400).json({ error: 'invalid scan note' }); return; }
+  schedulePersist('scan_notes.updated');
+  void appendStateEvent('scan_note.created', { id: note.id, target: note.target, title: note.title });
+  void broadcastEvent('scan_note:created', { id: note.id, target: note.target });
+  res.status(201).json({ note });
+});
+app.patch('/api/scan-notes/:id', (req: Request, res: Response): void => {
+  const id = String(req.params.id || '');
+  const existing = scanNoteLedger.get(id);
+  if (!existing) { res.status(404).json({ error: 'scan note not found' }); return; }
+  const body = (req.body || {}) as Record<string, unknown>;
+  if (typeof body.title === 'string' && body.title.trim()) existing.title = redactLedgerText(body.title.trim(), 240);
+  if (typeof body.body === 'string' || typeof body.summary === 'string') existing.body = redactLedgerText(String(body.body ?? body.summary ?? ''), 4000);
+  if (typeof body.kind === 'string' && ['recon', 'infiltration', 'general'].includes(body.kind)) existing.kind = body.kind as ScanNoteKind;
+  existing.updatedAt = nowIso();
+  scanNoteLedger.set(id, existing);
+  schedulePersist('scan_notes.updated');
+  void appendStateEvent('scan_note.updated', { id });
+  res.json({ note: existing });
+});
 // ── Operatives: per-archetype prompt + sampling-param overrides (powers the Operatives tab) ──
 const VALID_ARCHETYPES: OperatorArchetype[] = ['recon', 'scanner', 'exploiter', 'infiltrator', 'exfiltrator', 'ghost', 'coordinator', 'analyst'];
 
@@ -6760,17 +8211,52 @@ app.post('/api/operators/:id/task', async (req: Request, res: Response): Promise
  */
 app.get('/api/mission/findings', (_req: Request, res: Response) => {
   const cmd = getTempestCommand();
-  if (!cmd) {
-    res.json({ findings: [] });
-    return;
+  // Resolve a TargetEnvironment UUID to the operator-visible address so vault rows group by domain.
+  const resolveAddr = (id: unknown): string => {
+    const key = String(id || '');
+    if (!key) return '';
+    try {
+      const t = cmd?.targetEnv.getAllTargets().find(x => x && x.id === key);
+      if (t && typeof t.address === 'string' && t.address.trim()) return t.address.trim();
+    } catch {}
+    return key;
+  };
+  const live = (cmd ? cmd.vault.getAllFindings().map((f) => ({ ...f, target: resolveAddr(f.targetId) })) : []);
+  const liveCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+  // Merge the persistent ledger (scan/task recordings + formal findings) into the
+  // response so the Evidence Vault hydrates EVERYTHING — including after a restart
+  // or when no mission instance is active. Newest first, capped to keep payloads sane.
+  const ledgerFindings = [...findingsLedger.values()]
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 200)
+    .map((f) => {
+      const evidenceIds = f.evidenceIds || [];
+      const evidences = evidenceIds
+        .map((id) => evidenceLedger.get(id))
+        .filter((e): e is EvidenceEntry => Boolean(e));
+      return {
+        id: f.id,
+        title: f.title,
+        severity: f.severity,
+        target: f.target,
+        description: f.claim,
+        phase: 'ledger',
+        evidence: evidences.map((e) => ({ type: e.type, content: e.summary })),
+        recommendation: f.recommendedFix || undefined,
+      };
+    });
+  const merged = [...live];
+  const seen = new Set(merged.map((f) => String(f.title).toLowerCase()));
+  for (const lf of ledgerFindings) {
+    if (!seen.has(String(lf.title).toLowerCase())) merged.push(lf as any);
   }
 
   res.json({
-    findings: cmd.vault.getAllFindings(),
+    findings: merged,
     // Redact: never return raw harvested secrets over the API (only metadata + a
     // secretCaptured flag). Loopback-only mitigates, but a security tool must not dump
     // secrets in its own responses (external-audit P0).
-    credentials: cmd.cell.getAllCredentials().map(redactCredential),
+    credentials: liveCreds,
   });
 });
 
@@ -6807,6 +8293,49 @@ function readGeneralTimeoutEnv(): number | undefined {
 // the key in the body, so we accept it to avoid breaking it. Moving to a header
 // needs a coordinated UI change and is out of scope. The body key is only ever
 // reachable from the local operator (loopback bind + origin guard).
+/**
+ * Fail fast when a scan/mission targets the LOCAL LLM provider but the server
+ * behind the local base URL can't serve the requested model. Ollama auto-pulls
+ * missing tags on demand — which hangs for minutes and only surfaces as
+ * "Local LLM request timed out" deep inside the scan. Validate up front and
+ * return an actionable message, or null when the provider isn't local or the
+ * listing can't be interpreted (fail open for non-standard servers).
+ */
+async function verifyLocalLLMServed(cfg: { provider: unknown; model: string; baseUrl?: string; apiKey?: string }): Promise<string | null> {
+  if (cfg?.provider !== 'local') return null;
+  const base = (cfg.baseUrl || 'http://localhost:11434/api').replace(/\/+$/, '');
+  const isOllama = /\/api$/.test(base);
+  const listUrl = isOllama ? `${base.replace(/\/api$/, '')}/api/tags` : `${base}/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch(listUrl, {
+      signal: controller.signal,
+      ...(cfg.apiKey ? { headers: { Authorization: `Bearer ${cfg.apiKey}` } } : {}),
+    });
+    if (!res.ok) return `Local LLM at ${base} responded ${res.status} while listing models — verify the server is running.`;
+    const data: any = await res.json().catch(() => null);
+    const served: string[] | null = isOllama
+      ? (Array.isArray(data?.models) ? data.models.map((m: any) => String(m?.name || m?.model || '')).filter(Boolean) : null)
+      : (Array.isArray(data?.data) ? data.data.map((m: any) => String(m?.id || '')).filter(Boolean) : null);
+    if (!served) return null; // non-standard listing endpoint — fail open
+    const requested = String(cfg.model || '');
+    const hit = served.some(name => name === requested || name.split(':')[0] === requested.split(':')[0]);
+    if (!hit) {
+      return `Local LLM at ${base} does not serve model '${requested}'. Served: ${served.slice(0, 8).join(', ')}. ` +
+        `Pick a served model in Settings → Local model (or run: ollama pull ${requested}).`;
+    }
+    return null;
+  } catch (e) {
+    // Unreachable local is NOT a hard stop: the model ladder fails over to the next
+    // configured provider (e.g. OpenRouter), so warn and let the scan proceed.
+    console.warn(`[mission] local LLM unreachable at ${base} (${(e as Error).message}) — model ladder will fall back if configured`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function resolveGeneralLLMConfig(provider: string | undefined, model: string | undefined, apiKey: string | undefined, baseUrl?: string): {
   provider: any;
   model: string;
@@ -6815,9 +8344,16 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
   maxTokens: number;
   temperature: number;
   timeout: number;
+  fallbackChain?: FallbackEntry[];
 } {
   const defaultConfig = config.getLLMConfig();
   const selectedProvider = provider || defaultConfig.provider;
+  // Model-failure ladder: when TEMPEST_MODEL_FALLBACK is on, a primary that can't
+  // answer (rate-limit, 5xx, timeout, auth, 404, refusal, empty) escalates to the
+  // next configured provider. Local/local-agent timeouts skip same-model retries
+  // (a single-slot local server just re-hits the same cap) and go straight to the
+  // next hop — e.g. local model stalls → OpenRouter answers instead of hanging.
+  const fallbackChain = config.buildFallbackChain(selectedProvider as any);
   // Local-agent backends use their own CLI login and need no T3MP3ST API key.
   if (selectedProvider === 'local-agent') {
     return {
@@ -6828,6 +8364,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
       timeout: readGeneralTimeoutEnv()
         ?? readPositiveTimeoutEnv('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS')
         ?? 600000,
+      fallbackChain,
     };
   }
   const baseConfig = config.getLLMConfig(selectedProvider as any, model);
@@ -6860,6 +8397,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
     maxTokens: 8192,
     temperature: 0.4,
     timeout: readGeneralTimeoutEnv() ?? 300000, // General planning needs room (was a hardcoded 60s); override via env
+    fallbackChain,
   };
 }
 
@@ -7133,6 +8671,11 @@ app.post('/api/general/plan', async (req: Request, res: Response): Promise<void>
 
   try {
     const generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
+    const localErr = await verifyLocalLLMServed(generalConfig as any);
+    if (localErr) {
+      res.status(503).json({ error: localErr });
+      return;
+    }
     // Create a dedicated LLM backbone for the General
     const generalLLM = new LLMBackbone(generalConfig);
 
@@ -7206,6 +8749,11 @@ app.post('/api/general/execute', async (req: Request, res: Response): Promise<vo
     generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'API key required' });
+    return;
+  }
+  const localErr = await verifyLocalLLMServed(generalConfig as any);
+  if (localErr) {
+    res.status(503).json({ error: localErr });
     return;
   }
 
@@ -7326,6 +8874,11 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
     generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'API key required' });
+    return;
+  }
+  const localErr = await verifyLocalLLMServed(generalConfig as any);
+  if (localErr) {
+    res.status(503).json({ error: localErr });
     return;
   }
 
@@ -7918,12 +9471,51 @@ app.post('/api/agents/local/ping', async (req: Request, res: Response): Promise<
   res.json({ id: body.id, ...r });
 });
 
-// POST /api/agents/local/dispatch { id, prompt, model?, timeoutMs? } — drive a connected agent as an operator
+// POST /api/agents/local/dispatch { id, prompt, model?, timeoutMs?, target? } — drive a connected agent as an operator
 app.post('/api/agents/local/dispatch', async (req: Request, res: Response): Promise<void> => {
   const body = req.body || {};
   if (!connectedLocalAgents.has(body.id)) { res.status(400).json({ error: 'agent not connected — connect it first' }); return; }
   if (!body.prompt) { res.status(400).json({ error: 'prompt required' }); return; }
+  const targetHint = typeof body.target === 'string' && body.target.trim() ? body.target.trim() : (extractScanTarget(String(body.prompt || '')) || 'local-agent');
+  // Local-agent scans are first-class citizens on the Live Scan feed — emit the same
+  // ScanProgressEvent shape the mission engine broadcasts so dispatches stream live.
+  const progressEvent = (kind: 'task_started' | 'task_completed', detail: string, success?: boolean): void => {
+    try {
+      broadcastEvent('scan:progress', {
+        id: `dispatch-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        timestamp: Date.now(),
+        kind,
+        operatorId: `agent:${body.id}`,
+        callsign: String(body.id).toUpperCase(),
+        archetype: 'local-agent',
+        taskName: `Agent scan — ${targetHint}`,
+        detail: String(detail || '').slice(0, 2000),
+        success,
+      });
+    } catch { /* live feed is best-effort */ }
+  };
+  progressEvent('task_started', `Dispatching scan to ${body.id}: ${String(body.prompt || '').slice(0, 500)}`);
   const r = await runLocalAgent(body.id, body.prompt, { model: body.model, timeoutMs: body.timeoutMs });
+  progressEvent('task_completed', r.ok
+    ? `Scan completed via ${body.id} in ${r.latencyMs}ms\n${String(r.output || '').slice(0, 1500)}`
+    : `Scan FAILED via ${body.id}: ${r.error || 'unknown error'}`, r.ok);
+  // Record EVERY dispatch into the Evidence Vault (by domain, live) — a scan that
+  // isn't recorded is a scan that never happened.
+  try {
+    recordScanEvidence({
+      source: 'agent',
+      kind: 'scan',
+      tool: `local-agent:${body.id}${body.model ? `@${body.model}` : ''}`,
+      target: targetHint,
+      summary: r.ok
+        ? `Scan completed via ${body.id} in ${r.latencyMs}ms`
+        : `Scan FAILED via ${body.id}: ${r.error || 'unknown error'}`,
+      detail: r.output || r.error || '(no output)',
+      command: String(body.prompt || ''),
+    });
+  } catch (e) {
+    console.warn('[agents] failed to record dispatch evidence:', (e as Error).message);
+  }
   res.json({ id: body.id, ...r });
 });
 
@@ -7934,11 +9526,391 @@ app.post('/api/agents/local/disconnect', (req: Request, res: Response): void => 
   res.json({ ok: true, connected: Array.from(connectedLocalAgents.keys()) });
 });
 
+// ── Operator-defined custom agents (Settings → Local Agents → Add custom agent) ──
+// Definitions persist in ~/.t3mp3st/custom-agents.json (outside the repo — GitHub-safe)
+// and merge into detect/connect/ping/dispatch like the built-in CLIs.
+
+app.get('/api/agents/local/custom', (_req: Request, res: Response): void => {
+  res.json({ agents: loadCustomAgents() });
+});
+
+app.post('/api/agents/local/custom', (req: Request, res: Response): void => {
+  const body = req.body || {};
+  const norm = normalizeCustomAgent(body);
+  if ('error' in norm) { res.status(400).json({ error: norm.error }); return; }
+  const list = loadCustomAgents();
+  const existing = list.findIndex((c) => c.id === norm.id);
+  if (existing >= 0) list[existing] = norm; // upsert by id
+  else list.push(norm);
+  try {
+    saveCustomAgents(list);
+  } catch (e) {
+    res.status(500).json({ error: `could not persist custom agent: ${(e as Error).message}` });
+    return;
+  }
+  res.json({ ok: true, agent: norm, agents: list });
+});
+
+app.delete('/api/agents/local/custom/:id', (req: Request, res: Response): void => {
+  const id = req.params.id;
+  const list = loadCustomAgents();
+  const next = list.filter((c) => c.id !== id);
+  if (next.length === list.length) { res.status(404).json({ error: `no custom agent '${id}'` }); return; }
+  saveCustomAgents(next);
+  connectedLocalAgents.delete(id); // a deleted agent can't stay enlisted
+  res.json({ ok: true, agents: next });
+});
+
 // GET /api/agents/local/status — connected agents, optionally with a bounded live health check.
 app.get('/api/agents/local/status', async (req: Request, res: Response): Promise<void> => {
   const check = /^(1|true|yes|on)$/i.test(String(req.query.check || ''));
   if (check) await refreshConnectedLocalAgentHealth(false);
   res.json({ connected: Array.from(connectedLocalAgents.values()) });
+});
+
+// =============================================================================
+// CTF RANGE — live Docker status & control for the dashboard's CTF Range page
+// =============================================================================
+
+// The range is the compose project under <repo>/ctf. npm scripts launch the
+// server from the repo root; walk up so a tsx invocation from src/ also lands
+// on the compose file.
+function resolveCtfRangeDir(): string | null {
+  for (const dir of [process.cwd(), join(process.cwd(), '..'), join(process.cwd(), '..', '..')]) {
+    if (existsSync(join(dir, 'ctf', 'docker-compose.yml'))) return join(dir, 'ctf');
+  }
+  return null;
+}
+
+interface CtfRangeContainer {
+  name: string;
+  service: string;
+  state: string;
+  health: 'healthy' | 'unhealthy' | 'none';
+  hostPorts: number[];
+  reachable: boolean;
+}
+
+// One detached compose action at a time — up/build/down can run for minutes, so
+// they fire in the background and the dashboard polls /status for their output.
+const ctfRangeAction: { running: boolean; action: string; startedAt: number; output: string[] } = {
+  running: false, action: '', startedAt: 0, output: []
+};
+
+function startCtfRangeAction(action: string, args: string[]): boolean {
+  if (ctfRangeAction.running) return false;
+  const dir = resolveCtfRangeDir();
+  if (!dir) return false;
+  ctfRangeAction.running = true;
+  ctfRangeAction.action = action;
+  ctfRangeAction.startedAt = Date.now();
+  ctfRangeAction.output = [];
+  const child = spawn('docker', ['compose', ...args], { cwd: dir });
+  const push = (buf: Buffer): void => {
+    const lines = buf.toString().split(/\r?\n/).filter(Boolean);
+    ctfRangeAction.output.push(...lines);
+    if (ctfRangeAction.output.length > 80) ctfRangeAction.output.splice(0, ctfRangeAction.output.length - 80);
+  };
+  child.stdout?.on('data', push);
+  child.stderr?.on('data', push);
+  child.on('error', (err) => push(Buffer.from(String(err.message || err))));
+  child.on('close', (code) => {
+    ctfRangeAction.running = false;
+    ctfRangeAction.output.push(`[${action}] exit ${code === null ? 'killed' : code}`);
+  });
+  return true;
+}
+
+// TCP connect probe — distinguishes "container up" from "challenge answering".
+function probeCtfPort(port: number, timeoutMs = 900): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = tcpConnect({ host: '127.0.0.1', port });
+    const done = (ok: boolean): void => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
+}
+
+// docker ps (no probes) for the ctf compose project — shared by /status and /probe.
+// The dashboard polls /status every ~5s and every probe/flags call needs the port
+// allowlist too; Docker Desktop's Windows pipe chokes on overlapping CLI spawns,
+// so serve one shared result per ~2.5s (stale cache beats a failed call).
+let ctfContainersCache: { at: number; list: CtfRangeContainer[] } | null = null;
+// ctf compose services that are infrastructure, not challenge targets (see the filter below).
+const CTF_NON_CHALLENGE_SERVICES = new Set<string>(['t3mp3st', 'attacker']);
+async function ctfRangeContainersFromDocker(): Promise<CtfRangeContainer[]> {
+  if (ctfContainersCache && Date.now() - ctfContainersCache.at < 2500) return ctfContainersCache.list;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { stdout } = await execFileAsync('docker', [
+        'ps', '-a',
+        '--format', '{{.Names}}\t{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'
+      ], { timeout: 8000 });
+
+      const containers: CtfRangeContainer[] = [];
+      for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+        const [name, service, state, status, ports] = line.split('\t');
+        const isCtf = String(name || '').startsWith('ctf_') || String(service || '').startsWith('ctf-');
+        const isPentAGI = String(name || '').includes('pentagi') || String(service || '').includes('pentagi');
+        if (!isCtf && !isPentAGI) continue;
+        if (CTF_NON_CHALLENGE_SERVICES.has(String(service || ''))) continue;
+        const hostPorts = [...String(ports || '').matchAll(/:(\d+)->/g)].map((m) => parseInt(m[1], 10));
+        containers.push({
+          name,
+          service: service || (isPentAGI ? (name.includes('pentagi-1') ? 'pentagi' : name) : name),
+          state,
+          health: /unhealthy/.test(status) ? 'unhealthy' : /healthy/.test(status) ? 'healthy' : 'none',
+          hostPorts,
+          reachable: false
+        });
+      }
+      ctfContainersCache = { at: Date.now(), list: containers };
+      return containers;
+    } catch (e) {
+      if (attempt === 0) { await new Promise((r) => setTimeout(r, 600)); continue; }
+      if (ctfContainersCache) {
+        console.warn('[ctf] docker ps failed twice, serving stale cache:', (e as Error).message?.slice(0, 300));
+        return ctfContainersCache.list;
+      }
+      throw e;
+    }
+  }
+  throw new Error('unreachable');
+}
+
+// GET /api/ctf/range/status — live container states for the ctf compose project,
+// plus a per-port reachability probe on every published host port.
+app.get('/api/ctf/range/status', async (_req: Request, res: Response): Promise<void> => {
+  const dir = resolveCtfRangeDir();
+  if (!dir) { res.status(500).json({ error: 'ctf/docker-compose.yml not found on the server host' }); return; }
+  try {
+    const containers = await ctfRangeContainersFromDocker();
+    await Promise.all(containers.map(async (c) => {
+      if (c.state !== 'running' || !c.hostPorts.length) return;
+      c.reachable = (await Promise.all(c.hostPorts.map((p) => probeCtfPort(p)))).some(Boolean);
+    }));
+
+    res.json({
+      docker: true,
+      dir,
+      containers,
+      action: {
+        running: ctfRangeAction.running,
+        action: ctfRangeAction.action,
+        startedAt: ctfRangeAction.startedAt || undefined,
+        output: ctfRangeAction.output.slice(-15)
+      }
+    });
+  } catch (e) {
+    const msg = String((e as Error).message || e);
+    if (/cannot connect|daemon|is the docker|ENOENT|not recognized|system cannot find/i.test(msg)) {
+      // Docker daemon down or CLI missing — not a server bug; report so the UI can say which.
+      res.json({ docker: false, containers: [], action: { running: false, output: [] } });
+    } else {
+      res.status(500).json({ error: msg });
+    }
+  }
+});
+
+// POST /api/ctf/range/control {action:'up'|'build'|'down'|'stop'|'start', service?}
+// up/build/down run detached (progress lands in /status output); stop/start target
+// one compose service and are awaited so the UI gets immediate ok/error.
+app.post('/api/ctf/range/control', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body || {};
+  const action = String(body.action || '');
+  const service = body.service ? String(body.service) : null;
+  const dir = resolveCtfRangeDir();
+  if (!dir) { res.status(500).json({ error: 'ctf/docker-compose.yml not found on the server host' }); return; }
+
+  try {
+    if (action === 'up' || action === 'build' || action === 'down') {
+      const args = action === 'up' ? ['up', '-d', '--build'] : [action];
+      const started = startCtfRangeAction(action, args);
+      if (!started) { res.status(409).json({ error: `another range action ("${ctfRangeAction.action}") is already running` }); return; }
+      res.json({ ok: true, started: true, message: `${action} started — poll /api/ctf/range/status for progress` });
+      return;
+    }
+    if (action === 'stop' || action === 'start') {
+      if (!service) { res.status(400).json({ error: 'service required for stop/start' }); return; }
+      if (action === 'stop') {
+        await execFileAsync('docker', ['compose', 'stop', service], { cwd: dir, timeout: 30000 });
+      } else {
+        await execFileAsync('docker', ['compose', 'up', '-d', '--no-deps', service], { cwd: dir, timeout: 60000 });
+      }
+      res.json({ ok: true });
+      return;
+    }
+    res.status(400).json({ error: 'action must be up|build|down|stop|start' });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// GET /api/ctf/range/flags — the REAL flag each running challenge container was
+// started with (CTF_FLAG env, keyed by compose service), so the dashboard can
+// verify agent-captured flags against the live targets instead of format-checking.
+// These values already sit in plaintext in ctf/docker-compose.yml; this API serves
+// the local operator dashboard only. Cached briefly — flags only change when a
+// container is recreated — and retried once against transient docker pipe glitches.
+let ctfFlagsCache: { at: number; flags: Record<string, string> } | null = null;
+app.get('/api/ctf/range/flags', async (_req: Request, res: Response): Promise<void> => {
+  if (ctfFlagsCache && Date.now() - ctfFlagsCache.at < 15000) { res.json({ flags: ctfFlagsCache.flags }); return; }
+  try {
+    const containers = await ctfRangeContainersFromDocker();
+    const ids = containers.filter((c) => c.state === 'running').map((c) => c.name);
+    if (!ids.length) { res.json({ flags: {} }); return; }
+
+    let parsed: unknown = null;
+    for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+      try {
+        // 30s: docker inspect can crawl on a freshly-restarted Docker Desktop (observed 16s for one container)
+        const { stdout } = await execFileAsync('docker', ['inspect', ...ids], { timeout: 30000, maxBuffer: 1024 * 1024 * 8 });
+        parsed = JSON.parse(stdout);
+      } catch (_) {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 600)); // transient pipe glitch — retry
+        else throw _;
+      }
+    }
+
+    const flags: Record<string, string> = {};
+    for (const raw of (parsed || []) as Array<{ Name?: string; Config?: { Labels?: Record<string, string>; Env?: string[] } }>) {
+      const service = raw.Config?.Labels?.['com.docker.compose.service'];
+      const flag = (raw.Config?.Env || []).find((e) => e.startsWith('CTF_FLAG='))?.slice('CTF_FLAG='.length);
+      if (service && flag) flags[service] = flag;
+    }
+    ctfFlagsCache = { at: Date.now(), flags };
+    res.json({ flags });
+  } catch (e) {
+    if (ctfFlagsCache) { res.json({ flags: ctfFlagsCache.flags, stale: true }); return; }
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// Raw TCP probe for pwn challenges — send bytes, collect the reply until the peer
+// closes or goes quiet. Returns utf8 text (these services speak ASCII protocols).
+function ctfTcpRoundtrip(port: number, data: string, maxMs = 6000): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    const sock = tcpConnect({ host: '127.0.0.1', port });
+    const finish = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      clearTimeout(hardTimer);
+      sock.destroy();
+      resolve(Buffer.concat(chunks).toString('utf8').slice(0, 8192));
+    };
+    // quiet-window timer: reset on every chunk; only arms once first data arrives
+    let quietTimer: NodeJS.Timeout | null = null;
+    const armQuiet = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, 1500);
+    };
+    const hardTimer = setTimeout(finish, maxMs);
+    sock.setTimeout(3000, () => {
+      if (!chunks.length) finish(); else armQuiet();
+    });
+    sock.once('connect', () => { sock.write(data); });
+    sock.on('data', (b: Buffer) => { chunks.push(b); armQuiet(); });
+    sock.once('close', finish);
+    sock.once('error', finish);
+  });
+}
+
+// POST /api/ctf/range/probe — one live interaction with a target, executed
+// server-side so the browser agent can drive the real containers:
+//   { kind:'http', method?, url, headers?, body? }  — HTTP request
+//   { kind:'tcp',  port, data }                     — raw TCP roundtrip (pwn)
+// Range targets (challenge runs) are locked to loopback + ports actually published
+// by running ctf containers. `external:true` marks an operator-declared custom
+// target (typed into the dashboard's target window) and unlocks http(s) fetching
+// of that site — the operator explicitly aimed the tool at it.
+app.post('/api/ctf/range/probe', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body || {};
+  const external = body.external === true;
+  const probeStartedAt = Date.now();
+  let allowed: Set<number>;
+  try {
+    const containers = await ctfRangeContainersFromDocker();
+    allowed = new Set(containers.filter((c) => c.state === 'running').flatMap((c) => c.hostPorts));
+  } catch (dockerErr) {
+    // External website tests must not hang because Docker Desktop's Windows pipe glitched.
+    // Range tests still need the allowlist, so only external gets a free pass here.
+    if (!external) throw dockerErr;
+    console.warn('[ctf probe] docker ps failed for external probe, proceeding without allowlist:', (dockerErr as Error).message);
+    allowed = new Set<number>();
+  }
+  try {
+    if (!allowed.size && !external) { res.status(409).json({ error: 'range is not running — launch it first' }); return; }
+
+    if (body.kind === 'http') {
+      let url: URL;
+      try { url = new URL(String(body.url || '')); } catch { res.status(400).json({ error: 'invalid url' }); return; }
+      const host = url.hostname.toLowerCase();
+      const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(host);
+      // url.port is '' for default ports — treat '' as the default for its scheme when comparing.
+      const portForCheck = url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80);
+      if (!external && (!loopback || !allowed.has(portForCheck) && !allowed.has(parseInt(url.port || '0', 10)))) {
+        // Keep the strict loopback check, but also accept default-port URLs whose explicit port is in the allowlist.
+        const explicitPort = url.port ? parseInt(url.port, 10) : NaN;
+        const matchesExplicit = !Number.isNaN(explicitPort) && allowed.has(explicitPort);
+        if (!matchesExplicit && !allowed.has(portForCheck)) {
+          res.status(403).json({ error: `target must be a running range port (allowed: ${[...allowed].sort((a, b) => a - b).join(', ')}) — or pass external:true for an operator-declared target` });
+          return;
+        }
+      }
+      if (external && !/^https?:$/.test(url.protocol)) {
+        res.status(400).json({ error: 'external targets must be http(s)' });
+        return;
+      }
+      const method = String(body.method || 'GET').toUpperCase();
+      const init: RequestInit = { method, signal: AbortSignal.timeout(25000) };
+      if (body.body) init.body = String(body.body);
+      // Merge operator headers with sensible defaults for external WAFs (many 403 without a real UA).
+      const headers: Record<string, string> = { 'User-Agent': 'T3MP3ST/2.0 (operator-authorized probe)', 'Accept': '*/*' };
+      if (body.headers && typeof body.headers === 'object') Object.assign(headers, body.headers as Record<string, string>);
+      init.headers = headers;
+      let fetchRes: globalThis.Response;
+      const prevTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      if (url.protocol === 'https:' && loopback) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+      }
+      try {
+        fetchRes = await fetch(url, init);
+      } catch (fetchErr) {
+        if (url.protocol === 'https:' && loopback) {
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTlsReject;
+        }
+        const msg = String((fetchErr as Error).message || fetchErr);
+        const isAbort = /abort|timeout|timed out/i.test(msg);
+        const status = isAbort ? 504 : 502;
+        console.warn(`[ctf probe] fetch failed external=${external} ${method} ${url} after ${Date.now() - probeStartedAt}ms: ${msg}`);
+        res.status(status).json({ ok: false, error: isAbort ? `probe timed out after 25s — target slow or blocked (WAF)` : msg, kind: 'http' });
+        return;
+      }
+      if (url.protocol === 'https:' && loopback) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTlsReject;
+      }
+      const text = (await fetchRes.text()).slice(0, 16384);
+      console.log(`[ctf probe] ${external ? 'external' : 'range'} ${method} ${url} → ${fetchRes.status} ${text.length}b in ${Date.now() - probeStartedAt}ms`);
+      res.json({ ok: true, kind: 'http', status: fetchRes.status, contentType: fetchRes.headers.get('content-type') || '', body: text });
+      return;
+    }
+
+    if (body.kind === 'tcp') {
+      const port = parseInt(body.port, 10);
+      if (!allowed.has(port)) {
+        res.status(403).json({ error: `port must be a running range port (allowed: ${[...allowed].sort((a, b) => a - b).join(', ')})` });
+        return;
+      }
+      const out = await ctfTcpRoundtrip(port, String(body.data ?? ''));
+      res.json({ ok: true, kind: 'tcp', body: out });
+      return;
+    }
+
+    res.status(400).json({ error: 'kind must be http|tcp' });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
 });
 
 // =============================================================================
@@ -7949,7 +9921,7 @@ app.get('/api/agents/local/status', async (req: Request, res: Response): Promise
 // matches the exact '/' path and never shadows the /api/* routes above.
 app.get('/', (_req: Request, res: Response) => res.redirect('/ui/'));
 
-app.use('/ui', express.static('docs'));
+app.use('/ui', express.static('docs', { index: 'shell.html' }));
 
 // =============================================================================
 // ERROR HANDLING
@@ -8016,9 +9988,11 @@ async function startServer() {
   process.once('SIGTERM', flushAndExit);
   process.once('SIGINT', flushAndExit);
 
-  app.listen(Number(PORT), HOST, () => {
+  const server = app.listen(Number(PORT), HOST, () => {
     console.log(`[T3MP3ST] Server running at http://${HOST}:${PORT}`);
     console.log(`[T3MP3ST] Web UI available at http://${HOST}:${PORT}/ui`);
+    // Fire-and-forget: real env-injected keys land in the gitignored .env on boot.
+    void persistEnvKeysToEnvFile();
     if (!HOST_IS_LOOPBACK) {
       console.warn('');
       console.warn(`  ⚠️  EXPOSURE WARNING: bound to NON-LOOPBACK host "${HOST}". This API executes`);
@@ -8073,6 +10047,18 @@ async function startServer() {
     console.log('[T3MP3ST] Payload DB: 200+ payloads | Secret Patterns: 15+ | Privesc: 50+ techniques');
     console.log('');
   });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[T3MP3ST] Port ${PORT} already in use — is another instance running? Shutting down so Docker can restart.`);
+    } else {
+      console.error('[T3MP3ST] Failed to bind server:', err);
+    }
+    process.exit(1);
+  });
 }
 
-startServer().catch(console.error);
+startServer().catch((err) => {
+  console.error('[T3MP3ST] Fatal startup error:', err instanceof Error ? err.stack || err.message : err);
+  process.exit(1);
+});

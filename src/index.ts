@@ -48,8 +48,15 @@ export {
   createMockBackbone,
   createLocalBackbone,
   createBestAvailableBackbone,
+  ChainAST,
+  newChainAST,
+  sanitizeJSONControlChars,
+  SummarizerCache,
+  cachedSummarizeHandler,
+  createChainSummarizer,
+  generateSummary,
 } from './llm/index.js';
-export type { LLMEvents, LLMProviderAdapter, ChatOptions } from './llm/index.js';
+export type { LLMEvents, LLMProviderAdapter, ChatOptions, BodyPairType, ChainSection, ChainHeader, ChainBodyPair, SummarizeHandler, SummarizerConfig, ChainSummarizer, CacheOptions } from './llm/index.js';
 
 // Operators
 export {
@@ -103,8 +110,8 @@ export { Arsenal, successResult, failResult, createToolContext, BUILTIN_TOOLS, E
 export type { ArsenalEvents, ToolExecution } from './arsenal/index.js';
 
 // Agent Loop
-export { AgentLoop, createAgentLoop, runAgentTask } from './agent/index.js';
-export type { AgentLoopOptions, AgentStep, AgentResult, AgentEvents } from './agent/index.js';
+export { AgentLoop, createAgentLoop, runAgentTask, ExecutionMonitor, formatEnhancedToolResponse, performMentor, fixToolCallArgs } from './agent/index.js';
+export type { AgentLoopOptions, AgentStep, AgentResult, AgentEvents, ExecutionMonitorOptions, MentorContext, ArgFixRequest } from './agent/index.js';
 
 // OPSEC
 export {
@@ -247,7 +254,7 @@ import { CommsChannel } from './comms/index.js';
 import { AnalysisEngine } from './analysis/index.js';
 import { LLMBackbone } from './llm/index.js';
 import { getLLMConfig } from './config/index.js';
-import { AgentLoop } from './agent/index.js';
+import { AgentLoop, type AgentStep } from './agent/index.js';
 import { OpGeneral } from './general/index.js';
 
 // Stubs for advanced modules
@@ -345,6 +352,10 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * alongside its task. Empty/unset = black-box operation (unchanged behavior).
    */
   private whiteboxSource: string = '';
+  /** Injected provider that returns bounded prior scan notes for a target (wired by the server at create time). */
+  private scanNotesProvider?: (target: string) => string;
+  /** Operator-selected kill-chain focus phase (from the War Room SITREP). Empty = balanced chain (default). */
+  private missionFocus: string = '';
 
   /**
    * The swarm's shared, verifiable blackboard (Phase-2 coordination). One board per mission run:
@@ -354,11 +365,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private readonly packBoard = new PackBoard();
 
   /**
-   * Swarm coordination (Phase-2), OPT-IN so the swarm-vs-single-agent bake-off can toggle it: set
-   * `T3MP3ST_SWARM_COORD=on` to enable the finding→follow-up refinement loop. Off = the legacy
-   * phase-sequenced queue (the single-agent-equivalent baseline). Default OFF until it's proven.
+   * Swarm coordination (Phase-2) — ON by default. The PackBoard finding→follow-up refinement loop
+   * is the baseline; set `T3MP3ST_SWARM_COORD=off` (or 0/false) to get the legacy single-agent
+   * phase-sequenced queue for bake-off. Opt-out, not opt-in.
    */
-  private readonly coordinationEnabled = /^(1|true|on)$/i.test(process.env.T3MP3ST_SWARM_COORD ?? '');
+  private readonly coordinationEnabled = !/^(0|false|off)$/i.test(process.env.T3MP3ST_SWARM_COORD ?? 'on');
   /** Findings that already spawned a follow-up (dedup — a finding chases exactly once). */
   private readonly spawnedFollowups = new Set<string>();
   /** Per-run cap on follow-up tasks so the refinement loop can never explode. */
@@ -572,6 +583,29 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         `${result.success === false ? 'Finished unsuccessfully' : 'Completed'} ${task.name}.${findings}`,
         { success: result.success !== false }
       );
+      // Fan the tool-level results out so the server can record every scan output
+      // into the Evidence Vault (by domain) while the mission runs — not just formal
+      // findings. Capped so one noisy task can't flood the ledger.
+      try {
+        const steps = ((result.steps || []) as AgentStep[]).filter((s) => s.type === 'tool_call');
+        const toolResults = steps
+          .slice(0, 8)
+          .map((s) => ({
+            toolName: s.toolName || 'tool',
+            ok: s.toolResult?.success !== false,
+            output: String(s.toolResult?.output || s.toolResult?.error || '').slice(0, 4000),
+            argsHint: JSON.stringify(s.toolArgs || {}).slice(0, 300),
+          }));
+        this.emit('task:completed', {
+          operatorId: operator.id,
+          callsign: operator.callsign,
+          archetype: operator.archetype,
+          taskName: task?.name,
+          success: result.success !== false,
+          summary: String(result.summary || '').slice(0, 4000),
+          toolResults,
+        });
+      } catch { /* evidence fan-out is best-effort */ }
     });
 
     operator.on('task:failed', ({ task, error }) => {
@@ -799,6 +833,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Start command operations.
    * Automatically creates and starts a mission if none is active.
    */
+  /** Lease reaper for the PackBoard — stops claimed leads from wedging forever. */
+  private packReaperTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Read-only access to the shared pack board (the swarm cognition blackboard). */
+  public getPackBoard(): import('./pack/board.js').PackBoard { return this.packBoard; }
+
   public start(): void {
     if (this.running) return;
 
@@ -814,6 +854,13 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.running = true;
     this.paused = false;
     this.emit('command:started');
+
+    // Pack-board lease reaper — frees expired claims so another agent can take them.
+    if (this.coordinationEnabled && !this.packReaperTimer) {
+      this.packReaperTimer = setInterval(() => {
+        try { this.packBoard.releaseExpiredClaims(Date.now()); } catch {}
+      }, 30_000);
+    }
 
     // Start tick loop (1 second interval). Catch any tick error so a single bad tick
     // (e.g. a spawn hitting the pool cap) can never take down the whole server process.
@@ -831,27 +878,73 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     const targets = this.targetEnv.getAllTargets();
     const targetNames = targets.map(t => t.address).join(', ') || 'pending targets';
 
+    // ── Focus + resume: START AT the focused phase when we have durable prior scan notes ──
+    // A SITREP focus normally just biases effort (soft). But when the operator focuses a LATER phase
+    // (e.g. exploitation) AND at least one target has prior scan notes on record, this is a
+    // re-engagement: the prior recon is already done, so we START the mission AT the focus phase and
+    // skip the upstream phases — the prior notes (fed to every operator) stand in for recon. That is
+    // the difference between "re-run the whole scan" and "act on the past scan". A FRESH target (no
+    // prior notes) keeps the full chain so exploitation never runs blind.
+    let phases: KillChainPhase[] | undefined;
+    let startedAtFocus = false;
+    if (this.missionFocus) {
+      const focusIdx = KILL_CHAIN_ORDER.indexOf(this.missionFocus as KillChainPhase);
+      const hasPriorNotes = targets.some(t => {
+        try { return !!(this.scanNotesProvider && this.scanNotesProvider(t.address).trim()); } catch { return false; }
+      });
+      if (focusIdx > 0 && hasPriorNotes) {
+        phases = KILL_CHAIN_ORDER.slice(focusIdx);
+        startedAtFocus = true;
+      }
+    }
+
+    const objectives = !this.missionFocus
+      ? ['Enumerate attack surface', 'Identify vulnerabilities', 'Validate findings']
+      : startedAtFocus
+        ? [`RESUME AT ${this.missionFocus}: prior scans cover recon — act on the PRIOR SCAN NOTES, do not re-enumerate`, 'Exploit the mapped surface', 'Validate findings']
+        : [`PRIORITY FOCUS: drive toward the ${this.missionFocus} phase`, 'Enumerate attack surface', 'Identify vulnerabilities', 'Validate findings'];
+
     const mission = this.mission.createMission({
       name: `${this.name} — Auto Mission`,
       description: `Automated mission for ${targetNames}`,
-      objectives: ['Enumerate attack surface', 'Identify vulnerabilities', 'Validate findings'],
+      objectives,
+      ...(phases ? { phases } : {}),
     });
     this.mission.startMission(mission.id);
+    if (startedAtFocus) {
+      // Auto-spawn the operators the focus phase needs (the tick loop only auto-spawns on ADVANCE,
+      // not for the starting phase), so exploitation has an exploiter ready instead of stalling.
+      try { this.autoSpawnForPhase(this.missionFocus as KillChainPhase); } catch { /* best-effort */ }
+      this.emit('mission:phase_changed', { missionId: mission.id, phase: mission.currentPhase });
+    }
   }
 
   /**
-   * Stop command operations
+   * Stop command operations — hard stop. Kills the tick, aborts every in-flight
+   * operator dispatch, and clears stall so the next mission starts clean. The
+   * old implementation only flipped `running` leaving `activeDispatches` and
+   * operators pinned in `executing`; the UI's "stop" appeared to do nothing.
    */
   public stop(): void {
-    if (!this.running) return;
-
+    const wasRunning = this.running;
     this.running = false;
     this.taskSeeded = false;
+    if (this.packReaperTimer) { clearInterval(this.packReaperTimer); this.packReaperTimer = null; }
     if (this.tickInterval) {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
-    this.emit('command:stopped');
+    // Abort every in-flight dispatch so recon/infiltrator/exfiltrator actually stop
+    for (const op of this.dispatchOperators.values()) {
+      try { op.abortActiveTask('mission stopped by operator'); } catch {}
+    }
+    this.activeDispatches.clear();
+    this.dispatchStartTimes.clear();
+    this.dispatchOperators.clear();
+    this.stallReason = null;
+    this.paused = false;
+    if (wasRunning || this.tickCount > 0) this.emit('command:stopped');
+    else this.emit('command:stopped');
   }
 
   /**
@@ -867,9 +960,56 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * Resume operations
    */
   public resume(): void {
-    if (!this.running || !this.paused) return;
+    if (!this.running && !this.paused) return;
+    this.running = true;
     this.paused = false;
     this.stallReason = null;
+
+    // Reset failed tasks for the active mission's current phase so the loop can retry them
+    const mission = this.mission.getActiveMission();
+    const taskQueue = this.mission.getTaskQueue();
+    if (mission && taskQueue) {
+      const allTasks = taskQueue.getForMission(mission.id);
+      const failedCurrentPhase = allTasks.filter(
+        t => t.phase === mission.currentPhase && t.status === 'failed'
+      );
+      for (const task of failedCurrentPhase) {
+        task.status = 'pending';
+        task.assignedTo = undefined;
+        task.result = undefined;
+        task.startedAt = undefined;
+        task.completedAt = undefined;
+      }
+
+      // If no tasks exist for this phase at all, generate tasks for all targets
+      const currentPhaseTasks = allTasks.filter(t => t.phase === mission.currentPhase);
+      if (currentPhaseTasks.length === 0) {
+        const targets = this.targetEnv.getAllTargets();
+        for (const target of targets) {
+          this.mission.generateNextPhaseTasks(target.address);
+        }
+      }
+
+      // Abort in-flight tasks if any were stuck and reset LLM sessions
+      for (const op of this.dispatchOperators.values()) {
+        try { op.abortActiveTask('mission resumed by operator'); } catch {}
+      }
+      for (const op of this.cell.getAllOperators()) {
+        op.resetLLMSession();
+      }
+
+      this.activeDispatches.clear();
+      this.dispatchStartTimes.clear();
+      this.dispatchOperators.clear();
+      this.dispatchLastActivity.clear();
+    }
+
+    if (!this.tickInterval) {
+      this.tickInterval = setInterval(() => {
+        this.tick().catch(err => console.error('[T3MP3ST] tick error (mission continues):', err instanceof Error ? err.message : err));
+      }, 1000);
+    }
+
     this.emit('command:resumed');
   }
 
@@ -895,6 +1035,18 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private dispatchOperators: Map<string, OperatorAgent> = new Map();
 
   /**
+   * Last observed ACTIVITY (ms epoch) per in-flight dispatch. Refreshed by the
+   * operator's agent events (thinking / tool_call / tool_result). The backstop
+   * measures silence from this — not wall-clock from dispatch — so a slow but
+   * genuinely-working task (frontier model taking minutes per turn) is never
+   * reaped mid-flight; only a task with NO progress for the whole window is.
+   */
+  private dispatchLastActivity: Map<string, number> = new Map();
+
+  /** Per-dispatch activity listener bookkeeping so clearDispatch() can detach them. */
+  private dispatchActivityListeners: Map<string, { operator: OperatorAgent; listener: (evt: unknown) => void }> = new Map();
+
+  /**
    * GENEROUS per-dispatch wall-clock backstop (ms). If a single task dispatch stays
    * in-flight longer than this, the tick loop force-resolves it as a timeout so
    * pendingOrActive can reach 0 and the mission can advance/complete even when an
@@ -910,7 +1062,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
    * provider-specific default. Guards against a non-numeric / non-positive override.
    */
   private static resolveTaskTimeoutMs(provider?: LLMProvider): number {
-    const DEFAULT_TASK_TIMEOUT_MS = 300000; // 5 minutes — generous backstop, not a deadline
+    const DEFAULT_TASK_TIMEOUT_MS = 900000; // 15 minutes — a frontier model via a router can take ~60s per agent turn and a recon task needs several turns; 5 min reaped legitimately-working tasks
     const LOCAL_AGENT_TASK_TIMEOUT_MS = 1800000; // local CLI agents can need multiple slow turns
     const raw = process.env.T3MP3ST_TASK_TIMEOUT_MS;
     if (raw != null && raw.trim() !== '') {
@@ -958,10 +1110,14 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         }
         this.taskSeeded = true;
 
-        // Auto-spawn a recon operator if none exists
-        const recon = this.cell.getAvailableOperator('recon');
-        if (!recon) {
-          this.spawnOperator('Recon-Auto', 'recon');
+        // Auto-spawn a recon operator ONLY when the mission actually starts at recon. A
+        // SITREP-focused re-engagement starts past recon (e.g. exploitation) with prior scans
+        // standing in for it — spawning a recon box there just launches recon on an exploit job.
+        if (mission.currentPhase === KillChainPhase.RECON) {
+          const recon = this.cell.getAvailableOperator('recon');
+          if (!recon) {
+            this.spawnOperator('Recon-Auto', 'recon');
+          }
         }
       }
     }
@@ -1068,12 +1224,40 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       const target = allTargets.find(t => task.description.includes(t.address)) || allTargets[0];
       if (!target) continue; // No targets available — leave task pending, skip dispatch
 
+      // Thread durable per-target scan notes so infiltrators continue prior runs instead of re‑probing.
+      try {
+        const notes = this.scanNotesProvider ? this.scanNotesProvider(target.address) : '';
+        operator.setPriorScanNotes(notes || '');
+      } catch { /* best‑effort — never block a dispatch */ }
+
       // Dispatch task (fire and forget — don't block the tick loop)
       this.activeDispatches.add(task.id);
       // Record wall-clock start + owning operator so checkDispatchTimeouts() can reap
       // this exact dispatch if its promise never settles.
       this.dispatchStartTimes.set(task.id, Date.now());
       this.dispatchOperators.set(task.id, operator);
+      this.dispatchLastActivity.set(task.id, Date.now());
+
+      // Activity feed: the operator re-emits its agent loop's thinking/tool events.
+      // Each event (a) refreshes dispatchLastActivity — the backstop measures SILENCE,
+      // not total age — and (b) narrates what the task is actually doing to the server
+      // log, so a 900s stall is diagnosable instead of opaque.
+      const activityListener = (evt: unknown): void => {
+        const e = evt as { task?: { id?: string }; name?: string; args?: Record<string, unknown>; result?: { success?: boolean; error?: string }; content?: string };
+        if (e?.task?.id && e.task.id !== task.id) return;
+        this.dispatchLastActivity.set(task.id, Date.now());
+        if (e?.name) {
+          const args = e.args ? JSON.stringify(e.args) : '';
+          console.log(`[T3MP3ST] ${operator.callsign} ← ${e.name}${args ? ` ${args.slice(0, 160)}` : ''}`);
+        } else if (e?.result) {
+          console.log(`[T3MP3ST] ${operator.callsign} ✓ ${e.name ?? 'tool'} ${e.result.success ? 'ok' : `error: ${String(e.result.error || '').slice(0, 120)}`}`);
+        }
+        // thinking events are chatty — no per-event log line, they only refresh activity.
+      };
+      operator.on('agent:thinking', activityListener);
+      operator.on('agent:tool_call', activityListener);
+      operator.on('agent:tool_result', activityListener);
+      this.dispatchActivityListeners.set(task.id, { operator, listener: activityListener });
       taskQueue.assign(task.id, operator.id);
 
       // Execute asynchronously
@@ -1109,6 +1293,16 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.activeDispatches.delete(taskId);
     this.dispatchStartTimes.delete(taskId);
     this.dispatchOperators.delete(taskId);
+    this.dispatchLastActivity.delete(taskId);
+    const wired = this.dispatchActivityListeners.get(taskId);
+    if (wired) {
+      try {
+        wired.operator.off('agent:thinking', wired.listener);
+        wired.operator.off('agent:tool_call', wired.listener);
+        wired.operator.off('agent:tool_result', wired.listener);
+      } catch { /* operator already torn down */ }
+      this.dispatchActivityListeners.delete(taskId);
+    }
   }
 
   /**
@@ -1143,8 +1337,13 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       const startedAt = this.dispatchStartTimes.get(taskId);
       const operator = this.dispatchOperators.get(taskId);
 
-      const elapsed = startedAt != null ? now - startedAt : Number.POSITIVE_INFINITY;
-      const overTime = elapsed >= this.taskTimeoutMs;
+      // Measure SILENCE, not total age: the clock restarts on every agent activity
+      // event (thinking / tool_call / tool_result). A frontier model that spends
+      // 4 minutes per turn on a multi-turn recon task stays alive as long as it is
+      // demonstrably still working; only a genuinely silent dispatch is reaped.
+      const lastActivity = this.dispatchLastActivity.get(taskId) ?? startedAt;
+      const silentFor = lastActivity != null ? now - lastActivity : Number.POSITIVE_INFINITY;
+      const overTime = silentFor >= this.taskTimeoutMs;
 
       // Wedge symptom: operator claims to be working (executing/tasked) but has no
       // current task — the promise silently dropped it. Only treat this as a wedge
@@ -1158,8 +1357,8 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       if (!overTime && !wedged) continue;
 
       const reason = wedged
-        ? `dispatch wedged: operator ${operator?.id ?? 'unknown'} stuck in '${operator?.status}' with no current task for ${Math.round(elapsed / 1000)}s`
-        : `dispatch timed out after ${Math.round(elapsed / 1000)}s (backstop ${Math.round(this.taskTimeoutMs / 1000)}s)`;
+        ? `dispatch wedged: operator ${operator?.id ?? 'unknown'} stuck in '${operator?.status}' with no current task for ${Math.round(silentFor / 1000)}s`
+        : `dispatch stalled: no activity for ${Math.round(silentFor / 1000)}s (backstop ${Math.round(this.taskTimeoutMs / 1000)}s)`;
 
       // Clear a CLEAR event/log so a timed-out dispatch is never silent.
       console.warn(`[T3MP3ST] task ${taskId} force-resolved as timeout — ${reason}`);
@@ -1229,10 +1428,41 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.on('mission:phase_changed', (data) => broadcast('phase_changed', data));
     this.on('approval:decision', (data) => broadcast('arsenal.approval', data));
     this.on('scan:progress', (data) => broadcast('scan:progress', data));
+    // ── Swarm Cognition Loop — bridge every pack-board mutation to the war-room SSE as `pack:*`.
+    // Keeps the gladiator feed live without the UI needing a poll backstop.
+    try {
+      const _packToSse = (event: string, data: unknown) => {
+        try { broadcast('pack:' + event, data as Record<string, unknown>); } catch {}
+      };
+      this.packBoard.on('board:event', (ev: any) => _packToSse('event', ev));
+      this.packBoard.on('lead:posted', (lead: any) => _packToSse('lead:posted', { lead }));
+      this.packBoard.on('lead:claimed', (payload: any) => _packToSse('lead:claimed', payload));
+      this.packBoard.on('lead:claim-denied', (payload: any) => _packToSse('lead:claim-denied', payload));
+      this.packBoard.on('lead:claim-released', (payload: any) => _packToSse('lead:claim-released', payload));
+      this.packBoard.on('lead:endorsed', (lead: any) => _packToSse('lead:endorsed', { lead }));
+      this.packBoard.on('lead:refuted', (lead: any) => _packToSse('lead:refuted', { lead }));
+      this.packBoard.on('lead:status-changed', (payload: any) => _packToSse('lead:status-changed', payload));
+      this.packBoard.on('agent:heartbeat', (status: any) => _packToSse('agent:heartbeat', { status }));
+    } catch {}
     this.on('tick', (count) => {
-      // Broadcast status every 5 ticks to avoid flooding
+      // Broadcast status every 5 ticks to avoid flooding. Include `active` + the active
+      // mission summary so the SSE shape matches GET /api/mission/status — the bare
+      // getStatus() shape has no mission object and made the UI's Phase cell flash to
+      // "none" between REST polls.
       if (typeof count === 'number' && count % 5 === 0) {
-        broadcast('status', this.getStatus());
+        const mission = this.mission.getActiveMission();
+        broadcast('status', {
+          ...this.getStatus(),
+          active: this.running,
+          mission: mission ? {
+            id: mission.id,
+            name: mission.name,
+            status: mission.status,
+            currentPhase: mission.currentPhase,
+            progress: this.getTaskProgress() ?? mission.progress ?? 0,
+            startedAt: mission.startedAt,
+          } : null,
+        });
       }
     });
   }
@@ -1279,6 +1509,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       operator.setWhiteboxSource(this.whiteboxSource);
     }
 
+    // Propagate the operator-selected mission focus to any operator spawned after it was set.
+    if (this.missionFocus) {
+      operator.setMissionFocus(this.missionFocus);
+    }
+
     return operator;
   }
 
@@ -1298,6 +1533,24 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     }
   }
 
+  /** Injected by the server at create time — returns bounded prior scan notes for a target. */
+  public setScanNotesProvider(provider: (target: string) => string): void {
+    this.scanNotesProvider = provider;
+  }
+
+  /**
+   * Set the operator-selected kill-chain focus phase (War Room SITREP selection).
+   * Stored, propagated to every already-spawned operator, and picked up by operators
+   * spawned afterward in spawnOperator(). Does NOT skip phases — it biases operator
+   * effort toward the chosen phase. Empty/unset = balanced chain (unchanged behavior).
+   */
+  public setMissionFocus(phase: string): void {
+    this.missionFocus = String(phase || '');
+    for (const operator of this.cell.getAllOperators()) {
+      operator.setMissionFocus(this.missionFocus);
+    }
+  }
+
   /**
    * Coordination telemetry — the machine-readable artifact that distinguishes a coordinated swarm
    * run from N independent agents: how many findings became shared leads, how many spawned targeted
@@ -1314,6 +1567,22 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   }
 
   /**
+   * Task-completion percentage for the active mission (0–100), or null when no tasks
+   * exist yet. MissionControl.progress is ((phaseIndex+1)/phases)*100, which reads 0%
+   * for the ENTIRE reconnaissance phase and makes working operators look stuck — this
+   * is the number the UI should display.
+   */
+  public getTaskProgress(): number | null {
+    const mission = this.mission.getActiveMission();
+    const queue = this.mission.getTaskQueue();
+    if (!mission || !queue) return null;
+    const tasks = queue.getForMission(mission.id);
+    if (tasks.length === 0) return null;
+    const done = tasks.filter(t => t.status === 'completed' || t.status === 'failed').length;
+    return Math.round((done / tasks.length) * 100);
+  }
+
+  /**
    * Get command status
    */
   public getStatus(): {
@@ -1323,10 +1592,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     tickCount: number;
     operators: ReturnType<OperatorCell['getStatus']>;
     targets: ReturnType<TargetEnvironment['getStats']>;
+    targetsList: ReturnType<TargetEnvironment['getAllTargets']>;
     vault: ReturnType<EvidenceVault['getStats']>;
     opsec: ReturnType<OpsecController['getStats']>;
     activeMission: string | null;
     stallReason: string | null;
+    taskProgress: number | null;
     progress: ScanProgressEvent[];
     tasks: Array<{
       id: string;
@@ -1348,10 +1619,12 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       tickCount: this.tickCount,
       operators: this.cell.getStatus(),
       targets: this.targetEnv.getStats(),
+      targetsList: this.targetEnv.getAllTargets(),
       vault: this.vault.getStats(),
       opsec: this.opsec.getStats(),
       activeMission: activeMission?.id || null,
       stallReason: this.stallReason,
+      taskProgress: this.getTaskProgress(),
       progress: [...this.progressEvents],
       tasks: activeMission
         ? taskQueue.getForMission(activeMission.id).map(task => ({

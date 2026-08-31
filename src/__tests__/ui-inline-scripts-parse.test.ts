@@ -101,3 +101,35 @@ describe('docs/index.html inline scripts — semantic defect gate (#111 hardenin
     expect(findings, findings.join('\n')).toEqual([]);
   }, 15_000);
 });
+
+describe('UI Chrome Persistence across all pages (API status & Egress IP Banner)', () => {
+  const PAGES = [
+    'index.html', 'live-scan.html', 'receipts.html', 'operators.html', 'evidence.html',
+    'obsidivm.html', 'ctf.html', 'arsenal.html', 'cves.html', 'terminal.html',
+    'configs.html', 'general.html', 'self-improve.html', 'settings.html', 'about.html'
+  ];
+
+  PAGES.forEach((page) => {
+    describe(`docs/${page}`, () => {
+      const pageHtml = readFileSync(new URL(`../../docs/${page}`, import.meta.url), 'utf8');
+
+      it('includes API status indicator (apiDot and apiText)', () => {
+        expect(pageHtml).toContain('id="apiDot"');
+        expect(pageHtml).toContain('id="apiText"');
+        expect(pageHtml).toContain('api-status-bar');
+      });
+
+      it('includes Egress IP address banner (egressIpBadge and egressIpValue)', () => {
+        expect(pageHtml).toContain('id="egressIpBadge"');
+        expect(pageHtml).toContain('id="egressIpValue"');
+        expect(pageHtml).toContain('refreshEgressIp');
+      });
+
+      it('includes T3MP3ST_API client and embed bridge', () => {
+        expect(pageHtml).toContain('T3MP3ST_API');
+        expect(pageHtml).toContain('src="embed.js"');
+      });
+    });
+  });
+});
+

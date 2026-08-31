@@ -11,7 +11,6 @@ RUN pip install flask flask-cors
 
 # Create vulnerable application
 COPY app.py /app/
-COPY templates/ /app/templates/
 
 # Set environment variables
 ENV FLASK_APP=app.py

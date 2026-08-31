@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <title>T3MP3ST — CVE Vault</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        try { var _t3mpTheme = localStorage.getItem('t3mp3st_theme'); if (_t3mpTheme && _t3mpTheme !== 'storm') document.documentElement.setAttribute('data-theme', _t3mpTheme); } catch (e) {}
+    </script>
+    <script>
+        (function () {
+            var embedded = false;
+            try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+            if (embedded && !/[?&]standalone/.test(location.search)) {
+                document.documentElement.classList.add('t3mp-embedded');
+                var s = document.createElement('style');
+                s.id = 't3mpEmbedGuard';
+                s.textContent = '.t3mp-embedded .sidebar{display:none!important}' +
+                    '.t3mp-embedded .main-content{margin-left:0!important;width:100%!important}' +
+                    '.t3mp-embedded .mobile-toggle{display:none!important}';
+                document.head.appendChild(s);
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --bg-primary: #071017;
+            --bg-secondary: #0b1822;
+            --bg-tertiary: #102534;
+            --bg-card: #0c1b25;
+            --surface: #10212d;
+            --card-bg: #0c1b25;
+            --border-color: #1e4053;
+            --border-glow: #2fffd255;
+            --text-primary: #e0e0e0;
+            --text-secondary: #9baeb8;
+            --text-muted: #6f8794;
+            --accent: #2fffd2;
+            --accent-dim: #17c7a8;
+            --accent-glow: #2fffd233;
+            --brand: #00ff88;
+            --brand-rgb: 0, 255, 136;
+            --accent-rgb: 47, 255, 210;
+            --cyan-rgb: 0, 212, 255;
+            --danger: #ff4757;
+            --warning: #ffa502;
+            --info: #3742fa;
+            --error: #ff4757;
+            --purple: #a855f7;
+            --cyan: #00d4ff;
+            --storm-blue: #0b3d5c;
+            --deep-sea: #06111a;
+            --brass: #f5b84b;
+            --brass-glow: #f5b84b33;
+            --sidebar-width: 240px;
+        }
+
+        html[data-theme="ember"] {
+            --accent: #ffab40;
+            --accent-dim: #f5871f;
+            --accent-glow: #ffab4033;
+            --border-glow: #ffab4055;
+            --cyan: #ffd15c;
+            --storm-blue: #5c320b;
+            --brass: #ff8c42;
+            --brass-glow: #ff8c4233;
+            --brand: #ffab40;
+            --brand-rgb: 255, 171, 64;
+            --accent-rgb: 255, 171, 64;
+            --cyan-rgb: 255, 209, 92;
+        }
+        html[data-theme="crimson"] {
+            --accent: #ff5470;
+            --accent-dim: #e23e5a;
+            --accent-glow: #ff547033;
+            --border-glow: #ff547055;
+            --cyan: #ff8fa3;
+            --storm-blue: #5c0b1e;
+            --brass: #ff7a8a;
+            --brass-glow: #ff7a8a33;
+            --brand: #ff5470;
+            --brand-rgb: 255, 84, 112;
+            --accent-rgb: 255, 84, 112;
+            --cyan-rgb: 255, 143, 163;
+        }
+        html[data-theme="void"] {
+            --accent: #b57bff;
+            --accent-dim: #9d5cf0;
+            --accent-glow: #b57bff33;
+            --border-glow: #b57bff55;
+            --cyan: #d4a5ff;
+            --storm-blue: #2e0b5c;
+            --brass: #c79bff;
+            --brass-glow: #c79bff33;
+            --brand: #b57bff;
+            --brand-rgb: 181, 123, 255;
+            --accent-rgb: 181, 123, 255;
+            --cyan-rgb: 212, 165, 255;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background:
+                linear-gradient(180deg, rgba(7, 16, 23, 0.94), rgba(4, 12, 18, 0.98)),
+                repeating-linear-gradient(90deg, rgba(var(--accent-rgb), 0.03) 0 1px, transparent 1px 120px),
+                var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .bg-grid {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image:
+                linear-gradient(rgba(var(--accent-rgb), 0.035) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(var(--accent-rgb), 0.03) 1px, transparent 1px),
+                repeating-linear-gradient(135deg, transparent 0 42px, rgba(245, 184, 75, 0.035) 42px 43px, transparent 43px 86px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .app-container { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+
+        /* Sidebar */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: linear-gradient(180deg, #081621, var(--bg-secondary) 42%, #071017);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            z-index: 100;
+            transition: transform 0.3s;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        /* API Status Indicator */
+        .api-status-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 15px;
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid var(--border-color);
+            font-size: 11px;
+        }
+        .api-status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .api-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666;
+            animation: pulse 2s infinite;
+        }
+        .api-dot.connected {
+            background: var(--brand);
+            box-shadow: 0 0 8px var(--brand);
+        }
+        .api-dot.disconnected {
+            background: #ff4444;
+            box-shadow: 0 0 8px #ff4444;
+            animation: none;
+        }
+        .api-dot.llm-ready {
+            background: var(--brand);
+            box-shadow: 0 0 10px var(--brand), 0 0 24px var(--brand);
+            animation: llmGlowPulse 1.6s ease-in-out infinite;
+        }
+        .api-text {
+            color: #888;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .api-text.connected {
+            color: var(--brand);
+        }
+        .api-text.llm-ready {
+            color: var(--brand);
+            text-shadow: 0 0 8px var(--brand);
+        }
+        .api-status-bar:has(.api-dot.llm-ready) {
+            border-bottom-color: var(--brand);
+            box-shadow: inset 0 -10px 18px -14px var(--brand), 0 2px 12px -7px var(--brand);
+        }
+        @keyframes llmGlowPulse {
+            0%, 100% { box-shadow: 0 0 6px var(--brand), 0 0 14px var(--brand); }
+            50% { box-shadow: 0 0 10px var(--brand), 0 0 26px var(--brand); }
+        }
+        .api-reconnect-btn {
+            background: none;
+            border: 1px solid #444;
+            color: #888;
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .api-reconnect-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            transform: rotate(180deg);
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .logo {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--accent);
+            text-shadow: 0 0 20px var(--accent-glow);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .logo-icon {
+            width: 36px; height: 36px;
+            background: linear-gradient(135deg, var(--accent), var(--storm-blue));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        .version-badge {
+            font-size: 10px;
+            background: var(--bg-tertiary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--text-secondary);
+            margin-left: auto;
+        }
+
+        .nav-section { padding: 15px 10px; flex: 1; overflow-y: auto; }
+        .nav-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 10px 15px 5px;
+            letter-spacing: 1px;
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 11px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin: 2px 5px;
+            color: var(--text-secondary);
+            font-size: 14px;
+            text-decoration: none;
+        }
+        .nav-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+        .nav-item.active {
+            background: var(--accent-glow);
+            color: var(--accent);
+            border: 1px solid var(--border-glow);
+        }
+        .nav-item .icon { font-size: 16px; width: 22px; text-align: center; }
+        .nav-item .badge {
+            margin-left: auto;
+            background: var(--danger);
+            color: white;
+            font-size: 10px;
+            padding: 2px 7px;
+            border-radius: 10px;
+        }
+
+        .sidebar-footer { padding: 15px; border-top: 1px solid var(--border-color); }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: pulse 2s infinite;
+        }
+        .status-dot.offline { background: var(--text-muted); animation: none; }
+
+        .theme-switcher {
+            display: flex; align-items: center; gap: 8px;
+            margin-top: 10px; padding: 8px 10px;
+            background: var(--bg-tertiary); border-radius: 8px;
+        }
+        .theme-switcher .ts-label {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+            color: var(--text-muted); margin-right: auto;
+        }
+        .theme-swatch {
+            width: 18px; height: 18px; border-radius: 50%; cursor: pointer;
+            padding: 0; border: 2px solid transparent; background-clip: padding-box;
+            transition: transform 0.15s, border-color 0.15s;
+        }
+        .theme-swatch:hover { transform: scale(1.18); }
+        .theme-swatch.active {
+            border-color: var(--text-primary);
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        .mobile-toggle {
+            display: none;
+            position: fixed;
+            top: 12px;
+            left: 12px;
+            z-index: 200;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+        @media (max-width: 768px) {
+            .mobile-toggle { display: block; }
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main-content { margin-left: 0 !important; width: 100% !important; }
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            background: radial-gradient(circle at 50% 0%, rgba(0, 255, 136, 0.03) 0%, transparent 60%);
+        }
+        .header {
+            height: 60px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            background-color: rgba(7, 16, 23, 0.85);
+            backdrop-filter: blur(8px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-title {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        /* Egress IP badge */
+        .egress-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none;
+            font-size: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace;
+            border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.04);
+            transition: background .15s, border-color .15s;
+        }
+        .egress-badge:hover { background: rgba(255,255,255,0.08); }
+        .egress-badge .egress-dot { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
+        .egress-badge .egress-label { color: #9aa; font-weight: 600; letter-spacing: .5px; }
+        .egress-badge .egress-ip { color: #cfd; font-weight: 700; }
+        .egress-loading .egress-dot { background: #888; animation: egressPulse 1s ease-in-out infinite; }
+        .egress-proxied { border-color: rgba(0,255,136,0.4); background: rgba(0,255,136,0.08); }
+        .egress-proxied .egress-dot { background: #00ff88; box-shadow: 0 0 6px rgba(0,255,136,0.7); }
+        .egress-proxied .egress-ip { color: #7CFFC4; }
+        .egress-leak { border-color: rgba(255,64,64,0.55); background: rgba(255,64,64,0.12); }
+        .egress-leak .egress-dot { background: #ff4040; box-shadow: 0 0 8px rgba(255,64,64,0.8); animation: egressPulse .8s ease-in-out infinite; }
+        .egress-leak .egress-label, .egress-leak .egress-ip { color: #ff8080; }
+        .egress-error { border-color: rgba(255,176,32,0.4); }
+        .egress-error .egress-dot { background: #ffb020; }
+        @keyframes egressPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+        .page-content { padding: 24px; max-width: 1440px; width: 100%; margin: 0 auto; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 900px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 500px) {
+            .stats-grid { grid-template-columns: 1fr; }
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 3px; height: 100%;
+            background: var(--brand);
+        }
+        .stat-card.ransomware::after { background: var(--danger); }
+        .stat-card.epss::after { background: var(--purple); }
+        .stat-card.probes::after { background: var(--cyan); }
+        .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .stat-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+        }
+        .controls-bar {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0 12px;
+            flex: 1;
+            min-width: 280px;
+        }
+        .search-box input {
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            padding: 10px 8px;
+            width: 100%;
+            outline: none;
+        }
+        .filter-tabs {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .filter-tab {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .filter-tab.active, .filter-tab:hover {
+            background: rgba(var(--brand-rgb), 0.12);
+            color: var(--brand);
+            border-color: var(--brand);
+        }
+        .btn {
+            background: var(--brand);
+            color: #000;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: filter 0.15s;
+        }
+        .btn:hover { filter: brightness(1.1); }
+        .cve-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+            gap: 16px;
+        }
+        @media (max-width: 480px) {
+            .cve-grid { grid-template-columns: 1fr; }
+        }
+        .cve-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+            cursor: pointer;
+        }
+        .cve-card:hover {
+            border-color: rgba(var(--brand-rgb), 0.5);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(4, 12, 18, 0.85);
+            backdrop-filter: blur(6px);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-dialog {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 16px 48px rgba(0,0,0,0.85), 0 0 24px rgba(var(--brand-rgb), 0.2);
+            border-radius: 10px;
+            width: 100%;
+            max-width: 800px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.96) translateY(12px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .modal-header {
+            padding: 18px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0,0,0,0.35);
+        }
+        .modal-header h2 {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--brand);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .modal-close-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.15s;
+            line-height: 1;
+        }
+        .modal-close-btn:hover { color: #fff; background: rgba(255,255,255,0.08); }
+        .modal-body {
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-color);
+            background: rgba(0,0,0,0.35);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-field-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--border-color);
+            padding: 14px;
+            border-radius: 6px;
+        }
+        .modal-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .modal-field-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .modal-field-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+        }
+        .modal-section-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            font-weight: 700;
+            margin-bottom: 6px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .modal-desc-box {
+            background: rgba(0,0,0,0.35);
+            border-left: 3px solid var(--brand);
+            padding: 14px 16px;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #e0e0e0;
+        }
+        .modal-action-box {
+            background: rgba(255, 165, 2, 0.08);
+            border-left: 3px solid var(--warning);
+            padding: 14px 16px;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #ffa502;
+        }
+        .cve-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+        .cve-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--brand);
+        }
+        .badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+        .badge-critical { background: rgba(255, 71, 87, 0.15); color: var(--danger); border: 1px solid var(--danger); }
+        .badge-high { background: rgba(255, 165, 2, 0.15); color: var(--warning); border: 1px solid var(--warning); }
+        .badge-probe { background: rgba(0, 212, 255, 0.15); color: var(--cyan); border: 1px solid var(--cyan); }
+        .cve-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+        .cve-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .cve-desc {
+            font-size: 12px;
+            color: #aaa;
+            line-height: 1.5;
+            margin-bottom: 12px;
+            background: rgba(0,0,0,0.3);
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 2px solid var(--border-color);
+        }
+        .cve-action {
+            font-size: 11px;
+            color: var(--warning);
+            margin-bottom: 14px;
+        }
+        .cve-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            padding-top: 12px;
+            margin-top: auto;
+        }
+        .epss-meter {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--purple);
+        }
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+
+    <div class="app-container">
+        <!-- Sidebar Navigation (Canonical across all pages) -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div>
+                    T3MP3ST
+                    <span class="version-badge">v1.0</span>
+                </div>
+            </div>
+
+            <!-- API Status Indicator -->
+            <div class="api-status-bar" id="apiStatusBar">
+                <div class="api-status-indicator">
+                    <span class="api-dot" id="apiDot"></span>
+                    <span class="api-text" id="apiText">Checking...</span>
+                </div>
+                <button class="api-reconnect-btn" id="apiReconnectBtn" onclick="T3MP3ST_API.checkHealth()" title="Reconnect">↻</button>
+            </div>
+
+            <nav class="nav-section">
+                <div class="nav-label">Main</div>
+                <a class="nav-item" href="index.html">
+                    <span class="icon">⚔️</span> War Room
+                </a>
+                <a class="nav-item" href="live-scan.html">
+                    <span class="icon">📡</span> Live Scan <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item" href="receipts.html">
+                    <span class="icon">🧾</span> Scope Receipts <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                    <span class="badge" id="pendingReceiptCount">0</span>
+                </a>
+                <a class="nav-item" href="operators.html">
+                    <span class="icon">🤖</span> Operatives <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                    <span class="badge" id="activeOperatorCount">0</span>
+                </a>
+                <a class="nav-item" href="evidence.html">
+                    <span class="icon">🔐</span> Evidence Vault <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+
+                <div class="nav-label">Ranges</div>
+                <a class="nav-item" href="obsidivm.html">
+                    <span class="icon">📈</span> OBSIDIVM <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item" href="ctf.html">
+                    <span class="icon">🚩</span> CTF Range <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                    <span class="badge" id="ctfActiveCount" style="background: #ff8800;">0</span>
+                </a>
+
+                <div class="nav-label">Toolkit</div>
+                <a class="nav-item" href="arsenal.html">
+                    <span class="icon">📡</span> Arsenal <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item active" href="cves.html">
+                    <span class="icon">⚡</span> CVE Vault
+                </a>
+                <a class="nav-item" href="dfir.html" data-href="dfir.html" style="text-decoration:none;">
+                    <span class="icon">🛡️</span> DFIR Response <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item" href="terminal.html">
+                    <span class="icon">💻</span> Terminal <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item" href="configs.html">
+                    <span class="icon">💾</span> Config Library <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+
+                <div class="nav-label">Command</div>
+                <a class="nav-item" href="general.html">
+                    <span class="icon">★</span> Op Admiral <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                    <span class="badge" id="generalStatusBadge" style="background: #ff4444; display: none;">LIVE</span>
+                </a>
+
+                <div class="nav-label">System</div>
+                <a class="nav-item" href="self-improve.html">
+                    <span class="icon">🧬</span> Self-Improvement <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item" href="settings.html">
+                    <span class="icon">⚙️</span> Settings <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+                <a class="nav-item" href="about.html">
+                    <span class="icon">ℹ️</span> About <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <div class="status-dot" id="connectionStatus"></div>
+                    <span id="connectionText">Initializing...</span>
+                </div>
+                <div class="theme-switcher" id="themeSwitcher">
+                    <span class="ts-label">Theme</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="header">
+                <button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+                <div class="header-title">
+                    <span>⚡</span> CVE VAULT & THREAT INTELLIGENCE
+                </div>
+                <div class="header-actions">
+                    <span id="egressIpBadge" class="egress-badge egress-loading" onclick="refreshEgressIp(true)" title="Egress IP for test traffic — click to re-check">
+                        <span class="egress-dot"></span>
+                        <span class="egress-label">IP:</span>
+                        <span class="egress-ip" id="egressIpValue">…</span>
+                    </span>
+                    <button class="btn" id="syncFeedsBtn" onclick="syncFeedsLive()">
+                        <span>🔄</span> SYNC LIVE CISA KEV
+                    </button>
+                </div>
+            </header>
+
+            <div class="page-content">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="statTotalCount">1,240+</div>
+                        <div class="stat-label">CISA KEV Catalog</div>
+                    </div>
+                    <div class="stat-card ransomware">
+                        <div class="stat-value" id="statRansomwareCount">380+</div>
+                        <div class="stat-label">Ransomware Exploited</div>
+                    </div>
+                    <div class="stat-card epss">
+                        <div class="stat-value" id="statHighEpssCount">420+</div>
+                        <div class="stat-label">High EPSS (>0.70)</div>
+                    </div>
+                    <div class="stat-card probes">
+                        <div class="stat-value" id="statProbesCount">12</div>
+                        <div class="stat-label">Active Probes Ready</div>
+                    </div>
+                </div>
+
+                <div class="controls-bar">
+                    <div class="search-box">
+                        <span>🔍</span>
+                        <input type="text" id="cveSearchInput" placeholder="Search CVE ID, vendor (Apache, Citrix, Microsoft), product..." oninput="handleSearch()" />
+                    </div>
+                    <div class="filter-tabs">
+                        <button class="filter-tab active" data-filter="all" onclick="setFilter('all')">ALL</button>
+                        <button class="filter-tab" data-filter="ransomware" onclick="setFilter('ransomware')">🚨 RANSOMWARE (KEV)</button>
+                        <button class="filter-tab" data-filter="high_epss" onclick="setFilter('high_epss')">📈 HIGH EPSS</button>
+                        <button class="filter-tab" data-filter="probes_only" onclick="setFilter('probes_only')">⚡ ACTIVE PROBES</button>
+                    </div>
+                </div>
+
+                <div class="cve-grid" id="cveGrid">
+                    <div style="color:var(--text-secondary); font-family:monospace; padding:20px;">Loading CVE Intelligence Vault...</div>
+                </div>
+            </div>
+
+            <!-- CVE Intelligence Details Modal -->
+            <div class="modal-overlay" id="cveModalOverlay" onclick="handleModalOverlayClick(event)">
+                <div class="modal-dialog" id="cveModalDialog">
+                    <div class="modal-header">
+                        <h2><span id="modalCveId">CVE-XXXX-XXXX</span> <span id="modalBadges"></span></h2>
+                        <button class="modal-close-btn" onclick="closeCveModal()" title="Close (Esc)">✕</button>
+                    </div>
+                    <div class="modal-body" id="modalBody">
+                        <!-- Dynamic details populated by openCveModal -->
+                    </div>
+                    <div class="modal-footer">
+                        <div style="display:flex; gap:10px;">
+                            <button class="btn" style="background:var(--bg-tertiary); color:#fff; border:1px solid var(--border-color);" onclick="copyModalCveId()">📋 COPY CVE ID</button>
+                            <a id="modalNvdLink" href="#" target="_blank" class="btn" style="background:transparent; color:var(--text-secondary); border:1px solid var(--border-color); text-decoration:none;">VIEW NVD ↗</a>
+                        </div>
+                        <div id="modalSweepAction"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script>
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function getApiBase() {
+            if (window.T3MP3ST_API && window.T3MP3ST_API.baseUrl) return window.T3MP3ST_API.baseUrl;
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            return isLocal ? (window.location.port === '3333' ? '' : 'http://' + window.location.hostname + ':3333') : '';
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            if (sidebar) sidebar.classList.toggle('open');
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // THEME MANAGEMENT
+        // ═══════════════════════════════════════════════════════════════
+        const THEMES = [
+            { id: 'storm', label: 'Storm', accent: '#2fffd2' },
+            { id: 'ember', label: 'Ember', accent: '#ffab40' },
+            { id: 'crimson', label: 'Crimson', accent: '#ff5470' },
+            { id: 'void', label: 'Void', accent: '#b57bff' }
+        ];
+
+        const t3mpTheme = {
+            apply(themeId) {
+                if (themeId === 'storm') {
+                    document.documentElement.removeAttribute('data-theme');
+                } else {
+                    document.documentElement.setAttribute('data-theme', themeId);
+                }
+                try { localStorage.setItem('t3mp3st_theme', themeId); } catch (e) {}
+                document.querySelectorAll('.theme-swatch').forEach(s => {
+                    s.classList.toggle('active', s.dataset.theme === themeId);
+                });
+            },
+            init() {
+                const host = document.getElementById('themeSwitcher');
+                if (host && !host.dataset.built) {
+                    host.dataset.built = '1';
+                    THEMES.forEach(t => {
+                        const b = document.createElement('button');
+                        b.type = 'button';
+                        b.className = 'theme-swatch';
+                        b.dataset.theme = t.id;
+                        b.title = `${t.label} theme`;
+                        b.setAttribute('aria-label', `${t.label} theme`);
+                        b.style.background = t.accent;
+                        b.style.color = t.accent;
+                        b.addEventListener('click', () => this.apply(t.id));
+                        host.appendChild(b);
+                    });
+                }
+                const saved = localStorage.getItem('t3mp3st_theme') || 'storm';
+                this.apply(saved);
+            }
+        };
+        window.t3mpTheme = t3mpTheme;
+
+        // ═══════════════════════════════════════════════════════════════
+        // T3MP3ST API CLIENT & HEALTH CHECKER
+        // ═══════════════════════════════════════════════════════════════
+        const T3MP3ST_API = {
+            _isLocal: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1',
+            _hasCustomUrl: !!localStorage.getItem('t3mp3st_api_url'),
+            _isStandalone: false,
+
+            baseUrl: localStorage.getItem('t3mp3st_api_url') ||
+                (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+                    ? `http://${window.location.hostname}:3333`
+                    : ''),
+
+            connected: false,
+            llmAvailable: false,
+            serverLLM: null,
+
+            async checkHealth() {
+                const dot = document.getElementById('apiDot');
+                const text = document.getElementById('apiText');
+                const connDot = document.getElementById('connectionStatus');
+                const connText = document.getElementById('connectionText');
+
+                if (!this.baseUrl) {
+                    this._isStandalone = true;
+                    this.connected = false;
+                    this.llmAvailable = false;
+                    if (dot && text) {
+                        dot.className = 'api-dot';
+                        dot.style.background = '#ffaa00';
+                        dot.style.boxShadow = '0 0 8px #ffaa00';
+                        text.className = 'api-text';
+                        text.style.color = '#ffaa00';
+                        text.textContent = 'Standalone Mode';
+                    }
+                    if (connDot && connText) {
+                        connDot.className = 'status-dot';
+                        connText.textContent = 'Standalone Mode';
+                    }
+                    return { status: 'standalone', message: 'Direct LLM mode' };
+                }
+
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 5000);
+                    const res = await fetch(`${this.baseUrl}/api/health`, { signal: controller.signal });
+                    clearTimeout(timeout);
+                    const data = await res.json();
+                    this._isStandalone = false;
+                    this.connected = data.status === 'operational';
+                    this.llmAvailable = data.llm === 'connected' || !!(data.llm && data.llm.connected);
+                    this.serverLLM = data.llm && typeof data.llm === 'object' ? data.llm : null;
+
+                    if (dot && text) {
+                        dot.className = 'api-dot';
+                        dot.style.cssText = '';
+                        text.className = 'api-text';
+                        text.style.cssText = '';
+
+                        if (this.llmAvailable) {
+                            dot.classList.add('llm-ready');
+                            text.classList.add('llm-ready');
+                            text.textContent = 'API + LLM Ready';
+                        } else if (this.connected) {
+                            dot.classList.add('connected');
+                            text.classList.add('connected');
+                            text.textContent = 'API Connected';
+                        }
+                    }
+
+                    if (connDot && connText) {
+                        connDot.className = 'status-dot';
+                        connText.textContent = this.llmAvailable ? 'Operational · LLM Ready' : (this.connected ? 'Operational' : 'API Connected');
+                    }
+
+                    return data;
+                } catch (e) {
+                    this.connected = false;
+                    this.llmAvailable = false;
+
+                    if (!this._isLocal && !this._hasCustomUrl) {
+                        this._isStandalone = true;
+                        this.baseUrl = '';
+                        if (dot && text) {
+                            dot.className = 'api-dot';
+                            dot.style.background = '#ffaa00';
+                            dot.style.boxShadow = '0 0 8px #ffaa00';
+                            text.className = 'api-text';
+                            text.style.color = '#ffaa00';
+                            text.textContent = 'Standalone Mode';
+                        }
+                    } else if (dot && text) {
+                        dot.className = 'api-dot disconnected';
+                        text.className = 'api-text';
+                        text.style.color = '#ff4444';
+                        text.textContent = 'API Offline';
+                    }
+                    if (connDot && connText) {
+                        connDot.className = 'status-dot offline';
+                        connText.textContent = 'Disconnected';
+                    }
+                    return null;
+                }
+            }
+        };
+        window.T3MP3ST_API = T3MP3ST_API;
+
+        // ═══════════════════════════════════════════════════════════════
+        // EGRESS IP BADGE (TOP-RIGHT)
+        // ═══════════════════════════════════════════════════════════════
+        async function refreshEgressIp(force) {
+            const badge = document.getElementById('egressIpBadge');
+            const val = document.getElementById('egressIpValue');
+            if (!badge || !val) return;
+            const label = badge.querySelector('.egress-label');
+            try {
+                const res = await fetch(`${getApiBase()}/api/net/ip${force ? '?force=1' : ''}`);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const d = await res.json();
+                window._lastEgressCheck = d;
+                const ip = (d.exit && d.exit.ip) ? d.exit.ip : '—';
+                badge.className = 'egress-badge';
+                if (d.leak) {
+                    badge.classList.add('egress-leak');
+                    if (label) label.textContent = d.proxyEnabled ? 'LEAK:' : 'IP:';
+                    val.textContent = ip;
+                    badge.title = d.proxyEnabled
+                        ? `⚠ LEAK: exit IP equals your real IP (${ip}). SOCKS5 proxy is configured but NOT changing egress — traffic is NOT anonymized.`
+                        : `⚠ No proxy: test traffic leaves from your real IP (${ip}). Configure a SOCKS5 proxy in Settings → Network.`;
+                } else {
+                    badge.classList.add('egress-proxied');
+                    if (label) label.textContent = 'IP:';
+                    val.textContent = ip;
+                    const cc = (d.exit && d.exit.country) ? ` · ${d.exit.country}` : '';
+                    const via = (d.proxy && d.proxy.url) ? d.proxy.url : 'SOCKS5';
+                    badge.title = `Proxied egress via ${via}${cc}. Your real IP (${(d.direct && d.direct.ip) || 'unknown'}) is hidden from targets.`;
+                }
+            } catch (e) {
+                badge.className = 'egress-badge egress-error';
+                if (label) label.textContent = 'IP:';
+                val.textContent = 'n/a';
+                badge.title = 'Egress IP check failed: ' + ((e && e.message) ? e.message : e);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // CVE FEED & MODAL STATE
+        // ═══════════════════════════════════════════════════════════════
+        const state = {
+            currentFilter: 'all',
+            searchQuery: '',
+            cves: [],
+            activeModalCve: null
+        };
+
+        async function loadCveFeed() {
+            const grid = document.getElementById('cveGrid');
+            try {
+                const base = getApiBase();
+                const params = new URLSearchParams();
+                if (state.currentFilter !== 'all') params.append('filter', state.currentFilter);
+                if (state.searchQuery) params.append('search', state.searchQuery);
+                params.append('limit', '60');
+
+                let res;
+                try {
+                    res = await fetch(base + '/api/cves/feed?' + params.toString());
+                } catch (e) {
+                    res = await fetch('http://' + (window.location.hostname || 'localhost') + ':3333/api/cves/feed?' + params.toString());
+                }
+
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    state.cves = data.items || [];
+                    const elTotal = document.getElementById('statTotalCount');
+                    if (elTotal) elTotal.innerText = data.totalCount.toLocaleString();
+                    const elRans = document.getElementById('statRansomwareCount');
+                    if (elRans) elRans.innerText = data.ransomwareCount.toLocaleString();
+                    const elEpss = document.getElementById('statHighEpssCount');
+                    if (elEpss) elEpss.innerText = data.highEpssCount.toLocaleString();
+                    const elProbes = document.getElementById('statProbesCount');
+                    if (elProbes) elProbes.innerText = data.probesAvailableCount.toLocaleString();
+                    renderCveGrid(data.items);
+                } else {
+                    if (grid) grid.innerHTML = '<div style="color:var(--danger); padding:20px;">Feed response error: ' + escapeHtml(data.error || 'Unknown error') + '</div>';
+                }
+            } catch (err) {
+                if (grid) grid.innerHTML = '<div style="color:var(--text-muted); padding:20px;">API Offline or syncing: ' + escapeHtml(err.message) + '</div>';
+            }
+        }
+
+        function renderCveGrid(items) {
+            const grid = document.getElementById('cveGrid');
+            if (!grid) return;
+            if (!items || items.length === 0) {
+                grid.innerHTML = '<div style="color:var(--text-muted); font-size:13px; padding:20px;">No matching CVEs found.</div>';
+                return;
+            }
+
+            let html = '';
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                const isRansomware = item.knownRansomwareCampaignUse === 'Known';
+                const hasProbe = Boolean(item.hasActiveProbe);
+                const epssPct = item.epssScore ? Math.round(item.epssScore * 100) : 85;
+                const epssPctl = item.epssPercentile ? Math.round(item.epssPercentile * 100) : 95;
+                const cveIdEsc = escapeHtml(item.cveID);
+                const vulnNameEsc = escapeHtml(item.vulnerabilityName || item.cveID);
+                const vendorEsc = escapeHtml(item.vendorProject || 'Unknown');
+                const productEsc = escapeHtml(item.product || 'Unknown');
+                const dateEsc = escapeHtml(item.dateAdded || '');
+                const descEsc = escapeHtml(item.shortDescription || '');
+                const actionEsc = item.requiredAction ? escapeHtml(item.requiredAction) : '';
+                const sevEsc = escapeHtml(item.severity || 'HIGH');
+
+                const probeBadge = hasProbe ? '<span class="badge badge-probe">⚡ PROBE READY</span>' : '';
+                const ransBadge = isRansomware ? '<span class="badge badge-critical">RANSOMWARE</span>' : '<span class="badge badge-high">' + sevEsc + '</span>';
+                const actionHtml = actionEsc ? '<div class="cve-action">⚠️ <b>Action:</b> ' + actionEsc + '</div>' : '';
+                const btnHtml = hasProbe
+                    ? '<button class="btn btn-sweep" data-cve="' + cveIdEsc + '" style="padding:4px 10px; font-size:10px;">🚀 SWEEP TARGETS</button>'
+                    : '<a href="https://nvd.nist.gov/vuln/detail/' + cveIdEsc + '" target="_blank" style="color:var(--text-secondary); font-size:11px; text-decoration:none;">View NVD ↗</a>';
+
+                html += '<div class="cve-card" data-cve="' + cveIdEsc + '">' +
+                    '<div>' +
+                        '<div class="cve-card-header">' +
+                            '<span class="cve-id">' + cveIdEsc + '</span>' +
+                            '<div style="display:flex; gap:6px;">' + probeBadge + ransBadge + '</div>' +
+                        '</div>' +
+                        '<div class="cve-title">' + vulnNameEsc + '</div>' +
+                        '<div class="cve-meta">' +
+                            '<span>🏢 <b>' + vendorEsc + '</b></span>' +
+                            '<span>📦 <b>' + productEsc + '</b></span>' +
+                            '<span>📅 ' + dateEsc + '</span>' +
+                        '</div>' +
+                        '<div class="cve-desc">' + descEsc + '</div>' +
+                        actionHtml +
+                    '</div>' +
+                    '<div class="cve-footer">' +
+                        '<span class="epss-meter">EPSS Score: <b>' + epssPct + '%</b> (' + epssPctl + 'th %)</span>' +
+                        btnHtml +
+                    '</div>' +
+                '</div>';
+            }
+
+            grid.innerHTML = html;
+        }
+
+        function openCveModal(cveId) {
+            const item = state.cves.find(function(c) { return c.cveID === cveId; });
+            if (!item) return;
+            state.activeModalCve = item;
+
+            const isRansomware = item.knownRansomwareCampaignUse === 'Known';
+            const hasProbe = Boolean(item.hasActiveProbe);
+            const epssPct = item.epssScore ? Math.round(item.epssScore * 100) : 85;
+            const epssPctl = item.epssPercentile ? Math.round(item.epssPercentile * 100) : 95;
+            const cveIdEsc = escapeHtml(item.cveID);
+            const vulnNameEsc = escapeHtml(item.vulnerabilityName || item.cveID);
+            const vendorEsc = escapeHtml(item.vendorProject || 'Unknown');
+            const productEsc = escapeHtml(item.product || 'Unknown');
+            const dateEsc = escapeHtml(item.dateAdded || 'N/A');
+            const dueDateEsc = escapeHtml(item.dueDate || 'Immediate Remediation');
+            const descEsc = escapeHtml(item.shortDescription || 'No description provided.');
+            const actionEsc = item.requiredAction ? escapeHtml(item.requiredAction) : 'Follow vendor guidance and apply recommended security updates.';
+            const notesEsc = item.notes ? escapeHtml(item.notes) : '';
+            const sevEsc = escapeHtml(item.severity || 'HIGH');
+
+            document.getElementById('modalCveId').innerText = item.cveID;
+            
+            let badgesHtml = '';
+            if (hasProbe) badgesHtml += '<span class="badge badge-probe">⚡ PROBE READY</span> ';
+            if (isRansomware) badgesHtml += '<span class="badge badge-critical">🚨 RANSOMWARE EXPLOITED</span> ';
+            else badgesHtml += '<span class="badge badge-high">' + sevEsc + '</span> ';
+            document.getElementById('modalBadges').innerHTML = badgesHtml;
+
+            const nvdLink = document.getElementById('modalNvdLink');
+            if (nvdLink) nvdLink.href = 'https://nvd.nist.gov/vuln/detail/' + encodeURIComponent(item.cveID);
+
+            const sweepActionDiv = document.getElementById('modalSweepAction');
+            if (sweepActionDiv) {
+                if (hasProbe) {
+                    sweepActionDiv.innerHTML = '<button class="btn btn-sweep" data-cve="' + cveIdEsc + '">🚀 SWEEP FLEET TARGETS</button>';
+                } else {
+                    sweepActionDiv.innerHTML = '<button class="btn btn-custom-sweep" data-cve="' + cveIdEsc + '" style="background:var(--brand); color:#000;">⚡ DISPATCH TARGETED AUDIT</button>';
+                }
+            }
+
+            let bodyHtml = '' +
+                '<div>' +
+                    '<h3 style="color:#fff; font-size:16px; font-weight:700; margin-bottom:8px; line-height:1.4;">' + vulnNameEsc + '</h3>' +
+                '</div>' +
+                '<div class="modal-field-group">' +
+                    '<div class="modal-field">' +
+                        '<div class="modal-field-label">Vendor / Project</div>' +
+                        '<div class="modal-field-value">🏢 ' + vendorEsc + '</div>' +
+                    '</div>' +
+                    '<div class="modal-field">' +
+                        '<div class="modal-field-label">Product</div>' +
+                        '<div class="modal-field-value">📦 ' + productEsc + '</div>' +
+                    '</div>' +
+                    '<div class="modal-field">' +
+                        '<div class="modal-field-label">Date Added to KEV</div>' +
+                        '<div class="modal-field-value">📅 ' + dateEsc + '</div>' +
+                    '</div>' +
+                    '<div class="modal-field">' +
+                        '<div class="modal-field-label">Action Due Date</div>' +
+                        '<div class="modal-field-value" style="color:var(--warning);">⏱ ' + dueDateEsc + '</div>' +
+                    '</div>' +
+                    '<div class="modal-field">' +
+                        '<div class="modal-field-label">EPSS Probability</div>' +
+                        '<div class="modal-field-value" style="color:var(--purple);">' + epssPct + '% (' + epssPctl + 'th %)</div>' +
+                    '</div>' +
+                    '<div class="modal-field">' +
+                        '<div class="modal-field-label">Ransomware Campaign</div>' +
+                        '<div class="modal-field-value" style="color:' + (isRansomware ? 'var(--danger)' : 'var(--text-secondary)') + ';">' + (isRansomware ? '🚨 KNOWN' : 'UNKNOWN') + '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div>' +
+                    '<div class="modal-section-title">Vulnerability Description & Impact</div>' +
+                    '<div class="modal-desc-box">' + descEsc + '</div>' +
+                '</div>' +
+                '<div>' +
+                    '<div class="modal-section-title">Required Remediation Action</div>' +
+                    '<div class="modal-action-box"><b>⚠️ Required Action:</b> ' + actionEsc + '</div>' +
+                '</div>';
+
+            if (notesEsc) {
+                bodyHtml += '<div>' +
+                    '<div class="modal-section-title">Advisory Notes & References</div>' +
+                    '<div style="font-size:12px; color:var(--text-secondary); background:rgba(0,0,0,0.25); padding:10px 14px; border-radius:4px; font-family:\'JetBrains Mono\',monospace; word-break:break-all;">' + notesEsc + '</div>' +
+                '</div>';
+            }
+
+            document.getElementById('modalBody').innerHTML = bodyHtml;
+            document.getElementById('cveModalOverlay').classList.add('active');
+        }
+
+        function closeCveModal() {
+            const overlay = document.getElementById('cveModalOverlay');
+            if (overlay) overlay.classList.remove('active');
+            state.activeModalCve = null;
+        }
+
+        function handleModalOverlayClick(ev) {
+            if (ev.target && ev.target.id === 'cveModalOverlay') {
+                closeCveModal();
+            }
+        }
+
+        function copyModalCveId() {
+            if (state.activeModalCve && state.activeModalCve.cveID) {
+                navigator.clipboard.writeText(state.activeModalCve.cveID);
+                toast('Copied ' + state.activeModalCve.cveID + ' to clipboard!');
+            }
+        }
+
+        function dispatchCustomSweep(cveId) {
+            toast('Dispatching targeted exploit audit for ' + cveId + '...');
+            window.location.href = 'arsenal.html';
+        }
+
+        document.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Escape') closeCveModal();
+        });
+
+        function setFilter(filter) {
+            state.currentFilter = filter;
+            document.querySelectorAll('.filter-tab').forEach(function(t) {
+                t.classList.toggle('active', t.getAttribute('data-filter') === filter);
+            });
+            loadCveFeed();
+        }
+
+        let searchDebounce = null;
+        function handleSearch() {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(function() {
+                state.searchQuery = document.getElementById('cveSearchInput').value.trim();
+                loadCveFeed();
+            }, 250);
+        }
+
+        function toast(msg) {
+            const c = document.getElementById('toastContainer') || (function() {
+                const el = document.createElement('div');
+                el.id = 'toastContainer';
+                el.className = 'toast-container';
+                document.body.appendChild(el);
+                return el;
+            })();
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.style.cssText = 'background:var(--bg-tertiary); color:#fff; border:1px solid var(--border-color); padding:10px 16px; border-radius:6px; margin-top:8px; font-size:12px; font-family:"JetBrains Mono",monospace; box-shadow:0 4px 12px rgba(0,0,0,0.5); z-index:9999;';
+            t.innerText = msg;
+            c.appendChild(t);
+            setTimeout(function() { t.remove(); }, 3500);
+        }
+
+        async function syncFeedsLive() {
+            const btn = document.getElementById('syncFeedsBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span>⏳</span> SYNCING CISA KEV...';
+            }
+            try {
+                const base = getApiBase();
+                let res;
+                try {
+                    res = await fetch(base + '/api/cves/sync', { method: 'POST' });
+                } catch (e) {
+                    res = await fetch('http://' + (window.location.hostname || 'localhost') + ':3333/api/cves/sync', { method: 'POST' });
+                }
+                const data = await res.json();
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<span>🔄</span> SYNC LIVE CISA KEV';
+                }
+                toast(data.message || 'Synced CISA KEV feed.');
+                loadCveFeed();
+            } catch (err) {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<span>🔄</span> SYNC LIVE CISA KEV';
+                }
+                toast('Sync failed: ' + err.message);
+            }
+        }
+
+        // Delegate Clicks for Card Modal and Sweep Buttons
+        document.addEventListener('click', function(ev) {
+            const sweepBtn = ev.target && ev.target.closest ? ev.target.closest('.btn-sweep') : null;
+            if (sweepBtn) {
+                ev.stopPropagation();
+                const cve = sweepBtn.getAttribute('data-cve');
+                toast('Launching targeted probe for ' + cve + '...');
+                window.location.href = 'arsenal.html';
+                return;
+            }
+
+            const customSweepBtn = ev.target && ev.target.closest ? ev.target.closest('.btn-custom-sweep') : null;
+            if (customSweepBtn) {
+                ev.stopPropagation();
+                const cve = customSweepBtn.getAttribute('data-cve');
+                toast('Dispatching targeted exploit audit for ' + cve + '...');
+                window.location.href = 'arsenal.html';
+                return;
+            }
+
+            const nvdLink = ev.target && ev.target.closest ? ev.target.closest('a') : null;
+            if (nvdLink) {
+                ev.stopPropagation();
+                return;
+            }
+
+            const card = ev.target && ev.target.closest ? ev.target.closest('.cve-card') : null;
+            if (card) {
+                const cveId = card.getAttribute('data-cve');
+                if (cveId) openCveModal(cveId);
+            }
+        });
+
+        // Initialize API health, theme, egress IP, and CVE feeds
+        function initPage() {
+            t3mpTheme.init();
+            T3MP3ST_API.checkHealth();
+            refreshEgressIp(false);
+            loadCveFeed();
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initPage);
+        } else {
+            initPage();
+        }
+
+        setInterval(() => T3MP3ST_API.checkHealth(), 10000);
+        setTimeout(() => refreshEgressIp(false), 1500);
+        setInterval(() => refreshEgressIp(false), 30000);
+    </script>
+    <script src="embed.js"></script>
+</body>
+</html>

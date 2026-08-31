@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+// (shebang removed: breaks vitest/esbuild transform; invoke via "node scripts/mobile-static-bench.mjs")
 // mobile-static-bench.mjs — the Mobile loadout's static-analysis detector + benchmark.
 //
 // Ships a REAL built-in ruleset (Android manifest misconfigurations + hardcoded-secret / cleartext

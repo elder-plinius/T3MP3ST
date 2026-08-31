@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+// (shebang removed: breaks vitest/esbuild transform; invoke via "node scripts/binary-vuln-bench.mjs")
 // binary-vuln-bench.mjs — the Binary/RE loadout's decompiled-output vulnerability detector + benchmark.
 //
 // Ships a built-in ruleset for dangerous patterns in DECOMPILED / disassembled output (the pseudocode

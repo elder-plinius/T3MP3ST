@@ -1,6 +1,6 @@
 {
   "name": "t3mp3st",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Tactical Execution Multi-agent Platform for Elite Security Testing",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

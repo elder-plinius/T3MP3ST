@@ -613,6 +613,17 @@ export interface CommandEvents {
   'operator:spawned': { id: string; archetype: OperatorArchetype };
   'operator:burned': { id: string };
   'finding:discovered': { finding: Finding; operatorId: string };
+  /** A task finished — carries the tool-level results so the server can record every
+   *  scan output into the Evidence Vault (by domain) while the mission runs. */
+  'task:completed': {
+    operatorId: string;
+    callsign: string;
+    archetype: string;
+    taskName?: string;
+    success: boolean;
+    summary: string;
+    toolResults: Array<{ toolName: string; ok: boolean; output: string; argsHint: string }>;
+  };
   'credential:harvested': { credential: Credential; operatorId: string };
   'target:owned': { target: Target; operatorId: string };
   'detection:triggered': DetectionEvent;

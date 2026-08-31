@@ -8,9 +8,11 @@
 
 import { EventEmitter } from 'eventemitter3';
 import type { LLMBackbone } from '../llm/index.js';
+import type { ChainSummarizer } from '../llm/chain-summary.js';
 import type { Arsenal } from '../arsenal/index.js';
 import {
   ToolError,
+  ToolErrorCategory,
 } from '../types/index.js';
 import type {
   LLMMessage,
@@ -22,6 +24,7 @@ import type {
   Target,
   Task,
 } from '../types/index.js';
+import { ExecutionMonitor, formatEnhancedToolResponse, performMentor, fixToolCallArgs } from './monitor.js';
 
 // =============================================================================
 // TYPES
@@ -42,6 +45,14 @@ export interface AgentLoopOptions {
   maxToolOutputLength?: number;
   /** Max concurrent tool executions per LLM response (default: 5) */
   maxConcurrency?: number;
+  /** Execution monitor: past call thresholds, a "mentor" LLM pass reviews the tool result (default: off) */
+  executionMonitor?: ExecutionMonitor | null;
+  /** Bounded LLM retries to repair tool-call args after a validation_error (0 = off, pentagi: 3) */
+  maxArgFixRetries?: number;
+  /** Context summarizer — compresses old turns when the chain grows past the byte threshold (default: off) */
+  chainSummarizer?: ChainSummarizer | null;
+  /** Approximate chain byte size that triggers summarization (default: 100_000) */
+  chainSummarizeThresholdBytes?: number;
 }
 
 // =============================================================================
@@ -110,6 +121,9 @@ export interface AgentEvents {
   'agent:tool_call': { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
   'agent:tool_result': { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'agent:thinking': { content: string };
+  /** Emitted the moment tool findings are collected — before task completion — so a
+   * backstop-reaped task still persists its discoveries. */
+  'agent:findings': { findings: AgentResult['findings'] };
   'agent:complete': AgentResult;
   'agent:error': { error: Error; step: number };
 }
@@ -135,6 +149,10 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       verboseToolOutput: options?.verboseToolOutput ?? true,
       maxToolOutputLength: options?.maxToolOutputLength ?? 4000,
       maxConcurrency: Math.max(1, options?.maxConcurrency ?? 5),
+      executionMonitor: options?.executionMonitor ?? null,
+      maxArgFixRetries: Math.max(0, options?.maxArgFixRetries ?? 0),
+      chainSummarizer: options?.chainSummarizer ?? null,
+      chainSummarizeThresholdBytes: Math.max(1024, options?.chainSummarizeThresholdBytes ?? 100_000),
     };
   }
 
@@ -146,7 +164,9 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     systemPrompt: string,
     target?: Target,
     sourceContext?: string,
-    sharedContext?: string
+    sharedContext?: string,
+    priorScanNotes?: string,
+    missionFocus?: string
   ): Promise<AgentResult> {
     const startTime = Date.now();
     const steps: AgentStep[] = [];
@@ -167,7 +187,7 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     // Build initial messages
     const messages: LLMMessage[] = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext, sharedContext) },
+      { role: 'user', content: this.buildTaskPrompt(task, target, toolDefs, sourceContext, sharedContext, priorScanNotes, missionFocus) },
     ];
 
     const bootstrapCall = this.getLocalReconBootstrap(task, target, toolDefs);
@@ -181,9 +201,11 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
 
       if (toolStep.toolResult?.findings) {
         const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
-        for (const tf of toolStep.toolResult.findings) {
-          allFindings.push({ ...tf, provenance: 'tool', toolName: bootstrapCall.name, toolOutput: out || tf.details });
-        }
+        const fresh = toolStep.toolResult.findings.map((tf) => ({ ...tf, provenance: 'tool' as const, toolName: bootstrapCall.name, toolOutput: out || tf.details }));
+        allFindings.push(...fresh);
+        // Emit immediately — a task reaped by the backstop must not lose what its
+        // tools already discovered (findings used to land only on task completion).
+        if (fresh.length) this.emit('agent:findings', { findings: fresh });
       }
 
       messages.push({
@@ -206,10 +228,13 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
     for (let i = 0; i < this.options.maxIterations; i++) {
       try {
         // Ask the LLM what to do next
+        const turnStart = Date.now();
         const response = await this.llm.chatWithTools(messages, toolDefs, {
           maxTokens: 4096,
           temperature: 0.3, // Lower temperature for tool-using tasks
         });
+        // Per-turn telemetry: where the time actually goes on slow routed models.
+        console.log(`[T3MP3ST] agent turn ${i + 1}/${this.options.maxIterations} — llm ${((Date.now() - turnStart) / 1000).toFixed(1)}s — ${response.toolCalls?.length || 0} tool call(s)`);
 
         tokensUsed += response.usage?.totalTokens || 0;
 
@@ -274,13 +299,36 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
             // Collect findings — tag with REAL tool provenance (the output that backs them)
             if (toolStep.toolResult?.findings) {
               const out = String(toolStep.toolResult.output ?? '').slice(0, 4000);
-              for (const tf of toolStep.toolResult.findings) {
-                allFindings.push({ ...tf, provenance: 'tool', toolName: toolCall.name, toolOutput: out || tf.details });
-              }
+              const fresh = toolStep.toolResult.findings.map((tf) => ({ ...tf, provenance: 'tool' as const, toolName: toolCall.name, toolOutput: out || tf.details }));
+              allFindings.push(...fresh);
+              // Incremental: record what the tool found NOW, not at task completion —
+              // a timeout-reaped task keeps its discoveries in the vault.
+              if (fresh.length) this.emit('agent:findings', { findings: fresh });
             }
 
             // Build tool result content
-            const resultContent = this.formatToolResult(toolStep.toolResult);
+            let resultContent = this.formatToolResult(toolStep.toolResult);
+
+            // Execution monitor (opt-in): after crossing call thresholds, have a
+            // "mentor" LLM pass review the result and wrap it around the original.
+            // Failure-soft: mentor errors keep the raw result (pentagi parity).
+            const monitor = this.options.executionMonitor;
+            if (monitor && toolStep.toolResult?.success) {
+              try {
+                if (monitor.shouldInvokeMentor(toolCall.name)) {
+                  const mentor = await performMentor(this.llm, {
+                    taskDescription: task.description,
+                    toolName: toolCall.name,
+                    toolArgs: toolCall.arguments,
+                    toolResult: resultContent,
+                  });
+                  resultContent = formatEnhancedToolResponse(resultContent, mentor);
+                  monitor.reset();
+                }
+              } catch {
+                // mentor unavailable — continue with the raw result
+              }
+            }
 
             // Add tool result to context
             messages.push({
@@ -300,6 +348,26 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
               content: '[System: 4 iterations with no new findings. Either pursue a GENUINELY different vector/tool/argument now, or produce your final debrief if the surface is exhausted. Do not keep repeating the current approach.]',
             });
             noProgress = 0;
+          }
+
+          // Context summarizer (opt-in): when the chain grows past the byte threshold,
+          // compress old turns. Failure-soft — summarizer errors keep the full chain.
+          if (this.options.chainSummarizer) {
+            try {
+              const approxBytes = messages.reduce(
+                (n, m) => n + m.content.length + (m.toolCalls ? JSON.stringify(m.toolCalls).length : 0),
+                0
+              );
+              if (approxBytes > this.options.chainSummarizeThresholdBytes) {
+                const summarized = await this.options.chainSummarizer.summarizeChain(messages);
+                if (summarized.length > 0 && summarized.length < messages.length) {
+                  messages.length = 0;
+                  messages.push(...summarized);
+                }
+              }
+            } catch {
+              // best-effort compression — keep the full chain on failure
+            }
           }
         } else {
           // LLM finished reasoning — this is the final answer.
@@ -436,6 +504,57 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
         parameters: toolCall.arguments,
       });
     } catch (err) {
+      // Arg reflector (opt-in): on a validation failure, ask the LLM to repair the
+      // arguments (bounded retries) and re-execute before giving up (pentagi parity).
+      if (
+        err instanceof ToolError &&
+        err.category === ToolErrorCategory.ValidationError &&
+        this.options.maxArgFixRetries > 0
+      ) {
+        const def = this.arsenal
+          .getToolDefinitions(
+            this.options.toolCategories.length ? this.options.toolCategories : undefined,
+            this.options.tools.length ? this.options.tools : undefined
+          )
+          .find((t) => t.name === toolCall.name);
+        let repaired: Record<string, unknown> | null = null;
+        try {
+          repaired = await fixToolCallArgs(
+            this.llm,
+            {
+              toolName: toolCall.name,
+              argsJson: JSON.stringify(toolCall.arguments || {}),
+              schema: def?.parameters,
+              error: err.message,
+            },
+            this.options.maxArgFixRetries
+          );
+        } catch {
+          // reflector unavailable — fall through to the error result
+        }
+        if (repaired) {
+          try {
+            toolResult = await this.arsenal.execute(toolCall.name, {
+              target,
+              parameters: repaired,
+            });
+            this.emit('agent:tool_call', { name: toolCall.name, args: repaired, source });
+            if (!toolStepHasError(toolResult)) {
+              this.emit('agent:tool_result', { name: toolCall.name, result: toolResult, source });
+              return {
+                iteration,
+                type: 'tool_call',
+                toolName: toolCall.name,
+                toolArgs: repaired,
+                toolResult,
+                timestamp: Date.now(),
+              };
+            }
+          } catch {
+            // repaired args also failed — fall through to the error result
+          }
+        }
+      }
       // ToolError carries a category — use it for structured feedback to the LLM.
       if (err instanceof ToolError) {
         toolResult = {
@@ -483,13 +602,21 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   /**
    * Build the initial task prompt with target context and prior intel
    */
-  private buildTaskPrompt(task: Task, target?: Target, tools?: LLMToolDefinition[], sourceContext?: string, sharedContext?: string): string {
+  private buildTaskPrompt(task: Task, target?: Target, tools?: LLMToolDefinition[], sourceContext?: string, sharedContext?: string, priorScanNotes?: string, missionFocus?: string): string {
     const parts: string[] = [];
 
     parts.push(`## MISSION TASK: ${task.name}`);
     parts.push(`**Phase**: ${task.phase} | **Priority**: ${task.priority}/10`);
     parts.push(`\n### Objective`);
     parts.push(task.description);
+
+    // Operator-selected mission focus (from the War Room SITREP). Optional + backward-compatible:
+    // absent/empty keeps the normal balanced kill-chain prompt. When present, the operator still runs
+    // the full chain but is told to PRIORITIZE driving toward this phase — it does not skip earlier work.
+    if (missionFocus && missionFocus.trim().length > 0) {
+      parts.push(`\n### Priority focus (operator-selected)`);
+      parts.push(`The operator has flagged **${missionFocus.trim()}** as the priority for this mission. Keep running the full kill chain, but bias your effort toward reaching and advancing the ${missionFocus.trim()} phase — do the minimum upstream work needed to unlock it, then push there.`);
+    }
 
     // White-box source excerpt (security-prioritized) — provided by the large-repo
     // analysis pipeline. Optional + backward-compatible: absent/empty keeps the
@@ -508,6 +635,12 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
       parts.push(`\n### Shared intel from the pack (your teammates' live board)`);
       parts.push(`Other operators are working this same target in parallel. Below is the current lead-board — tool-verified leads, who has claimed what, and open surface. Build on verified leads, do not duplicate a teammate's claimed work, and chase the hottest UNCLAIMED lead that fits your role.`);
       parts.push(sharedContext);
+    }
+
+    if (priorScanNotes && priorScanNotes.trim().length > 0) {
+      parts.push(`\n### Prior scan notes for this target (durable — check before you enumerate)`);
+      parts.push(`The following notes were left by earlier scans of the SAME target. Use them to skip already-mapped surface and continue the hunt from where prior work left off — do NOT re-probe what is already covered.`);
+      parts.push(priorScanNotes);
     }
 
     if (target) {
@@ -655,6 +788,10 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
 // FACTORY
 // =============================================================================
 
+function toolStepHasError(result: ToolResult): boolean {
+  return !result.success && Boolean(result.error);
+}
+
 export function createAgentLoop(
   llm: LLMBackbone,
   arsenal: Arsenal,
@@ -677,3 +814,7 @@ export async function runAgentTask(
   const agent = createAgentLoop(llm, arsenal, options);
   return agent.run(task, systemPrompt, target);
 }
+
+// Execution monitor + mentor + arg reflector (pentagi port)
+export { ExecutionMonitor, formatEnhancedToolResponse, performMentor, fixToolCallArgs } from './monitor.js';
+export type { ExecutionMonitorOptions, MentorContext, ArgFixRequest } from './monitor.js';

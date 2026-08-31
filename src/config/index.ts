@@ -144,11 +144,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
   apiKeys: {},
 
   defaultProvider: 'openrouter',
-  defaultModel: 'anthropic/claude-opus-4.8',
+  defaultModel: 'z-ai/glm-5.3-flash',
 
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'anthropic/claude-opus-4.8',
+    defaultModel: 'z-ai/glm-5.3-flash',
     siteUrl: 'https://github.com/tempest',
     siteName: 'T3MP3ST',
   },
@@ -222,7 +222,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
 
   maxTokens: 4096,
   temperature: 0.7,
-  timeout: 60000,
+  // Hard total cap for NON-streamed completions. Frontier models routed via
+  // OpenRouter routinely need >60s (and sometimes >120s) for a single agent
+  // turn — a 60s cap aborted legitimately-working requests, which surfaced to
+  // the operator as "internal processing timeout" during recon.
+  timeout: 300000,
 
   opsec: {
     level: 'covert',
@@ -297,149 +301,241 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   ],
 
   openrouter: [
-    // Anthropic (Feb 2026)
+    // ═══ CHINA — prioritized ═══
     {
-      id: 'anthropic/claude-opus-4.8',
-      name: 'Claude Opus 4.8',
-      provider: 'Anthropic',
-      contextWindow: 200000,
+      id: "z-ai/glm-5.3-flash",
+      name: "GLM 5.3 Flash",
+      provider: "Z.AI",
+      contextWindow: 203000,
       maxOutput: 32000,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'complex-tasks', 'agents', 'tools'],
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools", "fast"],
     },
     {
-      id: 'anthropic/claude-sonnet-4.5',
-      name: 'Claude Sonnet 4.5',
-      provider: 'Anthropic',
-      contextWindow: 200000,
+      id: "z-ai/glm-5.3",
+      name: "GLM 5.3",
+      provider: "Z.AI",
+      contextWindow: 203000,
+      maxOutput: 32000,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "deepseek/deepseek-v4-pro",
+      name: "DeepSeek V4 Pro",
+      provider: "DeepSeek",
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ["reasoning", "code", "analysis", "complex-tasks", "agents", "tools"],
+    },
+    {
+      id: "deepseek/deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
+      provider: "DeepSeek",
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ["reasoning", "code", "analysis", "tools"],
+    },
+    {
+      id: "qwen/qwen3.8-max",
+      name: "Qwen3.8 Max",
+      provider: "Alibaba Qwen",
+      contextWindow: 262144,
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "qwen/qwen3.8-flash",
+      name: "Qwen3.8 Flash",
+      provider: "Alibaba Qwen",
+      contextWindow: 262144,
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "fast", "tools"],
+    },
+    {
+      id: "moonshotai/kimi-k3",
+      name: "Kimi K3",
+      provider: "Moonshot",
+      contextWindow: 262144,
       maxOutput: 16384,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'agents', 'tools'],
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
     },
     {
-      id: 'anthropic/claude-haiku-4.5',
-      name: 'Claude Haiku 4.5',
-      provider: 'Anthropic',
-      contextWindow: 200000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'fast', 'tools'],
-    },
-    {
-      id: 'anthropic/claude-sonnet-4',
-      name: 'Claude Sonnet 4',
-      provider: 'Anthropic',
-      contextWindow: 200000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    // OpenAI
-    {
-      id: 'openai/gpt-4o',
-      name: 'GPT-4o',
-      provider: 'OpenAI',
-      contextWindow: 128000,
-      maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast'],
-    },
-    {
-      id: 'openai/o1',
-      name: 'o1',
-      provider: 'OpenAI',
-      contextWindow: 200000,
-      maxOutput: 100000,
-      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks'],
-    },
-    // Google (Dec 2025)
-    {
-      id: 'google/gemini-3.1-pro-preview',
-      name: 'Gemini 3 Pro',
-      provider: 'Google',
+      id: "minimax/minimax-m3",
+      name: "MiniMax M3",
+      provider: "MiniMax",
       contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'multimodal'],
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
     },
     {
-      id: 'google/gemini-3-flash-preview',
-      name: 'Gemini 3 Flash',
-      provider: 'Google',
-      contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast'],
+      id: "tencent/hy4-preview",
+      name: "Hunyuan 4",
+      provider: "Tencent",
+      contextWindow: 262144,
+      maxOutput: 16384,
+      capabilities: ["reasoning", "code", "analysis", "tools"],
     },
     {
-      id: 'google/gemini-2.5-flash',
-      name: 'Gemini 2.5 Flash',
-      provider: 'Google',
-      contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    // xAI (Dec 2025)
-    {
-      id: 'x-ai/grok-4',
-      name: 'Grok 4',
-      provider: 'xAI',
-      contextWindow: 256000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    {
-      id: 'x-ai/grok-4-fast',
-      name: 'Grok 4 Fast',
-      provider: 'xAI',
-      contextWindow: 2000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'fast'],
-    },
-    {
-      id: 'x-ai/grok-4.1-fast',
-      name: 'Grok 4.1 Fast',
-      provider: 'xAI',
-      contextWindow: 2000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
-    // Z.AI (Dec 2025)
-    {
-      id: 'z-ai/glm-4.7',
-      name: 'GLM 4.7',
-      provider: 'Z.AI',
+      id: "z-ai/glm-4.7",
+      name: "GLM 4.7",
+      provider: "Z.AI",
       contextWindow: 203000,
       maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents'],
+      capabilities: ["reasoning", "code", "analysis", "agents"],
     },
-    // Meta
+    // ═══ FREE — no cost via OpenRouter (China first) ═══
     {
-      id: 'meta-llama/llama-3.3-70b',
-      name: 'Llama 3.3 70B',
-      provider: 'Meta',
+      id: "z-ai/glm-5.2:free",
+      name: "GLM 5.2 · Free",
+      provider: "Z.AI",
+      contextWindow: 203000,
+      maxOutput: 32000,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools", "free"],
+    },
+    {
+      id: "minimax/minimax-m3:free",
+      name: "MiniMax M3 · Free",
+      provider: "MiniMax",
+      contextWindow: 1000000,
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools", "free"],
+    },
+    {
+      id: "inclusionai/ling-3.0-flash-fin:free",
+      name: "Ling 3.0 Flash · Free",
+      provider: "InclusionAI",
       contextWindow: 131072,
-      maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'analysis'],
-    },
-    // DeepSeek (Jul 2026 — V4)
-    {
-      id: 'deepseek/deepseek-v4-pro',
-      name: 'DeepSeek V4 Pro',
-      provider: 'DeepSeek',
-      contextWindow: 1000000,
-      maxOutput: 384000,
-      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
+      maxOutput: 16384,
+      capabilities: ["reasoning", "code", "analysis", "fast", "free"],
     },
     {
-      id: 'deepseek/deepseek-v4-flash',
-      name: 'DeepSeek V4 Flash',
-      provider: 'DeepSeek',
-      contextWindow: 1000000,
-      maxOutput: 384000,
-      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+      id: "google/gemma-4-31b-it:free",
+      name: "Gemma 4 31B · Free",
+      provider: "Google",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "free"],
     },
-    // Mistral
     {
-      id: 'mistralai/mistral-large',
-      name: 'Mistral Large',
-      provider: 'Mistral',
+      id: "nvidia/nemotron-3-super-120b-a12b:free",
+      name: "Nemotron 3 Super · Free",
+      provider: "NVIDIA",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "free"],
+    },
+    // ═══ USA ═══
+    {
+      id: "anthropic/claude-opus-4.8",
+      name: "Claude Opus 4.8",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 32000,
+      capabilities: ["reasoning", "code", "analysis", "vision", "complex-tasks", "agents", "tools"],
+    },
+    {
+      id: "anthropic/claude-sonnet-4.5",
+      name: "Claude Sonnet 4.5",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 16384,
+      capabilities: ["reasoning", "code", "analysis", "vision", "agents", "tools"],
+    },
+    {
+      id: "anthropic/claude-haiku-4.5",
+      name: "Claude Haiku 4.5",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "fast", "tools"],
+    },
+    {
+      id: "anthropic/claude-sonnet-4",
+      name: "Claude Sonnet 4",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "openai/gpt-4o",
+      name: "GPT-4o",
+      provider: "OpenAI",
       contextWindow: 128000,
       maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'analysis'],
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
+    },
+    {
+      id: "openai/o1",
+      name: "o1",
+      provider: "OpenAI",
+      contextWindow: 200000,
+      maxOutput: 100000,
+      capabilities: ["reasoning", "code", "analysis", "complex-tasks"],
+    },
+    {
+      id: "google/gemini-3.1-pro-preview",
+      name: "Gemini 3 Pro",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "multimodal"],
+    },
+    {
+      id: "google/gemini-3-flash-preview",
+      name: "Gemini 3 Flash",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
+    },
+    {
+      id: "google/gemini-2.5-flash",
+      name: "Gemini 2.5 Flash",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "x-ai/grok-4",
+      name: "Grok 4",
+      provider: "xAI",
+      contextWindow: 256000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "x-ai/grok-4-fast",
+      name: "Grok 4 Fast",
+      provider: "xAI",
+      contextWindow: 2000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "fast"],
+    },
+    {
+      id: "x-ai/grok-4.1-fast",
+      name: "Grok 4.1 Fast",
+      provider: "xAI",
+      contextWindow: 2000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "meta-llama/llama-3.3-70b",
+      name: "Llama 3.3 70B",
+      provider: "Meta",
+      contextWindow: 131072,
+      maxOutput: 4096,
+      capabilities: ["reasoning", "code", "analysis"],
+    },
+    // ═══ EUROPE / OTHER ═══
+    {
+      id: "mistralai/mistral-large",
+      name: "Mistral Large",
+      provider: "Mistral",
+      contextWindow: 128000,
+      maxOutput: 4096,
+      capabilities: ["reasoning", "code", "analysis"],
     },
   ],
   anthropic: [
@@ -747,13 +843,20 @@ class ConfigManager {
   private loadEnvVariables(): void {
     if (this.envLoaded) return;
 
-    // Load only T3MP3ST-owned/home env files. Do NOT read process.cwd()/.env:
-    // operators often run T3MP3ST inside target repos, and importing that repo's
-    // secrets would contaminate this process with unrelated credentials.
-    const envPaths = [
-      join(homedir(), '.t3mp3st', '.env'),
-      join(homedir(), '.env'),
-    ];
+    // Load T3MP3ST-owned env files. In dev the repo's .env is the file the
+    // Settings page writes (so a just-saved key is visible without chasing
+    // homedir). In prod / installed use, the homedir file wins — same
+    // locations the Settings→.env bridge writes to. Never read a target repo's
+    // .env when cwd is a hunt target; the guard is: repo .env only if CWD
+    // looks like the T3MP3ST package itself (package.json present).
+    const repoEnv = join(process.cwd(), '.env');
+    const homedirEnv = join(homedir(), '.t3mp3st', '.env');
+    const homeEnv = join(homedir(), '.env');
+    // Order: repo .env first in dev (authoritative for Settings), then
+    // homedir fallbacks. Real env vars still win (process.env[key]===undefined gate).
+    const envPaths: string[] = [];
+    try { if (existsSync(join(process.cwd(), 'package.json'))) envPaths.push(repoEnv); } catch {}
+    envPaths.push(homedirEnv, homeEnv);
 
     let envProvider: string | undefined;
 
@@ -1089,7 +1192,7 @@ class ConfigManager {
    * authorization context is restated — honest escalation, no jailbreak prompts
    * (see LLMBackbone.chat).
    */
-  private buildFallbackChain(primary: LLMProvider): FallbackEntry[] {
+  buildFallbackChain(primary: LLMProvider): FallbackEntry[] {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];

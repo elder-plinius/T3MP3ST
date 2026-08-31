@@ -21,7 +21,7 @@ import {
 } from '../types/index.js';
 import type { LLMBackbone } from '../llm/index.js';
 import type { Arsenal } from '../arsenal/index.js';
-import type { AgentLoop } from '../agent/index.js';
+import type { AgentLoop, AgentResult } from '../agent/index.js';
 import type { ToolResult } from '../types/index.js';
 import type { Target } from '../types/index.js';
 import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
@@ -282,6 +282,10 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   private credentials: Credential[] = [];
   /** White-box source excerpt (security-prioritized), set by TempestCommand.setWhiteboxSource */
   private whiteboxSource: string = '';
+  /** Prior per-target scan notes (durable) — threaded into the agent prompt so infiltration continues prior work. */
+  private priorScanNotes: string = '';
+  /** Operator-selected mission focus phase (from the War Room SITREP) — biases effort toward one phase. */
+  private missionFocus: string = '';
 
   constructor(
     callsign: string,
@@ -428,6 +432,16 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.board = board;
   }
 
+  /** Set persistent prior scan notes for the current target so the agent resumes instead of re-probing. */
+  setPriorScanNotes(notes: string): void {
+    this.priorScanNotes = String(notes || '');
+  }
+
+  /** Set the operator-selected mission focus phase — biases the agent toward one kill-chain phase. */
+  setMissionFocus(phase: string): void {
+    this.missionFocus = String(phase || '');
+  }
+
   /**
    * Execute a task with an optional target context
    */
@@ -445,36 +459,17 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       const onToolResult = ({ name, result, source }: { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' }): void => {
         this.emit('agent:tool_result', { task, name, result, source });
       };
-      const canForwardAgentEvents =
-        typeof this.agentLoop.on === 'function' &&
-        typeof this.agentLoop.off === 'function';
-      if (canForwardAgentEvents) {
-        this.agentLoop.on('agent:thinking', onThinking);
-        this.agentLoop.on('agent:tool_call', onToolCall);
-        this.agentLoop.on('agent:tool_result', onToolResult);
-      }
 
-      let result;
-      try {
-        // [Phase-2] Register as live on the board and pull the shared situation report so this
-        // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
-        this.board?.heartbeat(this.id, 'hunting', task.name);
-        const sharedContext = this.board?.situationReport(this.id);
-        result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext);
-      } finally {
-        if (canForwardAgentEvents) {
-          this.agentLoop.off('agent:thinking', onThinking);
-          this.agentLoop.off('agent:tool_call', onToolCall);
-          this.agentLoop.off('agent:tool_result', onToolResult);
-        }
-      }
-
-      // Convert agent findings to operator findings.
-      // PROVENANCE-HONEST: only a tool-backed finding gets tool-output evidence (the raw
-      // output that produced it). A model-asserted finding carries NO fabricated evidence —
-      // recordFinding's gate then refuses to mark it verified. The old code laundered the
-      // model's prose summary as `type:'output'` for EVERY finding, which passed the gate.
-      for (const finding of result.findings) {
+      // INCREMENTAL FINDING RECORDING. The old flow recorded findings only when the
+      // agent loop RETURNED — so a task reaped by the dispatch backstop (or any
+      // mid-run crash) silently lost everything its tools had discovered. Now every
+      // 'agent:findings' event is recorded into the vault the moment it arrives;
+      // the completion pass below skips anything already recorded (by object
+      // identity — the loop emits the same references it later returns).
+      const recordedNow = new Set<AgentResult['findings'][number]>();
+      const recordAgentFinding = (finding: AgentResult['findings'][number]): void => {
+        if (recordedNow.has(finding)) return;
+        recordedNow.add(finding);
         const toolBacked = finding.provenance === 'tool';
         this.recordFinding({
           id: `finding-${randomUUID()}`,
@@ -498,6 +493,41 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           remediation: finding.remediation,
           discoveredAt: Date.now(),
         });
+      };
+      const onFindings = ({ findings }: { findings: AgentResult['findings'] }): void => {
+        for (const f of findings) recordAgentFinding(f);
+      };
+
+      const canForwardAgentEvents =
+        typeof this.agentLoop.on === 'function' &&
+        typeof this.agentLoop.off === 'function';
+      if (canForwardAgentEvents) {
+        this.agentLoop.on('agent:thinking', onThinking);
+        this.agentLoop.on('agent:tool_call', onToolCall);
+        this.agentLoop.on('agent:tool_result', onToolResult);
+        this.agentLoop.on('agent:findings', onFindings);
+      }
+
+      let result;
+      try {
+        // [Phase-2] Register as live on the board and pull the shared situation report so this
+        // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
+        this.board?.heartbeat(this.id, 'hunting', task.name);
+        const sharedContext = this.board?.situationReport(this.id);
+        result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext, this.priorScanNotes, this.missionFocus);
+      } finally {
+        if (canForwardAgentEvents) {
+          this.agentLoop.off('agent:thinking', onThinking);
+          this.agentLoop.off('agent:tool_call', onToolCall);
+          this.agentLoop.off('agent:tool_result', onToolResult);
+          this.agentLoop.off('agent:findings', onFindings);
+        }
+      }
+
+      // Completion pass: record only what the incremental path hasn't already
+      // stored (model-asserted debrief findings, limit-summary findings).
+      for (const finding of result.findings) {
+        recordAgentFinding(finding);
       }
 
       return {

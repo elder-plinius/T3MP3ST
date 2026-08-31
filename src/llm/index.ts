@@ -268,7 +268,7 @@ class OpenRouterAdapter implements LLMProviderAdapter {
         'X-Title': siteName,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: AbortSignal.timeout(this.config.timeout || 300000),
     });
 
     if (!response.ok) {
@@ -526,7 +526,7 @@ class AnthropicAdapter implements LLMProviderAdapter {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: AbortSignal.timeout(this.config.timeout || 300000),
     });
 
     if (!response.ok) {
@@ -652,7 +652,7 @@ class OpenAIAdapter implements LLMProviderAdapter {
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: AbortSignal.timeout(this.config.timeout || 300000),
     });
 
     if (!response.ok) {
@@ -979,6 +979,18 @@ class LocalAdapter implements LLMProviderAdapter {
       ? { model: this.config.model, messages: wireMessages, max_tokens: maxTokens, temperature, stream: false }
       : { model: this.config.model, messages: wireMessages, stream: false, options: { num_predict: maxTokens, temperature } };
 
+    // Ollama NATIVE wire only: ask the server to KEEP THE MODEL LOADED after the call.
+    // Ollama's default keep_alive is ~5 minutes — after that it unloads, and the next
+    // call pays the full cold load again (measured: 70s load for a 10GB model, i.e. the
+    // "LLM timing out on test" complaint was load time, not inference). 30m keeps
+    // back-to-back tests/missions warm; override with T3MP3ST_LOCAL_KEEP_ALIVE (e.g. '2h',
+    // or a negative/-1 to pin forever, 0 to restore unload-immediately). OpenAI-wire
+    // servers (llama.cpp/LM Studio) manage their own model residency — no field for it.
+    if (!openaiWire) {
+      const keepAlive = (process.env.T3MP3ST_LOCAL_KEEP_ALIVE || '30m').trim();
+      if (keepAlive) requestBody.keep_alive = keepAlive;
+    }
+
     if (tryNative && options?.tools) {
       requestBody.tools = openaiWire
         ? this.formatOpenAITools(options.tools)
@@ -990,7 +1002,8 @@ class LocalAdapter implements LLMProviderAdapter {
     // actually stops generation on the local server, instead of leaving it to grind through
     // the full response on a single-slot backend like llama.cpp while nothing is listening.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.timeout || 120000);
+    const requestTimeoutMs = this.config.timeout || 120000;
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     const externalSignal = options?.signal;
     const onExternalAbort = () => controller.abort();
     if (externalSignal) {
@@ -1098,7 +1111,11 @@ class LocalAdapter implements LLMProviderAdapter {
         );
       }
       if (controller.signal.aborted) {
-        throw new Error(externalSignal?.aborted ? 'Cancelled by operator' : 'Local LLM request timed out');
+        if (externalSignal?.aborted) throw new Error('Cancelled by operator');
+        throw new Error(
+          `Local LLM request timed out after ${Math.round(requestTimeoutMs / 1000)}s (model '${this.getModelName()}' at ${this.config.baseUrl}). ` +
+          `If Ollama doesn't serve that tag it auto-pulls it, which can take minutes — check the model name (Settings → Local model, or \`ollama cp\`/\`ollama pull\`) and server load.`
+        );
       }
       throw error;
     } finally {
@@ -1720,7 +1737,10 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
           const permanent = (error instanceof LLMApiError &&
             (error.status === 401 || error.status === 403 || error.status === 404)) ||
             !!options?.signal?.aborted ||
-            (isLocalProvider && classifyErrorKind(error as Error) === 'timeout');
+            (isLocalProvider && classifyErrorKind(error as Error) === 'timeout') ||
+            // A refused local backend won't heal on a 1s+2s retry either — advance to
+            // the next ladder hop (e.g. OpenRouter) instead of stalling in place.
+            (isLocalProvider && /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(String((error as Error).message)));
           if (permanent || attempt >= this.retryAttempts) break;
           let delayMs = this.retryDelayMs * Math.pow(2, attempt - 1);
           if (error instanceof LLMApiError && error.retryAfterMs) {
@@ -2019,3 +2039,21 @@ export type { LLMMessage, LLMResponse, LLMConfig, LLMToolDefinition, LLMToolCall
 export function __resetLocalAdapterCache(): void {
   LocalAdapter.__resetProbeCache();
 }
+
+// ChainAST + ChainSummary (pentagi pkg/cast + pkg/csum port)
+export {
+  ChainAST,
+  newChainAST,
+  sanitizeJSONControlChars,
+  SUMMARIZATION_TOOL_NAME,
+  FALLBACK_RESPONSE_CONTENT,
+  SUMMARIZED_CONTENT_PREFIX,
+} from './chain-ast.js';
+export type { BodyPairType, ChainSection, ChainHeader, ChainBodyPair } from './chain-ast.js';
+export {
+  SummarizerCache,
+  cachedSummarizeHandler,
+  createChainSummarizer,
+  generateSummary,
+} from './chain-summary.js';
+export type { SummarizeHandler, SummarizerConfig, ChainSummarizer, CacheOptions } from './chain-summary.js';

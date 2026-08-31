@@ -2,10 +2,10 @@
 # Docker Compose configuration for execution-based benchmarks
 #
 # Usage:
-#   docker-compose up -d                    # Start all challenges
-#   docker-compose up -d sqli-basic         # Start specific challenge
-#   docker-compose down                     # Stop all
-#   docker-compose logs -f sqli-basic       # View logs
+#   docker compose up -d                    # Start all challenges
+#   docker compose up -d sqli-basic         # Start specific challenge
+#   docker compose down                     # Stop all
+#   docker compose logs -f sqli-basic       # View logs
 
 version: '3.8'
 
@@ -25,7 +25,7 @@ services:
       - CTF_FLAG=T3MP3ST{sql1_l0g1n_byp4ss_ez}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -176,6 +176,69 @@ services:
       - "ctf.points=200"
 
   # ============================================================
+  # ATTACKER / TOOLING SIDECAR
+  # ============================================================
+
+  # Kali box with the offensive tooling (metasploit, hydra, nmap, seclists, …) on the CTF network.
+  # Lets you attack the challenge containers entirely in Docker — nothing installed on the host.
+  # Start it with:   docker compose up -d attacker
+  # Get a shell:     docker exec -it ctf_attacker bash
+  # From inside, reach challenges by service name, e.g.:  nmap sqli-basic  ·  msfconsole -q
+  attacker:
+    build:
+      context: ./docker/attacker
+      dockerfile: Dockerfile
+    container_name: ctf_attacker
+    # Not started with the default `up` — it's a heavy image; bring it up explicitly (or with --profile).
+    profiles: ["attacker"]
+    stdin_open: true
+    tty: true
+    # cap_add gives raw-socket tools (nmap -sS, etc.) what they need; drop if you want it locked down.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    networks:
+      - ctf-network
+    labels:
+      - "ctf.role=attacker"
+
+  # T3MP3ST server running INSIDE the tooling image (Kali + metasploit/hydra/nmap on PATH), so the
+  # arsenal can actually drive the post-ex/credential tools and the War Room capability check goes
+  # green. Build the `attacker` image first (it's the base):
+  #   docker compose --profile attacker build attacker
+  #   docker compose --profile attacker up -d t3mp3st
+  # Then open the containerized War Room at  http://localhost:3334/ui  (host 3334 → container 3333,
+  # so it never clashes with a T3MP3ST you're already running on the host's 3333).
+  t3mp3st:
+    build:
+      context: ..                                   # repo root — COPY . . pulls the project
+      dockerfile: ctf/docker/t3mp3st/Dockerfile
+    image: ctf-t3mp3st
+    container_name: ctf_t3mp3st
+    profiles: ["attacker"]
+    depends_on:
+      - attacker
+    # API keys come from the repo .env (openrouter/anthropic/…). The container has no host SOCKS
+    # proxy and no Supabase config, so override those two to sane in-container defaults.
+    env_file:
+      - ../.env
+    environment:
+      - DOCKER=true                                 # bind 0.0.0.0
+      - T3MP3ST_FULL_ARSENAL=1                       # arm the post-ex/credential drivers
+      - T3MP3ST_STATE_BACKEND=memory                # no Supabase inside the container
+      - TEMPEST_PROXY_URL=                          # no host 127.0.0.1:1080 SOCKS proxy in-container
+    ports:
+      - "3334:3333"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    networks:
+      - ctf-network
+    restart: unless-stopped
+    labels:
+      - "ctf.role=t3mp3st-server"
+
+  # ============================================================
   # INFRASTRUCTURE SERVICES
   # ============================================================
 
@@ -183,7 +246,7 @@ services:
   webhook-receiver:
     image: python:3.11-slim
     container_name: ctf_webhook_receiver
-    command: >
+    command: |
       python -c "
       from http.server import HTTPServer, BaseHTTPRequestHandler
       import json
@@ -215,6 +278,8 @@ services:
       "
     ports:
       - "9999:9999"
+    environment:
+      - PYTHONUNBUFFERED=1
     networks:
       - ctf-network
 
@@ -222,7 +287,7 @@ services:
   metadata-mock:
     image: python:3.11-slim
     container_name: ctf_metadata_mock
-    command: >
+    command: |
       python -c "
       from http.server import HTTPServer, BaseHTTPRequestHandler
       import os
@@ -255,6 +320,7 @@ services:
       "
     environment:
       - CTF_FLAG=T3MP3ST{ssrf_t0_cl0ud_m3t4d4t4}
+      - PYTHONUNBUFFERED=1
     networks:
       ctf-internal:
         ipv4_address: 169.254.169.254

@@ -1,0 +1,1790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <title>T3MP3ST — DFIR Incident Response & Post-Attack Resolution</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        try { var _t3mpTheme = localStorage.getItem('t3mp3st_theme'); if (_t3mpTheme && _t3mpTheme !== 'storm') document.documentElement.setAttribute('data-theme', _t3mpTheme); } catch (e) {}
+    </script>
+    <script>
+        (function () {
+            var embedded = false;
+            try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+            if (embedded && !/[?&]standalone/.test(location.search)) {
+                document.documentElement.classList.add('t3mp-embedded');
+                var s = document.createElement('style');
+                s.id = 't3mpEmbedGuard';
+                s.textContent = '.t3mp-embedded .sidebar{display:none!important}' +
+                    '.t3mp-embedded .main-content{margin-left:0!important;width:100%!important}' +
+                    '.t3mp-embedded .mobile-toggle{display:none!important}';
+                document.head.appendChild(s);
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --bg-primary: #071017;
+            --bg-secondary: #0b1822;
+            --bg-tertiary: #102534;
+            --bg-card: #0c1b25;
+            --border-color: #1e4053;
+            --border-glow: #2fffd255;
+            --text-primary: #e0e0e0;
+            --text-secondary: #9baeb8;
+            --text-muted: #6f8794;
+            --accent: #2fffd2;
+            --accent-dim: #17c7a8;
+            --brand: #00ff88;
+            --brand-rgb: 0, 255, 136;
+            --danger: #ff4757;
+            --danger-rgb: 255, 71, 87;
+            --warning: #ffa502;
+            --warning-rgb: 255, 165, 2;
+            --purple: #a855f7;
+            --cyan: #00d4ff;
+            --sidebar-width: 240px;
+        }
+
+        [data-theme="cyberpunk"] {
+            --bg-primary: #0a0612;
+            --bg-secondary: #140d24;
+            --bg-tertiary: #1e1338;
+            --bg-card: #170e2b;
+            --border-color: #3b1d6e;
+            --brand: #ff007f;
+            --brand-rgb: 255, 0, 127;
+            --accent: #00f0ff;
+        }
+        [data-theme="matrix"] {
+            --bg-primary: #020b05;
+            --bg-secondary: #05180b;
+            --bg-tertiary: #082612;
+            --bg-card: #061f0e;
+            --border-color: #0d4a20;
+            --brand: #00ff41;
+            --brand-rgb: 0, 255, 65;
+            --accent: #00ff41;
+        }
+        [data-theme="obsidian"] {
+            --bg-primary: #090a0f;
+            --bg-secondary: #10121a;
+            --bg-tertiary: #171a26;
+            --bg-card: #121520;
+            --border-color: #23283b;
+            --brand: #7952ff;
+            --brand-rgb: 121, 82, 255;
+            --accent: #9d7eff;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+        }
+
+        /* Sidebar Styles */
+        .sidebar {
+            width: var(--sidebar-width);
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0; bottom: 0; left: 0;
+            z-index: 1000;
+            overflow-y: auto;
+            transition: transform 0.2s ease;
+        }
+        .sidebar-header {
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .logo {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 16px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: 1.5px;
+        }
+        .logo-icon {
+            width: 24px;
+            height: 24px;
+            background: linear-gradient(135deg, var(--brand), var(--cyan));
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #000;
+            font-size: 14px;
+            font-weight: 900;
+        }
+        .version-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+            color: var(--text-muted);
+        }
+        .api-status-bar {
+            margin: 12px 16px;
+            padding: 8px 12px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .api-status-indicator { display: flex; align-items: center; gap: 6px; }
+        .api-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--brand);
+            box-shadow: 0 0 8px var(--brand);
+        }
+        .api-dot.llm-ready {
+            background: #00ff88;
+            box-shadow: 0 0 10px #00ff88, 0 0 20px #00ff88;
+            animation: pulseGlow 1.8s infinite;
+        }
+        @keyframes pulseGlow {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.8; }
+        }
+        .api-reconnect-btn {
+            background: none; border: none; color: var(--text-muted);
+            cursor: pointer; font-size: 12px;
+        }
+        .api-reconnect-btn:hover { color: #fff; }
+        .nav-section { padding: 8px 12px; }
+        .nav-label {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            padding: 12px 8px 6px 8px;
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            text-decoration: none;
+            transition: all 0.15s ease;
+            margin-bottom: 2px;
+        }
+        .nav-item:hover {
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+        }
+        .nav-item.active {
+            background: rgba(var(--brand-rgb), 0.12);
+            color: var(--brand);
+            font-weight: 600;
+            border-left: 3px solid var(--brand);
+        }
+        .nav-item .icon { font-size: 15px; }
+        .nav-item .badge {
+            margin-left: auto;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            background: radial-gradient(circle at 50% 0%, rgba(var(--brand-rgb), 0.03) 0%, transparent 60%);
+        }
+        .header {
+            height: 60px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            background-color: rgba(7, 16, 23, 0.85);
+            backdrop-filter: blur(8px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-title {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .header-actions { display: flex; align-items: center; gap: 12px; }
+
+        .page-content { padding: 24px; max-width: 1560px; width: 100%; margin: 0 auto; }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 3px; height: 100%;
+            background: var(--brand);
+        }
+        .stat-card.danger::after { background: var(--danger); }
+        .stat-card.warning::after { background: var(--warning); }
+        .stat-card.cyan::after { background: var(--cyan); }
+        .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 26px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        .stat-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+        }
+
+        /* DFIR Split Layout */
+        .dfir-layout {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 20px;
+            align-items: start;
+        }
+        @media (max-width: 1080px) {
+            .dfir-layout { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        /* Panel Cards */
+        .panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .panel-header {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(0,0,0,0.25);
+        }
+        .panel-title {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .panel-body { padding: 18px; }
+
+        /* Incident List */
+        .incident-filter-bar {
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: var(--bg-secondary);
+        }
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: rgba(0,0,0,0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0 10px;
+        }
+        .search-box input {
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            padding: 8px 6px;
+            width: 100%;
+            outline: none;
+        }
+        .filter-pills {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .filter-pill {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'JetBrains Mono', monospace;
+            transition: all 0.15s;
+        }
+        .filter-pill.active, .filter-pill:hover {
+            background: rgba(var(--brand-rgb), 0.15);
+            color: var(--brand);
+            border-color: var(--brand);
+        }
+
+        .incident-list {
+            max-height: 680px;
+            overflow-y: auto;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .incident-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 12px 14px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            position: relative;
+        }
+        .incident-item:hover {
+            border-color: rgba(var(--brand-rgb), 0.4);
+            transform: translateX(2px);
+        }
+        .incident-item.selected {
+            border-color: var(--brand);
+            background: rgba(var(--brand-rgb), 0.05);
+            box-shadow: 0 0 12px rgba(var(--brand-rgb), 0.15);
+        }
+        .incident-item-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+        .incident-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .badge-pill {
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .badge-CRITICAL { background: rgba(var(--danger-rgb), 0.2); color: var(--danger); border: 1px solid var(--danger); }
+        .badge-HIGH { background: rgba(var(--warning-rgb), 0.2); color: var(--warning); border: 1px solid var(--warning); }
+        .badge-MEDIUM { background: rgba(0, 212, 255, 0.2); color: var(--cyan); border: 1px solid var(--cyan); }
+        .badge-LOW { background: rgba(255,255,255,0.1); color: var(--text-secondary); border: 1px solid var(--border-color); }
+        
+        .badge-status-TRIAGE { background: rgba(var(--danger-rgb), 0.15); color: var(--danger); border: 1px solid var(--danger); }
+        .badge-status-CONTAINED { background: rgba(var(--warning-rgb), 0.15); color: var(--warning); border: 1px solid var(--warning); }
+        .badge-status-ERADICATED { background: rgba(var(--brand-rgb), 0.15); color: var(--brand); border: 1px solid var(--brand); }
+        .badge-status-RECOVERED, .badge-status-CLOSED { background: rgba(0, 212, 255, 0.15); color: var(--cyan); border: 1px solid var(--cyan); }
+
+        .incident-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #fff;
+            line-height: 1.35;
+            margin-bottom: 6px;
+        }
+        .incident-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        /* Detail Workspace */
+        .workspace-banner {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .banner-left h2 {
+            font-size: 16px;
+            color: #fff;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .banner-sub {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .banner-actions { display: flex; gap: 8px; }
+
+        /* Workspace Tabs */
+        .ws-tabs {
+            display: flex;
+            background: rgba(0,0,0,0.3);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 16px;
+            gap: 6px;
+            overflow-x: auto;
+        }
+        .ws-tab {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 12px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .ws-tab:hover { color: #fff; }
+        .ws-tab.active {
+            color: var(--brand);
+            border-bottom-color: var(--brand);
+            background: rgba(var(--brand-rgb), 0.05);
+        }
+
+        .tab-panel { display: none; padding: 20px; }
+        .tab-panel.active { display: block; }
+
+        /* Buttons */
+        .btn {
+            background: var(--brand);
+            color: #000;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: filter 0.15s;
+        }
+        .btn:hover { filter: brightness(1.15); }
+        .btn.danger { background: var(--danger); color: #fff; }
+        .btn.warning { background: var(--warning); color: #000; }
+        .btn.secondary {
+            background: rgba(255,255,255,0.06);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+        .btn.secondary:hover { background: rgba(255,255,255,0.12); }
+        .btn.sm { padding: 5px 10px; font-size: 11px; }
+
+        /* Playbooks Grid */
+        .playbooks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 14px;
+            margin-bottom: 20px;
+        }
+        .playbook-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: border-color 0.15s;
+        }
+        .playbook-card:hover { border-color: rgba(var(--brand-rgb), 0.4); }
+        .playbook-card-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .playbook-card-desc {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.45;
+            margin-bottom: 14px;
+            flex: 1;
+        }
+
+        /* Terminal Console */
+        .terminal-console {
+            background: #04080c;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: #2fffd2;
+            min-height: 160px;
+            max-height: 320px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            line-height: 1.5;
+            margin-top: 14px;
+        }
+
+        /* IOC Table */
+        .ioc-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .ioc-table th, .ioc-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .ioc-table th {
+            background: rgba(0,0,0,0.3);
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .ioc-table tr:hover td { background: rgba(255,255,255,0.02); }
+        .ioc-val {
+            font-family: 'JetBrains Mono', monospace;
+            color: #fff;
+            word-break: break-all;
+        }
+
+        /* Timeline */
+        .timeline-container {
+            position: relative;
+            padding-left: 24px;
+            margin-top: 14px;
+        }
+        .timeline-container::before {
+            content: '';
+            position: absolute;
+            top: 6px; bottom: 6px; left: 7px;
+            width: 2px;
+            background: var(--border-color);
+        }
+        .timeline-node {
+            position: relative;
+            margin-bottom: 18px;
+        }
+        .timeline-node::before {
+            content: '';
+            position: absolute;
+            left: -24px; top: 4px;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: var(--bg-card);
+            border: 2px solid var(--brand);
+        }
+        .timeline-node.danger::before { border-color: var(--danger); }
+        .timeline-node.warning::before { border-color: var(--warning); }
+        .timeline-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+        }
+        .timeline-time {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        .timeline-phase {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(var(--brand-rgb), 0.1);
+            color: var(--brand);
+            text-transform: uppercase;
+        }
+        .timeline-desc {
+            font-size: 12px;
+            color: var(--text-primary);
+            line-height: 1.45;
+        }
+        .timeline-evidence {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--cyan);
+            margin-top: 3px;
+        }
+
+        /* Report Preview */
+        .report-preview-box {
+            background: #04080c;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #d0d0d0;
+            max-height: 540px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        /* Modals */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(4, 12, 18, 0.85);
+            backdrop-filter: blur(6px);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-dialog {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 16px 48px rgba(0,0,0,0.85), 0 0 24px rgba(var(--brand-rgb), 0.2);
+            border-radius: 10px;
+            width: 100%;
+            max-width: 680px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: modalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.96) translateY(12px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0,0,0,0.35);
+        }
+        .modal-header h2 { font-size: 15px; color: #fff; font-weight: 700; }
+        .modal-close {
+            background: none; border: none; color: var(--text-muted);
+            font-size: 18px; cursor: pointer;
+        }
+        .modal-close:hover { color: #fff; }
+        .modal-body { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+        .modal-footer {
+            padding: 14px 20px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            background: rgba(0,0,0,0.25);
+        }
+
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+        .form-control {
+            background: rgba(0,0,0,0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: #fff;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            outline: none;
+        }
+        .form-control:focus { border-color: var(--brand); }
+        textarea.form-control { min-height: 80px; resize: vertical; }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 20px; right: 20px;
+            z-index: 3000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .toast {
+            background: var(--bg-card);
+            border: 1px solid var(--brand);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            padding: 10px 16px;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            animation: slideUp 0.2s ease;
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <div class="logo-icon">⚡</div>
+                T3MP3ST
+                <span class="version-badge">v2.0</span>
+            </div>
+        </div>
+
+        <div class="api-status-bar" id="apiStatusBar">
+            <div class="api-status-indicator">
+                <span class="api-dot" id="apiDot"></span>
+                <span class="api-text" id="apiText">Checking...</span>
+            </div>
+            <button class="api-reconnect-btn" id="apiReconnectBtn" onclick="T3MP3ST_API.checkHealth()" title="Reconnect">↻</button>
+        </div>
+
+        <nav class="nav-section">
+            <div class="nav-label">Main</div>
+            <a class="nav-item" href="index.html" data-href="index.html">
+                <span class="icon">⚔️</span> War Room
+            </a>
+            <a class="nav-item" href="live-scan.html" data-href="live-scan.html">
+                <span class="icon">📡</span> Live Scan <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="receipts.html" data-href="receipts.html">
+                <span class="icon">🧾</span> Scope Receipts <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="operators.html" data-href="operators.html">
+                <span class="icon">🤖</span> Operatives <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="evidence.html" data-href="evidence.html">
+                <span class="icon">🔐</span> Evidence Vault <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+
+            <div class="nav-label">Ranges</div>
+            <a class="nav-item" href="obsidivm.html" data-href="obsidivm.html">
+                <span class="icon">📈</span> OBSIDIVM <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="ctf.html" data-href="ctf.html">
+                <span class="icon">🚩</span> CTF Range <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+
+            <div class="nav-label">Toolkit</div>
+            <a class="nav-item" href="arsenal.html" data-href="arsenal.html">
+                <span class="icon">📡</span> Arsenal <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="cves.html" data-href="cves.html">
+                <span class="icon">⚡</span> CVE Vault <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item active" href="dfir.html" data-href="dfir.html">
+                <span class="icon">🛡️</span> DFIR Response
+                <span class="badge" id="activeDfirCount" style="background: #ff4757;">0</span>
+            </a>
+            <a class="nav-item" href="terminal.html" data-href="terminal.html">
+                <span class="icon">💻</span> Terminal <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="configs.html" data-href="configs.html">
+                <span class="icon">💾</span> Config Library <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+
+            <div class="nav-label">Command</div>
+            <a class="nav-item" href="general.html" data-href="general.html">
+                <span class="icon">★</span> Op Admiral <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+
+            <div class="nav-label">System</div>
+            <a class="nav-item" href="self-improve.html" data-href="self-improve.html">
+                <span class="icon">🧬</span> Self-Improvement <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="settings.html" data-href="settings.html">
+                <span class="icon">⚙️</span> Settings <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+            <a class="nav-item" href="about.html" data-href="about.html">
+                <span class="icon">ℹ️</span> About <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span>
+            </a>
+        </nav>
+    </aside>
+
+    <!-- Main Container -->
+    <main class="main-content">
+        <header class="header">
+            <div class="header-title">
+                <span>🛡️</span> DIGITAL FORENSICS & INCIDENT RESPONSE (DFIR)
+                <span style="font-size:12px; font-weight:400; color:var(--text-muted);">| Post-Attack Resolution Suite</span>
+            </div>
+            <div class="header-actions">
+                <button class="btn secondary sm" onclick="loadIncidents()">🔄 Refresh</button>
+                <button class="btn sm" onclick="openNewIncidentModal()">➕ New Incident</button>
+            </div>
+        </header>
+
+        <div class="page-content">
+            <!-- Summary Stats -->
+            <div class="stats-grid">
+                <div class="stat-card danger">
+                    <div class="stat-value" id="statActiveIncidents">0</div>
+                    <div class="stat-label">Active Triage Incidents</div>
+                </div>
+                <div class="stat-card warning">
+                    <div class="stat-value" id="statContainedHosts">0</div>
+                    <div class="stat-label">Contained / Isolated Hosts</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statEradicatedCount">0</div>
+                    <div class="stat-label">Eradicated & Resolved</div>
+                </div>
+                <div class="stat-card cyan">
+                    <div class="stat-value" id="statTotalIOCs">0</div>
+                    <div class="stat-label">Quarantined Forensic IOCs</div>
+                </div>
+            </div>
+
+            <!-- Main DFIR Split Layout -->
+            <div class="dfir-layout">
+                <!-- Left: Incident Cases List -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <div class="panel-title"><span>📂</span> Incident Cases</div>
+                        <span class="badge-pill" id="incidentCountBadge">0 Cases</span>
+                    </div>
+                    <div class="incident-filter-bar">
+                        <div class="search-box">
+                            <span>🔍</span>
+                            <input type="text" id="incidentSearchInput" placeholder="Filter by host, ID, or title..." oninput="handleSearchChange()">
+                        </div>
+                        <div class="filter-pills">
+                            <button class="filter-pill active" onclick="setFilterStatus('ALL', this)">ALL</button>
+                            <button class="filter-pill" onclick="setFilterStatus('TRIAGE', this)">TRIAGE</button>
+                            <button class="filter-pill" onclick="setFilterStatus('CONTAINED', this)">CONTAINED</button>
+                            <button class="filter-pill" onclick="setFilterStatus('ERADICATED', this)">ERADICATED</button>
+                            <button class="filter-pill" onclick="setFilterStatus('CLOSED', this)">CLOSED</button>
+                        </div>
+                    </div>
+                    <div class="incident-list" id="incidentListContainer">
+                        <div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px;">Loading incidents...</div>
+                    </div>
+                </div>
+
+                <!-- Right: Active Incident Workspace -->
+                <div class="panel" id="incidentWorkspacePanel">
+                    <!-- Workspace Header Banner -->
+                    <div class="workspace-banner">
+                        <div class="banner-left">
+                            <h2 id="activeIncidentTitle">Select an Incident Case</h2>
+                            <div class="banner-sub" id="activeIncidentMeta">Case details and post-attack resolution actions will appear here</div>
+                        </div>
+                        <div class="banner-actions" id="activeIncidentActions" style="display:none;">
+                            <button class="btn warning sm" id="btnToggleContainment" onclick="toggleContainmentAction()">🛑 Isolate Host</button>
+                            <button class="btn secondary sm" onclick="switchTab('tab-report')">📋 Generate Report</button>
+                        </div>
+                    </div>
+
+                    <!-- Workspace Tabs -->
+                    <div class="ws-tabs">
+                        <button class="ws-tab active" onclick="switchTab('tab-playbooks')">🎯 Eradication Playbooks</button>
+                        <button class="ws-tab" onclick="switchTab('tab-iocs')">🔬 Forensic IOCs & Log Ingest</button>
+                        <button class="ws-tab" onclick="switchTab('tab-timeline')">⏱️ Attack Timeline</button>
+                        <button class="ws-tab" onclick="switchTab('tab-containment')">🔒 Containment & Isolation</button>
+                        <button class="ws-tab" onclick="switchTab('tab-report')">📋 Post-Mortem Report</button>
+                    </div>
+
+                    <!-- TAB 1: ERADICATION PLAYBOOKS -->
+                    <div class="tab-panel active" id="tab-playbooks">
+                        <div style="margin-bottom: 14px; display:flex; justify-content:space-between; align-items:center;">
+                            <div>
+                                <h3 style="font-size:14px; color:#fff;">Post-Attack Eradication & Remediation Actions</h3>
+                                <p style="font-size:11px; color:var(--text-secondary);">Execute contract-grade resolution playbooks to sanitize compromised components.</p>
+                            </div>
+                        </div>
+
+                        <div class="playbooks-grid">
+                            <!-- Playbook 1 -->
+                            <div class="playbook-card">
+                                <div>
+                                    <div class="playbook-card-title">
+                                        <span>🧹 Webshell Eradication</span>
+                                        <span class="badge-pill" id="badgePbWebshell">READY</span>
+                                    </div>
+                                    <div class="playbook-card-desc">
+                                        Locate backdoors, sanitize upload directories, purge webshell payloads, and lock filesystem write permissions.
+                                    </div>
+                                </div>
+                                <button class="btn sm" onclick="executePlaybook('webshell-eradicate')">⚡ Run Webshell Wipe</button>
+                            </div>
+
+                            <!-- Playbook 2 -->
+                            <div class="playbook-card">
+                                <div>
+                                    <div class="playbook-card-title">
+                                        <span>🪓 Persistence Cleanse</span>
+                                        <span class="badge-pill" id="badgePbPersistence">READY</span>
+                                    </div>
+                                    <div class="playbook-card-desc">
+                                        Purge unauthorized crontab jobs, verify systemd service hooks, and sanitize SSH ~/.ssh/authorized_keys backdoors.
+                                    </div>
+                                </div>
+                                <button class="btn sm" onclick="executePlaybook('persistence-cleanse')">⚡ Purge Persistence</button>
+                            </div>
+
+                            <!-- Playbook 3 -->
+                            <div class="playbook-card">
+                                <div>
+                                    <div class="playbook-card-title">
+                                        <span>🔑 Credential Revocation</span>
+                                        <span class="badge-pill" id="badgePbCreds">READY</span>
+                                    </div>
+                                    <div class="playbook-card-desc">
+                                        Flush Redis/JWT session pools, rotate exposed database secrets, and deactivate compromised AWS IAM / API keys.
+                                    </div>
+                                </div>
+                                <button class="btn sm" onclick="executePlaybook('credential-revocation')">⚡ Invalidate Credentials</button>
+                            </div>
+
+                            <!-- Playbook 4 -->
+                            <div class="playbook-card">
+                                <div>
+                                    <div class="playbook-card-title">
+                                        <span>⚡ Process Kill & Memory Dump</span>
+                                        <span class="badge-pill" id="badgePbProc">READY</span>
+                                    </div>
+                                    <div class="playbook-card-desc">
+                                        Acquire core memory dump of hostile reverse shells, terminate rogue PIDs, and verify clean process tree.
+                                    </div>
+                                </div>
+                                <button class="btn sm" onclick="executePlaybook('process-kill-sweep')">⚡ Kill Hostile PIDs</button>
+                            </div>
+                        </div>
+
+                        <!-- Custom Resolution Command -->
+                        <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:8px; padding:14px; margin-top:14px;">
+                            <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px;">Custom Eradication Script Execution</div>
+                            <div style="display:flex; gap:8px;">
+                                <input type="text" id="customScriptInput" class="form-control" style="flex:1;" placeholder="e.g. systemctl restart nginx && certbot renew --force-renewal">
+                                <button class="btn sm" onclick="runCustomScript()">⚡ Execute on Target</button>
+                            </div>
+                        </div>
+
+                        <!-- Live Console -->
+                        <div style="margin-top:16px;">
+                            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted);">Playbook Execution Log & Receipts</div>
+                            <div class="terminal-console" id="playbookTerminalLog">> [DFIR Engine] Standby for resolution playbook dispatch...</div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: FORENSIC IOCs & LOG INGEST -->
+                    <div class="tab-panel" id="tab-iocs">
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
+                            <div>
+                                <h4 style="font-size:13px; color:#fff; margin-bottom:6px;">Automated Forensic Artifact Ingest</h4>
+                                <p style="font-size:11px; color:var(--text-secondary); margin-bottom:8px;">Paste raw access logs, auth.log snippets, or memory strings for automated IOC extraction.</p>
+                                <textarea id="rawLogInput" class="form-control" style="height:120px;" placeholder="Paste raw logs here (e.g. 198.51.100.77 - - [31/Aug/2026] 'POST /uploads/c99.php' 200...)"></textarea>
+                                <div style="margin-top:8px; display:flex; justify-content:flex-end;">
+                                    <button class="btn sm" onclick="extractFromRawLogs()">🔍 Auto-Extract IOCs</button>
+                                </div>
+                            </div>
+                            <div>
+                                <h4 style="font-size:13px; color:#fff; margin-bottom:6px;">Manual IOC Quarantine</h4>
+                                <p style="font-size:11px; color:var(--text-secondary); margin-bottom:8px;">Add specific threat indicator to this incident's quarantine ledger.</p>
+                                <div style="display:flex; flex-direction:column; gap:8px;">
+                                    <div style="display:grid; grid-template-columns:120px 1fr; gap:8px;">
+                                        <select id="manualIocType" class="form-control">
+                                            <option value="ip">IP Address</option>
+                                            <option value="hash">File Hash (SHA-256)</option>
+                                            <option value="domain">Domain / FQDN</option>
+                                            <option value="file">Filepath</option>
+                                        </select>
+                                        <input type="text" id="manualIocValue" class="form-control" placeholder="Indicator value...">
+                                    </div>
+                                    <input type="text" id="manualIocNotes" class="form-control" placeholder="Forensic context / notes...">
+                                    <button class="btn secondary sm" style="align-self:flex-end;" onclick="addManualIOC()">➕ Add Indicator</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                            <h4 style="font-size:13px; color:#fff;">Quarantined Threat Indicators (IOCs)</h4>
+                            <span class="badge-pill" id="iocCountPill">0 Indicators</span>
+                        </div>
+                        <table class="ioc-table">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Indicator Value</th>
+                                    <th>Status</th>
+                                    <th>Notes</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="iocTableBody">
+                                <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No indicators registered for this case.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- TAB 3: TIMELINE -->
+                    <div class="tab-panel" id="tab-timeline">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                            <div>
+                                <h3 style="font-size:14px; color:#fff;">Attack Path & Response Timeline</h3>
+                                <p style="font-size:11px; color:var(--text-secondary);">Chronological sequence of attacker actions and subsequent DFIR resolution steps.</p>
+                            </div>
+                            <button class="btn sm secondary" onclick="openAddTimelineModal()">➕ Add Event</button>
+                        </div>
+                        <div class="timeline-container" id="timelineContainer">
+                            <div style="color:var(--text-muted); font-size:12px;">No timeline events recorded.</div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 4: CONTAINMENT & ISOLATION -->
+                    <div class="tab-panel" id="tab-containment">
+                        <h3 style="font-size:14px; color:#fff; margin-bottom:6px;">Host Containment & Network Isolation Center</h3>
+                        <p style="font-size:11px; color:var(--text-secondary); margin-bottom:18px;">Enforce strict network quarantining to sever attacker command-and-control communication.</p>
+
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px;">
+                            <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:8px; padding:18px;">
+                                <div style="font-size:13px; font-weight:700; color:#fff; margin-bottom:10px;">Isolation Status</div>
+                                <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                                    <div style="font-size:24px;" id="containmentStatusIcon">🟢</div>
+                                    <div>
+                                        <div style="font-weight:700; font-size:14px;" id="containmentStatusText">NORMAL ROUTING</div>
+                                        <div style="font-size:11px; color:var(--text-muted);" id="containmentStatusSub">Target host is connected to internal network</div>
+                                    </div>
+                                </div>
+                                <button class="btn warning sm" id="btnContainmentPanelAction" onclick="toggleContainmentAction()">🛑 Apply Host Isolation</button>
+                            </div>
+
+                            <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:8px; padding:18px;">
+                                <div style="font-size:13px; font-weight:700; color:#fff; margin-bottom:10px;">Active Enforcement Metrics</div>
+                                <div style="display:flex; flex-direction:column; gap:8px; font-size:12px; font-family:'JetBrains Mono', monospace;">
+                                    <div>🛑 Firewall Egress Drop: <span id="metricFirewallStatus" style="color:var(--brand);">INACTIVE</span></div>
+                                    <div>⚡ Hostile PIDs Terminated: <span id="metricProcsKilled" style="color:var(--danger);">0</span></div>
+                                    <div>🔐 Compromised Credentials Purged: <span id="metricCredsRevoked" style="color:var(--warning);">0</span></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px;">Containment Firewall Policy Script (iptables / Windows netsh)</div>
+                        <div class="terminal-console" id="containmentPolicyPreview"># Emergency Network Quarantine Policy
+iptables -F OUTPUT
+iptables -A OUTPUT -p tcp --dport 3333 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
+iptables -A OUTPUT -j DROP</div>
+                    </div>
+
+                    <!-- TAB 5: POST-MORTEM REPORT -->
+                    <div class="tab-panel" id="tab-report">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                            <div>
+                                <h3 style="font-size:14px; color:#fff;">NIST SP 800-61 / ISO 27035 Post-Incident Resolution Report</h3>
+                                <p style="font-size:11px; color:var(--text-secondary);">Executive post-mortem document confirming root cause eradication and preventative controls.</p>
+                            </div>
+                            <div style="display:flex; gap:8px;">
+                                <button class="btn sm secondary" onclick="copyReportToClipboard()">📋 Copy Markdown</button>
+                                <button class="btn sm" onclick="downloadReportMd()">📥 Download .md</button>
+                            </div>
+                        </div>
+                        <div class="report-preview-box" id="reportPreviewBox">Generating post-mortem report...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal: New Incident -->
+    <div class="modal-overlay" id="modalNewIncident">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h2>➕ Initialize DFIR Incident Case</h2>
+                <button class="modal-close" onclick="closeModal('modalNewIncident')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Incident Title</label>
+                    <input type="text" id="newIncTitle" class="form-control" placeholder="e.g. Remote Code Execution via Log4j on Web-01">
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div class="form-group">
+                        <label class="form-label">Target Asset / Host</label>
+                        <input type="text" id="newIncHost" class="form-control" placeholder="e.g. 192.168.1.104 or app.domain.com">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Severity Level</label>
+                        <select id="newIncSeverity" class="form-control">
+                            <option value="CRITICAL">CRITICAL</option>
+                            <option value="HIGH" selected>HIGH</option>
+                            <option value="MEDIUM">MEDIUM</option>
+                            <option value="LOW">LOW</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div class="form-group">
+                        <label class="form-label">Environment</label>
+                        <input type="text" id="newIncEnv" class="form-control" placeholder="e.g. Production Cluster" value="Production Tier">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Attack Vector</label>
+                        <input type="text" id="newIncVector" class="form-control" placeholder="e.g. Web Shell Injection" value="Vulnerability Exploitation">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Forensic Notes & Initial Assessment</label>
+                    <textarea id="newIncNotes" class="form-control" placeholder="Describe detected adversary behavior, affected services, and initial containment goals..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn secondary sm" onclick="closeModal('modalNewIncident')">Cancel</button>
+                <button class="btn sm" onclick="submitCreateIncident()">Initialize Case</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Add Timeline Event -->
+    <div class="modal-overlay" id="modalAddTimeline">
+        <div class="modal-dialog" style="max-width:520px;">
+            <div class="modal-header">
+                <h2>⏱️ Add Timeline Event</h2>
+                <button class="modal-close" onclick="closeModal('modalAddTimeline')">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Phase / MITRE Tactic</label>
+                    <select id="newEvtPhase" class="form-control">
+                        <option value="Initial Access">Initial Access</option>
+                        <option value="Execution">Execution</option>
+                        <option value="Persistence">Persistence</option>
+                        <option value="Privilege Escalation">Privilege Escalation</option>
+                        <option value="Credential Access">Credential Access</option>
+                        <option value="Lateral Movement">Lateral Movement</option>
+                        <option value="Containment">Containment</option>
+                        <option value="Remediation">Remediation</option>
+                        <option value="Recovery">Recovery</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Event Description</label>
+                    <textarea id="newEvtDesc" class="form-control" placeholder="What occurred during this step..."></textarea>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div class="form-group">
+                        <label class="form-label">Actor / IP</label>
+                        <input type="text" id="newEvtActor" class="form-control" placeholder="e.g. 198.51.100.77">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Evidence Log Ref</label>
+                        <input type="text" id="newEvtEvidence" class="form-control" placeholder="e.g. auth.log:L402">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn secondary sm" onclick="closeModal('modalAddTimeline')">Cancel</button>
+                <button class="btn sm" onclick="submitAddTimelineEvent()">Add Event</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        // State
+        let incidents = [];
+        let activeIncidentId = null;
+        let currentFilterStatus = 'ALL';
+        let currentReportMd = '';
+
+        const T3MP3ST_API = {
+            async checkHealth() {
+                try {
+                    const r = await fetch('/api/health');
+                    const d = await r.json();
+                    const dot = document.getElementById('apiDot');
+                    const txt = document.getElementById('apiText');
+                    if (d.ok || d.status === 'ok') {
+                        dot.className = 'api-dot llm-ready';
+                        txt.textContent = 'API + LLM Ready';
+                    }
+                } catch (e) {
+                    const dot = document.getElementById('apiDot');
+                    const txt = document.getElementById('apiText');
+                    dot.className = 'api-dot';
+                    dot.style.background = '#ff4757';
+                    txt.textContent = 'Offline';
+                }
+            }
+        };
+
+        function toast(msg) {
+            const c = document.getElementById('toastContainer') || (() => {
+                const el = document.createElement('div');
+                el.id = 'toastContainer'; el.className = 'toast-container';
+                document.body.appendChild(el); return el;
+            })();
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => { t.remove(); }, 3500);
+        }
+
+        async function loadIncidents() {
+            try {
+                const r = await fetch('/api/dfir/incidents');
+                const data = await r.json();
+                incidents = data.incidents || [];
+                updateMetrics(data.metrics);
+                renderIncidentList();
+                if (incidents.length > 0) {
+                    if (!activeIncidentId || !incidents.some(i => i.id === activeIncidentId)) {
+                        selectIncident(incidents[0].id);
+                    } else {
+                        selectIncident(activeIncidentId);
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to load incidents:', err);
+                toast('⚠️ Failed to load incident data from server.');
+            }
+        }
+
+        function updateMetrics(m) {
+            if (!m) return;
+            document.getElementById('statActiveIncidents').textContent = m.activeCount ?? 0;
+            document.getElementById('statContainedHosts').textContent = m.containedCount ?? 0;
+            document.getElementById('statEradicatedCount').textContent = m.eradicatedCount ?? 0;
+            document.getElementById('statTotalIOCs').textContent = m.totalIOCs ?? 0;
+            
+            const badge = document.getElementById('activeDfirCount');
+            if (badge) {
+                badge.textContent = m.activeCount ?? 0;
+                badge.style.display = (m.activeCount > 0) ? 'inline-block' : 'none';
+            }
+        }
+
+        function renderIncidentList() {
+            const container = document.getElementById('incidentListContainer');
+            const search = (document.getElementById('incidentSearchInput').value || '').toLowerCase();
+
+            let filtered = incidents.filter(inc => {
+                if (currentFilterStatus !== 'ALL' && inc.status.toUpperCase() !== currentFilterStatus) return false;
+                if (search) {
+                    return inc.title.toLowerCase().includes(search) ||
+                           inc.id.toLowerCase().includes(search) ||
+                           inc.targetHost.toLowerCase().includes(search) ||
+                           inc.attackVector.toLowerCase().includes(search);
+                }
+                return true;
+            });
+
+            document.getElementById('incidentCountBadge').textContent = `${filtered.length} Cases`;
+
+            if (filtered.length === 0) {
+                container.innerHTML = `<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px;">No matching incident cases found.</div>`;
+                return;
+            }
+
+            container.innerHTML = filtered.map(inc => {
+                const isSelected = inc.id === activeIncidentId;
+                const timeAgo = formatTimeAgo(inc.detectedAt);
+                return `
+                    <div class="incident-item ${isSelected ? 'selected' : ''}" onclick="selectIncident('${inc.id}')">
+                        <div class="incident-item-header">
+                            <span class="incident-id">${escapeHtml(inc.id)}</span>
+                            <div style="display:flex; gap:4px;">
+                                <span class="badge-pill badge-${inc.severity}">${inc.severity}</span>
+                                <span class="badge-pill badge-status-${inc.status}">${inc.status}</span>
+                            </div>
+                        </div>
+                        <div class="incident-title">${escapeHtml(inc.title)}</div>
+                        <div class="incident-meta">
+                            <span>🖥️ ${escapeHtml(inc.targetHost)}</span>
+                            <span>⏱️ ${timeAgo}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function selectIncident(id) {
+            activeIncidentId = id;
+            renderIncidentList();
+            const inc = incidents.find(i => i.id === id);
+            if (!inc) return;
+
+            // Update Banner
+            document.getElementById('activeIncidentTitle').innerHTML = `
+                <span class="badge-pill badge-${inc.severity}">${inc.severity}</span>
+                ${escapeHtml(inc.title)}
+                <span class="badge-pill badge-status-${inc.status}">${inc.status}</span>
+            `;
+            document.getElementById('activeIncidentMeta').textContent = `Target: ${inc.targetHost} | Env: ${inc.environment} | Vector: ${inc.attackVector} | Detected: ${new Date(inc.detectedAt).toLocaleString()}`;
+            document.getElementById('activeIncidentActions').style.display = 'flex';
+
+            // Containment Button state
+            const isIsolated = inc.containment && inc.containment.isolated;
+            const btn = document.getElementById('btnToggleContainment');
+            const panelBtn = document.getElementById('btnContainmentPanelAction');
+            if (isIsolated) {
+                btn.textContent = '🟢 Lift Isolation';
+                btn.className = 'btn secondary sm';
+                panelBtn.textContent = '🟢 Restore Normal Network Access';
+                panelBtn.className = 'btn secondary sm';
+                document.getElementById('containmentStatusIcon').textContent = '🛑';
+                document.getElementById('containmentStatusText').textContent = 'HOST ISOLATED (QUARANTINED)';
+                document.getElementById('containmentStatusText').style.color = 'var(--danger)';
+                document.getElementById('containmentStatusSub').textContent = 'All non-forensic inbound/outbound packets are dropped';
+                document.getElementById('metricFirewallStatus').textContent = 'ACTIVE (DROPPING EGRESS)';
+                document.getElementById('metricFirewallStatus').style.color = 'var(--danger)';
+            } else {
+                btn.textContent = '🛑 Isolate Host';
+                btn.className = 'btn warning sm';
+                panelBtn.textContent = '🛑 Apply Host Isolation';
+                panelBtn.className = 'btn warning sm';
+                document.getElementById('containmentStatusIcon').textContent = '🟢';
+                document.getElementById('containmentStatusText').textContent = 'NORMAL ROUTING';
+                document.getElementById('containmentStatusText').style.color = 'var(--brand)';
+                document.getElementById('containmentStatusSub').textContent = 'Target host is connected to internal network';
+                document.getElementById('metricFirewallStatus').textContent = 'INACTIVE';
+                document.getElementById('metricFirewallStatus').style.color = 'var(--brand)';
+            }
+
+            document.getElementById('metricProcsKilled').textContent = inc.containment?.processesKilledCount ?? 0;
+            document.getElementById('metricCredsRevoked').textContent = inc.containment?.credentialsRevokedCount ?? 0;
+
+            // Render Playbook statuses
+            renderPlaybookTasks(inc);
+
+            // Render IOCs
+            renderIOCs(inc);
+
+            // Render Timeline
+            renderTimeline(inc);
+
+            // Render Report
+            loadReport(id);
+        }
+
+        function renderPlaybookTasks(inc) {
+            const tasks = inc.remediationTasks || [];
+            const logEl = document.getElementById('playbookTerminalLog');
+            
+            const lastTaskWithOutput = [...tasks].reverse().find(t => t.output);
+            if (lastTaskWithOutput) {
+                logEl.textContent = `> [Playbook: ${lastTaskWithOutput.name}]\n${lastTaskWithOutput.output}`;
+            } else {
+                logEl.textContent = `> [DFIR Engine] Ready to execute resolution sequence on ${inc.targetHost}...`;
+            }
+        }
+
+        function renderIOCs(inc) {
+            const iocs = inc.iocs || [];
+            document.getElementById('iocCountPill').textContent = `${iocs.length} Indicators`;
+            const tbody = document.getElementById('iocTableBody');
+
+            if (iocs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No indicators registered for this case.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = iocs.map(ioc => `
+                <tr>
+                    <td><span class="badge-pill" style="background:rgba(255,255,255,0.08);">${ioc.type.toUpperCase()}</span></td>
+                    <td class="ioc-val">${escapeHtml(ioc.value)}</td>
+                    <td>
+                        <span class="badge-pill" style="background:${ioc.blocked ? 'rgba(255,71,87,0.2)' : 'rgba(0,255,136,0.1)'}; color:${ioc.blocked ? 'var(--danger)' : 'var(--brand)'}; border:1px solid ${ioc.blocked ? 'var(--danger)' : 'var(--brand)'};">
+                            ${ioc.blocked ? '🛑 BLOCKED' : '⚠️ ACTIVE'}
+                        </span>
+                    </td>
+                    <td style="color:var(--text-secondary); font-size:11px;">${escapeHtml(ioc.notes || '-')}</td>
+                    <td>
+                        <button class="btn secondary sm" style="padding:3px 8px; font-size:10px;" onclick="toggleIOCBlock('${ioc.id}', ${!ioc.blocked})">
+                            ${ioc.blocked ? 'Unblock' : 'Block Rule'}
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function renderTimeline(inc) {
+            const timeline = inc.timeline || [];
+            const c = document.getElementById('timelineContainer');
+            if (timeline.length === 0) {
+                c.innerHTML = `<div style="color:var(--text-muted); font-size:12px;">No timeline events recorded.</div>`;
+                return;
+            }
+
+            c.innerHTML = timeline.map(evt => {
+                const phaseCls = evt.phase === 'Initial Access' || evt.phase === 'Impact' ? 'danger' : evt.phase === 'Containment' || evt.phase === 'Remediation' ? '' : 'warning';
+                return `
+                    <div class="timeline-node ${phaseCls}">
+                        <div class="timeline-header">
+                            <span class="timeline-phase">${escapeHtml(evt.phase)}</span>
+                            <span class="timeline-time">${new Date(evt.timestamp).toLocaleString()}</span>
+                            ${evt.actor ? `<span style="font-size:11px; color:var(--danger); font-family:'JetBrains Mono', monospace;">[Actor: ${escapeHtml(evt.actor)}]</span>` : ''}
+                        </div>
+                        <div class="timeline-desc">${escapeHtml(evt.description)}</div>
+                        ${evt.evidenceRef ? `<div class="timeline-evidence">📁 Evidence: ${escapeHtml(evt.evidenceRef)}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function loadReport(incidentId) {
+            try {
+                const r = await fetch(`/api/dfir/incidents/${incidentId}/report`);
+                const data = await r.json();
+                currentReportMd = data.markdown || '';
+                document.getElementById('reportPreviewBox').textContent = currentReportMd;
+            } catch (err) {
+                console.error('Failed to load report:', err);
+            }
+        }
+
+        async function executePlaybook(type) {
+            if (!activeIncidentId) return;
+            const logEl = document.getElementById('playbookTerminalLog');
+            logEl.textContent = `> [DFIR Engine] Dispatching playbook ${type} on target host...`;
+
+            try {
+                const r = await fetch(`/api/dfir/incidents/${activeIncidentId}/playbook`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ playbookType: type })
+                });
+                const data = await r.json();
+                if (data.success) {
+                    toast(`✅ Playbook ${type} completed successfully.`);
+                    logEl.textContent = data.output;
+                    await loadIncidents();
+                } else {
+                    toast(`❌ Playbook error: ${data.error || 'Failed'}`);
+                }
+            } catch (err) {
+                toast(`❌ Playbook execution failed: ${err.message}`);
+            }
+        }
+
+        async function runCustomScript() {
+            if (!activeIncidentId) return;
+            const input = document.getElementById('customScriptInput');
+            const script = input.value.trim();
+            if (!script) return;
+
+            const logEl = document.getElementById('playbookTerminalLog');
+            logEl.textContent = `> [DFIR Engine] Executing: ${script}...`;
+
+            try {
+                const r = await fetch(`/api/dfir/incidents/${activeIncidentId}/playbook`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ playbookType: 'custom-script', customScript: script })
+                });
+                const data = await r.json();
+                logEl.textContent = data.output;
+                toast('✅ Custom remediation script executed.');
+                input.value = '';
+                await loadIncidents();
+            } catch (err) {
+                toast(`❌ Script execution error: ${err.message}`);
+            }
+        }
+
+        async function toggleContainmentAction() {
+            if (!activeIncidentId) return;
+            const inc = incidents.find(i => i.id === activeIncidentId);
+            if (!inc) return;
+
+            const currentlyIsolated = inc.containment && inc.containment.isolated;
+            const nextState = !currentlyIsolated;
+
+            try {
+                const r = await fetch(`/api/dfir/incidents/${activeIncidentId}/contain`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ isolate: nextState, blockFirewall: true, killProcs: nextState })
+                });
+                const data = await r.json();
+                if (data.success) {
+                    toast(nextState ? '🛑 Host isolated successfully. Egress dropped.' : '🟢 Host isolation lifted. Network restored.');
+                    await loadIncidents();
+                }
+            } catch (err) {
+                toast(`❌ Containment failed: ${err.message}`);
+            }
+        }
+
+        async function extractFromRawLogs() {
+            const text = document.getElementById('rawLogInput').value;
+            if (!text.trim()) {
+                toast('Please paste log content to analyze.');
+                return;
+            }
+
+            try {
+                const r = await fetch('/api/dfir/ioc-extract', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rawText: text })
+                });
+                const data = await r.json();
+                const extracted = data.iocs || [];
+                toast(`🔍 Extracted ${extracted.length} IOC indicators.`);
+
+                if (activeIncidentId) {
+                    for (const item of extracted) {
+                        await fetch(`/api/dfir/incidents/${activeIncidentId}/ioc`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ type: item.type, value: item.value, notes: `Context: ${item.sampleContext}` })
+                        });
+                    }
+                    await loadIncidents();
+                }
+            } catch (err) {
+                toast(`❌ IOC extraction failed: ${err.message}`);
+            }
+        }
+
+        async function addManualIOC() {
+            if (!activeIncidentId) return;
+            const type = document.getElementById('manualIocType').value;
+            const val = document.getElementById('manualIocValue').value.trim();
+            const notes = document.getElementById('manualIocNotes').value.trim();
+
+            if (!val) {
+                toast('Please provide indicator value.');
+                return;
+            }
+
+            try {
+                const r = await fetch(`/api/dfir/incidents/${activeIncidentId}/ioc`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type, value: val, notes })
+                });
+                if (r.ok) {
+                    toast('✅ Threat indicator added to case.');
+                    document.getElementById('manualIocValue').value = '';
+                    document.getElementById('manualIocNotes').value = '';
+                    await loadIncidents();
+                }
+            } catch (err) {
+                toast(`❌ Failed to add IOC: ${err.message}`);
+            }
+        }
+
+        async function toggleIOCBlock(iocId, blockState) {
+            if (!activeIncidentId) return;
+            try {
+                const r = await fetch(`/api/dfir/incidents/${activeIncidentId}/ioc/${iocId}/toggle-block`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ blocked: blockState })
+                });
+                if (r.ok) {
+                    toast(blockState ? '🛑 Rule active: Indicator quarantined.' : '🟢 Indicator unblocked.');
+                    await loadIncidents();
+                }
+            } catch (err) {
+                toast(`❌ Failed to update IOC: ${err.message}`);
+            }
+        }
+
+        async function submitCreateIncident() {
+            const title = document.getElementById('newIncTitle').value.trim();
+            const targetHost = document.getElementById('newIncHost').value.trim();
+            const severity = document.getElementById('newIncSeverity').value;
+            const environment = document.getElementById('newIncEnv').value.trim();
+            const attackVector = document.getElementById('newIncVector').value.trim();
+            const forensicNotes = document.getElementById('newIncNotes').value.trim();
+
+            if (!title) {
+                toast('Please provide incident title.');
+                return;
+            }
+
+            try {
+                const r = await fetch('/api/dfir/incidents', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, targetHost, severity, environment, attackVector, forensicNotes })
+                });
+                const inc = await r.json();
+                toast(`✅ Incident Case ${inc.id} created.`);
+                closeModal('modalNewIncident');
+                await loadIncidents();
+                selectIncident(inc.id);
+            } catch (err) {
+                toast(`❌ Failed to create incident: ${err.message}`);
+            }
+        }
+
+        async function submitAddTimelineEvent() {
+            if (!activeIncidentId) return;
+            const phase = document.getElementById('newEvtPhase').value;
+            const description = document.getElementById('newEvtDesc').value.trim();
+            const actor = document.getElementById('newEvtActor').value.trim();
+            const evidenceRef = document.getElementById('newEvtEvidence').value.trim();
+
+            if (!description) {
+                toast('Please provide event description.');
+                return;
+            }
+
+            try {
+                const r = await fetch(`/api/dfir/incidents/${activeIncidentId}/timeline`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phase, description, actor, evidenceRef })
+                });
+                if (r.ok) {
+                    toast('✅ Timeline event logged.');
+                    closeModal('modalAddTimeline');
+                    document.getElementById('newEvtDesc').value = '';
+                    await loadIncidents();
+                }
+            } catch (err) {
+                toast(`❌ Failed to add event: ${err.message}`);
+            }
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.ws-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            const btn = Array.from(document.querySelectorAll('.ws-tab')).find(b => b.getAttribute('onclick')?.includes(tabId));
+            if (btn) btn.classList.add('active');
+            const panel = document.getElementById(tabId);
+            if (panel) panel.classList.add('active');
+        }
+
+        function setFilterStatus(status, el) {
+            currentFilterStatus = status;
+            document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+            if (el) el.classList.add('active');
+            renderIncidentList();
+        }
+
+        function handleSearchChange() {
+            renderIncidentList();
+        }
+
+        function openNewIncidentModal() {
+            document.getElementById('modalNewIncident').classList.add('active');
+        }
+
+        function openAddTimelineModal() {
+            document.getElementById('modalAddTimeline').classList.add('active');
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
+        }
+
+        function copyReportToClipboard() {
+            if (!currentReportMd) return;
+            navigator.clipboard.writeText(currentReportMd);
+            toast('📋 Report copied to clipboard.');
+        }
+
+        function downloadReportMd() {
+            if (!currentReportMd || !activeIncidentId) return;
+            const blob = new Blob([currentReportMd], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `DFIR-Report-${activeIncidentId}.md`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast('📥 Report downloaded.');
+        }
+
+        function formatTimeAgo(isoString) {
+            if (!isoString) return '';
+            const diffMs = Date.now() - new Date(isoString).getTime();
+            const mins = Math.floor(diffMs / 60000);
+            if (mins < 60) return `${mins}m ago`;
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return `${hrs}h ago`;
+            return `${Math.floor(hrs / 24)}d ago`;
+        }
+
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        // Init
+        window.addEventListener('DOMContentLoaded', () => {
+            T3MP3ST_API.checkHealth();
+            loadIncidents();
+        });
+    </script>
+    <script src="embed.js"></script>
+</body>
+</html>

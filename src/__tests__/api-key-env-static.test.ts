@@ -8,13 +8,15 @@ const setupScript = readFileSync(join(process.cwd(), 'scripts/setup-api.sh'), 'u
 const localAgentsSource = readFileSync(join(process.cwd(), 'src/agent/local-agents.ts'), 'utf8');
 const setupSource = readFileSync(join(process.cwd(), 'src/setup.ts'), 'utf8');
 const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8');
+const settingsSource = readFileSync(join(process.cwd(), 'docs/settings.html'), 'utf8');
 
 function sourceBlock(startMarker: string, endMarker: string): string {
-  const start = configSource.indexOf(startMarker);
+  const src = configSource.split(String.fromCharCode(13)).join("");
+  const start = src.indexOf(startMarker);
   expect(start, `missing start marker ${startMarker}`).toBeGreaterThanOrEqual(0);
-  const end = configSource.indexOf(endMarker, start);
+  const end = src.indexOf(endMarker, start);
   expect(end, `missing end marker ${endMarker}`).toBeGreaterThan(start);
-  return configSource.slice(start, end);
+  return src.slice(start, end);
 }
 
 function configLoadEnvBlock(): string {
@@ -30,11 +32,20 @@ function envTemplateBlock(): string {
 }
 
 describe('API key environment handling hardening', () => {
-  it('ConfigManager does not implicitly read .env from the caller working directory', () => {
+  it('ConfigManager loads the repo .env in dev and the homedir .env in prod', () => {
     const block = configLoadEnvBlock();
-
-    expect(block).not.toContain("join(process.cwd(), '.env')");
     expect(block).toContain("join(homedir(), '.t3mp3st', '.env')");
+    expect(block).toContain("join(process.cwd(), '.env')");
+    expect(block).toContain("existsSync(join(process.cwd(), 'package.json'))");
+  });
+
+  it('the Settings pages persist keys into the gitignored .env and the server masks them', () => {
+    expect(serverSource).toContain("'/api/config/env'");
+    expect(serverSource).toContain('ENV_APIKEY_MAP');
+    expect(serverSource).toContain('maskKey');
+    expect(serverSource).toContain('resolveEnvFile()');
+    expect(uiSource).toContain('/api/config/env');
+    expect(uiSource).toContain('provider, key');
   });
 
   it('the API server does not re-enable caller-cwd dotenv loading', () => {
@@ -75,7 +86,9 @@ describe('API key environment handling hardening', () => {
     expect(localAgentsSource).toContain("'NANOGPT_API_KEY'");
     expect(setupSource).toContain("provider: 'nanogpt'");
     expect(setupSource).toContain("setApiKey('nanogpt', apiKey)");
-    expect(uiSource).toContain('<option value="nanogpt">NanoGPT · OpenAI-compatible</option>');
+    // The provider <option> lives on the standalone Settings page; the base-URL
+    // map is in the dashboard script.
+    expect(settingsSource).toContain('<option value="nanogpt">NanoGPT · OpenAI-compatible</option>');
     expect(uiSource).toContain("nanogpt: 'https://nano-gpt.com/api/v1'");
   });
 
