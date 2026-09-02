@@ -171,6 +171,17 @@ export interface OperatorParams { temperature: number; maxTokens: number; topP: 
 export interface OperatorOverride { systemPrompt?: string; params?: Partial<OperatorParams>; }
 const DEFAULT_OPERATOR_PARAMS: OperatorParams = { temperature: 0.4, maxTokens: 4096, topP: 1.0 };
 const OPERATOR_OVERRIDES: Partial<Record<OperatorArchetype, OperatorOverride>> = {};
+const OPERATOR_PROFILE_REVISIONS: Partial<Record<OperatorArchetype, number>> = {};
+
+function advanceOperatorProfileRevision(archetype: OperatorArchetype): number {
+  const revision = (OPERATOR_PROFILE_REVISIONS[archetype] || 0) + 1;
+  OPERATOR_PROFILE_REVISIONS[archetype] = revision;
+  return revision;
+}
+
+export function getOperatorProfileRevision(archetype: OperatorArchetype): number {
+  return OPERATOR_PROFILE_REVISIONS[archetype] || 0;
+}
 
 export function setOperatorOverride(archetype: OperatorArchetype, override: OperatorOverride): void {
   const cur = OPERATOR_OVERRIDES[archetype] || {};
@@ -178,8 +189,12 @@ export function setOperatorOverride(archetype: OperatorArchetype, override: Oper
     systemPrompt: override.systemPrompt !== undefined ? override.systemPrompt : cur.systemPrompt,
     params: { ...(cur.params || {}), ...(override.params || {}) },
   };
+  advanceOperatorProfileRevision(archetype);
 }
-export function resetOperatorOverride(archetype: OperatorArchetype): void { delete OPERATOR_OVERRIDES[archetype]; }
+export function resetOperatorOverride(archetype: OperatorArchetype): void {
+  delete OPERATOR_OVERRIDES[archetype];
+  advanceOperatorProfileRevision(archetype);
+}
 export function getOperatorParams(archetype: OperatorArchetype): OperatorParams {
   return { ...DEFAULT_OPERATOR_PARAMS, ...(OPERATOR_OVERRIDES[archetype]?.params || {}) };
 }
@@ -205,6 +220,7 @@ export function listOperatorPrompts() {
       systemPrompt: (ov && ov.systemPrompt) || base.systemPrompt,
       defaultSystemPrompt: base.systemPrompt,
       params: getOperatorParams(a),
+      revision: getOperatorProfileRevision(a),
       overridden: !!(ov && (ov.systemPrompt || (ov.params && Object.keys(ov.params).length))),
     };
   });
@@ -269,7 +285,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   public readonly id: string;
   public readonly callsign: string;
   public readonly archetype: OperatorArchetype;
-  public readonly profile: ArchetypeProfile;
+  public profile: ArchetypeProfile;
   public readonly config: OperatorConfig;
 
   private _state: OperatorState;
@@ -282,6 +298,8 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   private credentials: Credential[] = [];
   /** White-box source excerpt (security-prioritized), set by TempestCommand.setWhiteboxSource */
   private whiteboxSource: string = '';
+  private profileRevision: number;
+  private pendingProfileRevision: number | null = null;
 
   constructor(
     callsign: string,
@@ -294,6 +312,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.callsign = callsign;
     this.archetype = archetype;
     this.profile = resolveProfile(archetype);
+    this.profileRevision = getOperatorProfileRevision(archetype);
     this.config = { ...DEFAULT_OPERATOR_CONFIG, ...config };
     this.llm = llm;
 
@@ -341,6 +360,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
    * Assign a task to the operator
    */
   async assignTask(task: Task, target?: Target): Promise<TaskResult> {
+    this.applyPendingProfileRefresh();
     if (!this.isAvailable()) {
       throw new Error(`Operator ${this.callsign} is not available (status: ${this._state.status})`);
     }
@@ -404,6 +424,30 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * Adopt the latest archetype profile without changing an in-flight request.
+   * Idle operators update immediately; all other live states defer until the
+   * next transition back to idle.
+   */
+  requestProfileRefresh(): 'applied' | 'deferred' {
+    const latestRevision = getOperatorProfileRevision(this.archetype);
+    if (this._state.status === 'idle') {
+      this.profile = resolveProfile(this.archetype);
+      this.profileRevision = latestRevision;
+      this.pendingProfileRevision = null;
+      return 'applied';
+    }
+    this.pendingProfileRevision = latestRevision;
+    return 'deferred';
+  }
+
+  private applyPendingProfileRefresh(): void {
+    if (this.pendingProfileRevision === null || this._state.status !== 'idle') return;
+    this.profile = resolveProfile(this.archetype);
+    this.profileRevision = getOperatorProfileRevision(this.archetype);
+    this.pendingProfileRevision = null;
   }
 
   /**
@@ -771,6 +815,7 @@ Respond in a structured format.`;
   private setStatus(newStatus: OperatorStatus): void {
     const oldStatus = this._state.status;
     this._state.status = newStatus;
+    if (newStatus === 'idle') this.applyPendingProfileRefresh();
     this.emit('status:changed', { oldStatus, newStatus });
   }
 
@@ -803,6 +848,8 @@ Respond in a structured format.`;
     findings: number;
     credentials: number;
     detectionRisk: number;
+    profileRevision: number;
+    pendingProfileRevision: number | null;
   } {
     return {
       id: this.id,
@@ -814,6 +861,8 @@ Respond in a structured format.`;
       findings: this._state.findingsCount,
       credentials: this._state.credentialsCount,
       detectionRisk: this._state.detectionRisk,
+      profileRevision: this.profileRevision,
+      pendingProfileRevision: this.pendingProfileRevision,
     };
   }
 }
@@ -929,6 +978,28 @@ export class OperatorCell extends EventEmitter<CellEvents> {
    */
   getOperatorsByArchetype(archetype: OperatorArchetype): OperatorAgent[] {
     return this.getAllOperators().filter(op => op.archetype === archetype);
+  }
+
+  refreshOperatorProfiles(archetype: OperatorArchetype): {
+    policy: 'idle-now-active-next-task';
+    revision: number;
+    appliedOperatorIds: string[];
+    deferredOperatorIds: string[];
+    futureSpawns: true;
+  } {
+    const appliedOperatorIds: string[] = [];
+    const deferredOperatorIds: string[] = [];
+    for (const operator of this.getOperatorsByArchetype(archetype)) {
+      const result = operator.requestProfileRefresh();
+      (result === 'applied' ? appliedOperatorIds : deferredOperatorIds).push(operator.id);
+    }
+    return {
+      policy: 'idle-now-active-next-task',
+      revision: getOperatorProfileRevision(archetype),
+      appliedOperatorIds,
+      deferredOperatorIds,
+      futureSpawns: true,
+    };
   }
 
   /**

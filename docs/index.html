@@ -26990,14 +26990,26 @@ Be specific and actionable. Format as structured JSON.`;
     try { const d = await (await fetch(base()+'/api/operators/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archetype:SELECTED,systemPrompt:ed.systemPrompt,params:ed.params})})).json();
       if(d.error) throw new Error(d.error);
       if(d.operator){ const i=ROSTER.findIndex(x=>x.archetype===SELECTED); if(i>=0) ROSTER[i]=d.operator; }
-      renderRoster(); renderEditor(); if(window.toast) toast('💾 '+SELECTED+' updated — applies to every spawned operator','success');
+      renderRoster(); renderEditor();
+      if(window.toast){
+        const applied=(d.application&&d.application.appliedOperatorIds||[]).length;
+        const deferred=(d.application&&d.application.deferredOperatorIds||[]).length;
+        const detail=deferred ? deferred+' active deferred until next task · '+applied+' idle updated now' : applied ? applied+' idle operator(s) updated now' : 'applies to future spawns';
+        toast('💾 '+SELECTED+' updated — '+detail,'success');
+      }
     } catch(e){ if(window.toast) toast('Save failed: '+e.message,'error'); }
   };
   window.resetOperative = async function(){
     try { const d = await (await fetch(base()+'/api/operators/prompt/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archetype:SELECTED})})).json();
       if(d.error) throw new Error(d.error);
       if(d.operator){ const i=ROSTER.findIndex(x=>x.archetype===SELECTED); if(i>=0) ROSTER[i]=d.operator; }
-      ADVICE=null; renderRoster(); renderEditor(); if(window.toast) toast('↺ '+SELECTED+' reset to default','info');
+      ADVICE=null; renderRoster(); renderEditor();
+      if(window.toast){
+        const applied=(d.application&&d.application.appliedOperatorIds||[]).length;
+        const deferred=(d.application&&d.application.deferredOperatorIds||[]).length;
+        const detail=deferred ? deferred+' active deferred until next task · '+applied+' idle reset now' : applied ? applied+' idle operator(s) reset now' : 'applies to future spawns';
+        toast('↺ '+SELECTED+' reset — '+detail,'info');
+      }
     } catch(e){ if(window.toast) toast('Reset failed: '+e.message,'error'); }
   };
 
