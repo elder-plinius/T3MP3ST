@@ -191,8 +191,13 @@ export const OUTBOUND_REQUEST_RE =
 // URL/identifier-shaped param names.
 const RISKY_PARAM_RE = /url|uri|endpoint|host|addr|id$|_id|path|file|name/i;
 
-// Individual sink patterns, for evidence reporting (riskSignals[]).
+// Individual sink patterns, for evidence reporting (riskSignals[]). Each entry
+// mirrors a branch of DANGEROUS_SINK_RE, so a block that is attack_surface by
+// sink always carries at least one `sink:` label (invariant, #165). The bare-call
+// patterns reuse the same `(?<![\w.])` guard as the classifier, so a qualified
+// `os.system(`/`x.popen(` is NOT double-matched by the bare `system()`/`popen()`.
 const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
+  // Python
   { label: 'requests.get/post/put', re: /requests\.(get|post|put)/ },
   { label: 'urllib', re: /urllib/ },
   { label: 'urlopen', re: /urlopen/ },
@@ -207,6 +212,18 @@ const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
   { label: 'cursor.execute', re: /cursor\.execute/ },
   { label: '.raw()', re: /\.raw\(/ },
   { label: 'open()', re: /open\(/ },
+  // Cross-language (Go / Java / C / JS) — mirror the same branches of DANGEROUS_SINK_RE
+  { label: 'exec.Command', re: /exec\.Command(?:Context)?/ }, // Go os/exec
+  { label: 'Runtime.getRuntime', re: /Runtime\.getRuntime/ }, // Java
+  { label: 'ProcessBuilder', re: /ProcessBuilder/ }, // Java
+  { label: 'system()', re: /(?<![\w.])system\(/ }, // C bare system
+  { label: 'popen()', re: /(?<![\w.])popen\(/ }, // C bare popen
+  { label: 'execl/execv', re: /(?<![\w.])exec(?:l|v)[pe]?\(/ }, // C exec-family
+  { label: 'http.Get/Post/NewRequest', re: /http\.(Get|Post|NewRequest)/ }, // Go net/http
+  { label: 'http.request', re: /https?\.request\(/ }, // Node http(s).request
+  { label: 'client.Do/Get/Post', re: /[Cc]lient\.(Do|Get|Post)\(/ }, // Go/JS HTTP client
+  { label: 'fetch()', re: /\bfetch\(/ }, // JS fetch
+  { label: 'axios', re: /axios[.(]/ }, // JS axios
 ];
 
 // Base priority score per exposure class.
