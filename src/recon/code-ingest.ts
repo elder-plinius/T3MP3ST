@@ -229,29 +229,42 @@ const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
   { label: 'axios', re: /axios[.(]/ }, // JS axios
 ];
 
-// Specific→generic sink overlaps introduced by the cross-language entries: the
-// specific sink's text is a substring superset of a generic pattern
-// (`popen(`⊃`open(`; `Runtime.getRuntime().exec(`⊃`exec(`), so one call would push
-// two `sink:` signals and double its priority weight (score += 10 * length).
-// Suppress the generic label ONLY when EVERY generic match in the body is covered
-// by a specific match (equal occurrence counts) — so a genuinely separate generic
-// call in the same body (a real `open(path)` beside a `popen(cmd)`) still reports.
+// Cross-language sinks that overlap a generic label: a specific sink's text
+// contains a generic pattern, so one call would push two `sink:` signals and
+// double its priority weight (score += 10 * length). Suppress the generic label
+// only when EVERY generic match in the body is accounted for by the specific
+// sink — counted via `covered`, a regex matching exactly the generic occurrences
+// the specific one owns. A genuinely separate generic call (a real `open(path)`
+// beside `popen(cmd)`, or an `engine.exec(code)` beside `Runtime.getRuntime()
+// .exec(cmd)`) is NOT covered, so it still reports.
+//
+// `covered` is per-relationship, NOT a global count of the specific label:
+//  - `popen(`⊃`open(`: textually nested — each `popen(` owns exactly one `open(`,
+//    so `covered` is the `popen(` pattern itself.
+//  - `Runtime.getRuntime`/`exec(`: NOT nested — the two match independent text.
+//    Counting bare `Runtime.getRuntime` here is unsound: `Runtime.getRuntime()
+//    .gc(); other.exec(x)` has one of each, so equal *bare* counts would wrongly
+//    drop the real `other.exec(x)`. `covered` therefore matches only the
+//    `getRuntime()….exec(` chain, so a detached `.exec(` is never suppressed.
 // Only the two overlaps THIS change introduced are listed; pre-existing Python
 // overlaps (`subprocess.Popen`, `urllib…urlopen` → `open()`) are left unchanged —
 // altering Python priority is out of scope for the cross-language evidence fix.
 const SINK_SUBSUMES = [
-  { specific: 'popen()', generic: 'open()' },
-  { specific: 'Runtime.getRuntime', generic: 'exec()' },
-].map(({ specific, generic }) => {
-  const specificRe = SINK_EVIDENCE_RES.find((e) => e.label === specific)?.re;
+  { specific: 'popen()', generic: 'open()', covered: /(?<![\w.])popen\(/ },
+  { specific: 'Runtime.getRuntime', generic: 'exec()', covered: /Runtime\.getRuntime\(\)\s*\.\s*exec\(/ },
+].map(({ specific, generic, covered }) => {
+  // Fail fast at import if a label is mistyped/renamed — this is a static,
+  // deterministic self-check on internal constants (never user input), so a
+  // desync should break the build, not silently disable de-duplication.
   const genericRe = SINK_EVIDENCE_RES.find((e) => e.label === generic)?.re;
-  if (!specificRe || !genericRe) {
+  if (!SINK_EVIDENCE_RES.some((e) => e.label === specific) || !genericRe) {
     throw new Error(`SINK_SUBSUMES references a label absent from SINK_EVIDENCE_RES: ${specific} / ${generic}`);
   }
-  return { specific, generic, specificRe, genericRe };
+  return { specific, generic, genericRe, coveredRe: covered };
 });
 function sinkOccurrences(body: string, re: RegExp): number {
-  return (body.match(new RegExp(re.source, 'g')) ?? []).length;
+  const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
+  return (body.match(new RegExp(re.source, flags)) ?? []).length;
 }
 
 // Base priority score per exposure class.
@@ -712,14 +725,14 @@ function computeRiskSignals(block: CodeBlock): string[] {
   const matched = SINK_EVIDENCE_RES.filter(({ re }) => re.test(body)).map((e) => e.label);
   const matchedSet = new Set(matched);
   const suppressed = new Set<string>();
-  for (const { specific, generic, specificRe, genericRe } of SINK_SUBSUMES) {
-    // Suppress the generic label only when EVERY generic occurrence is covered by
-    // a specific one (equal counts) — a genuinely separate generic call in the
-    // same body still reports.
+  for (const { specific, generic, genericRe, coveredRe } of SINK_SUBSUMES) {
+    // Suppress the generic label only when EVERY generic occurrence is one the
+    // specific sink owns (count of generic === count of covered) — a genuinely
+    // separate generic call in the same body is uncovered, so it still reports.
     if (
       matchedSet.has(specific) &&
       matchedSet.has(generic) &&
-      sinkOccurrences(body, genericRe) === sinkOccurrences(body, specificRe)
+      sinkOccurrences(body, genericRe) === sinkOccurrences(body, coveredRe)
     ) {
       suppressed.add(generic);
     }

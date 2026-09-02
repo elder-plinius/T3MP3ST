@@ -32,6 +32,14 @@ function block(body: string): CodeBlock {
 
 const NEUTRAL_CTX = { isEntryPoint: false, reachable: false };
 
+/** The `sink:`-prefixed signals for a body, sorted (order is not semantically
+ * meaningful downstream — priority weighs `riskSignals.length`). */
+function sinkLabelsOf(body: string): string[] {
+  return classify(block(body), NEUTRAL_CTX)
+    .riskSignals.filter((s) => s.startsWith('sink:'))
+    .sort();
+}
+
 // (language, body, exact sink label expected). Each body is a real cross-language
 // sink that classified attack_surface but had no evidence label. The label is
 // asserted EXACTLY and as the ONLY sink signal, so a double-count (which would
@@ -80,17 +88,59 @@ describe('cross-language sink evidence (#165)', () => {
     // body has BOTH the overlapping specific call AND a distinct real generic call,
     // the generic must still report — dropping it would hide a real sink.
     const cBody = 'void run(char *cmd, char *path) {\n  popen(cmd, "r");\n  int fd = open(path, 0);\n}';
-    const cSinks = classify(block(cBody), NEUTRAL_CTX).riskSignals.filter((s) => s.startsWith('sink:')).sort();
-    expect(cSinks, `C popen+open, got ${JSON.stringify(cSinks)}`).toEqual(['sink:open()', 'sink:popen()']);
+    expect(classify(block(cBody), NEUTRAL_CTX).exposure).toBe('attack_surface');
+    expect(sinkLabelsOf(cBody), 'C popen+open').toEqual(['sink:open()', 'sink:popen()']);
 
     const jBody = 'void run(String cmd, String code) {\n  Runtime.getRuntime().exec(cmd);\n  engine.exec(code);\n}';
-    const jSinks = classify(block(jBody), NEUTRAL_CTX).riskSignals.filter((s) => s.startsWith('sink:')).sort();
-    expect(jSinks, `Java Runtime+exec, got ${JSON.stringify(jSinks)}`).toEqual(['sink:Runtime.getRuntime', 'sink:exec()']);
+    expect(classify(block(jBody), NEUTRAL_CTX).exposure).toBe('attack_surface');
+    expect(sinkLabelsOf(jBody), 'Java Runtime+exec').toEqual(['sink:Runtime.getRuntime', 'sink:exec()']);
+  });
+
+  it('does not drop a detached exec() when its count coincidentally equals Runtime.getRuntime', () => {
+    // Regression: `Runtime.getRuntime` and `exec(` are NOT textually nested, so a
+    // bare equal-count test would wrongly suppress the real `other.exec(code)`
+    // here (one `Runtime.getRuntime`, one `exec(` → equal). The `.exec(` is
+    // detached from `getRuntime()` (a `.gc()` sits between), so it must survive.
+    const body = 'void run(String code) {\n  Runtime.getRuntime().gc();\n  other.exec(code);\n}';
+    expect(classify(block(body), NEUTRAL_CTX).exposure).toBe('attack_surface');
+    expect(sinkLabelsOf(body), 'detached exec must not be suppressed').toEqual([
+      'sink:Runtime.getRuntime',
+      'sink:exec()',
+    ]);
+  });
+
+  it('collapses the Runtime.getRuntime().exec() idiom to a single signal', () => {
+    // The common inline shell-out is ONE logical sink — the chained `.exec(` is
+    // covered by `getRuntime()`, so only the specific label reports (no +10 double).
+    expect(sinkLabelsOf('void r(String c) {\n  Runtime.getRuntime().exec(c);\n}')).toEqual(['sink:Runtime.getRuntime']);
+  });
+
+  it('does not trip a bare cross-language pattern on a qualified receiver call', () => {
+    // The `(?<![\w.])` guard is load-bearing for corpus stability: a qualified
+    // `obj.system(` must NOT match the bare C `system()` pattern, else the new
+    // sinks would double-flag unrelated Python/JS method calls across the corpus.
+    // (`system(` is the clean case — unlike `obj.popen(`, it carries no other
+    // sink substring; `popen`⊃`open(` trips the separate, pre-existing `open()`.)
+    const body = 'function run(cmd) {\n  obj.system(cmd);\n}';
+    expect(sinkLabelsOf(body)).toEqual([]);
+    expect(classify(block(body), NEUTRAL_CTX).exposure).not.toBe('attack_surface');
+  });
+
+  it('does not mistake a db/cache accessor for an outbound HTTP client call', () => {
+    // The `[Cc]lient\.` receiver guard: a mundane `db.Get(id)` is not a client.Do/
+    // Get/Post outbound request and must stay un-flagged (no sink, no ssrf-idor).
+    const b: CodeBlock = { ...block('function load(id) {\n  return db.Get(id);\n}'), params: ['id'] };
+    const { exposure, riskSignals } = classify(b, NEUTRAL_CTX);
+    expect(riskSignals.some((s) => s.startsWith('sink:client'))).toBe(false);
+    expect(riskSignals.some((s) => s.startsWith('ssrf-idor:'))).toBe(false);
+    expect(exposure).not.toBe('attack_surface');
   });
 
   it('Python evidence is unchanged (control)', () => {
-    const { exposure, riskSignals } = classify(block('def f(x):\n  os.system(x)'), NEUTRAL_CTX);
-    expect(exposure).toBe('attack_surface');
-    expect(riskSignals).toContain('sink:os.system');
+    // Exact single label: a regression that made `os.system(x)` also match the new
+    // bare `system()` pattern would double-count (highest-blast-radius: the legacy
+    // corpus). `toContain` would miss that — assert the sink set exactly.
+    expect(classify(block('def f(x):\n  os.system(x)'), NEUTRAL_CTX).exposure).toBe('attack_surface');
+    expect(sinkLabelsOf('def f(x):\n  os.system(x)')).toEqual(['sink:os.system']);
   });
 });
