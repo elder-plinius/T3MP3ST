@@ -195,7 +195,10 @@ const RISKY_PARAM_RE = /url|uri|endpoint|host|addr|id$|_id|path|file|name/i;
 // mirrors a branch of DANGEROUS_SINK_RE, so a block that is attack_surface by
 // sink always carries at least one `sink:` label (invariant, #165). The bare-call
 // patterns reuse the same `(?<![\w.])` guard as the classifier, so a qualified
-// `os.system(`/`x.popen(` is NOT double-matched by the bare `system()`/`popen()`.
+// `os.system(` is not matched by the bare `system()`. Two cross-language labels
+// textually overlap a generic Python one (`popen(`/`.exec(` are substrings that
+// also match `open()`/`exec()`); SINK_SUBSUMES below collapses those so one sink
+// yields one signal — priority weights `riskSignals.length`.
 const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
   // Python
   { label: 'requests.get/post/put', re: /requests\.(get|post|put)/ },
@@ -225,6 +228,31 @@ const SINK_EVIDENCE_RES: Array<{ label: string; re: RegExp }> = [
   { label: 'fetch()', re: /\bfetch\(/ }, // JS fetch
   { label: 'axios', re: /axios[.(]/ }, // JS axios
 ];
+
+// Specific→generic sink overlaps introduced by the cross-language entries: the
+// specific sink's text is a substring superset of a generic pattern
+// (`popen(`⊃`open(`; `Runtime.getRuntime().exec(`⊃`exec(`), so one call would push
+// two `sink:` signals and double its priority weight (score += 10 * length).
+// Suppress the generic label ONLY when EVERY generic match in the body is covered
+// by a specific match (equal occurrence counts) — so a genuinely separate generic
+// call in the same body (a real `open(path)` beside a `popen(cmd)`) still reports.
+// Only the two overlaps THIS change introduced are listed; pre-existing Python
+// overlaps (`subprocess.Popen`, `urllib…urlopen` → `open()`) are left unchanged —
+// altering Python priority is out of scope for the cross-language evidence fix.
+const SINK_SUBSUMES = [
+  { specific: 'popen()', generic: 'open()' },
+  { specific: 'Runtime.getRuntime', generic: 'exec()' },
+].map(({ specific, generic }) => {
+  const specificRe = SINK_EVIDENCE_RES.find((e) => e.label === specific)?.re;
+  const genericRe = SINK_EVIDENCE_RES.find((e) => e.label === generic)?.re;
+  if (!specificRe || !genericRe) {
+    throw new Error(`SINK_SUBSUMES references a label absent from SINK_EVIDENCE_RES: ${specific} / ${generic}`);
+  }
+  return { specific, generic, specificRe, genericRe };
+});
+function sinkOccurrences(body: string, re: RegExp): number {
+  return (body.match(new RegExp(re.source, 'g')) ?? []).length;
+}
 
 // Base priority score per exposure class.
 const EXPOSURE_BASE: Record<Exposure, number> = {
@@ -681,8 +709,23 @@ function computeRiskSignals(block: CodeBlock): string[] {
   const signals: string[] = [];
   const body = block.body;
 
-  for (const { label, re } of SINK_EVIDENCE_RES) {
-    if (re.test(body)) signals.push(`sink:${label}`);
+  const matched = SINK_EVIDENCE_RES.filter(({ re }) => re.test(body)).map((e) => e.label);
+  const matchedSet = new Set(matched);
+  const suppressed = new Set<string>();
+  for (const { specific, generic, specificRe, genericRe } of SINK_SUBSUMES) {
+    // Suppress the generic label only when EVERY generic occurrence is covered by
+    // a specific one (equal counts) — a genuinely separate generic call in the
+    // same body still reports.
+    if (
+      matchedSet.has(specific) &&
+      matchedSet.has(generic) &&
+      sinkOccurrences(body, genericRe) === sinkOccurrences(body, specificRe)
+    ) {
+      suppressed.add(generic);
+    }
+  }
+  for (const label of matched) {
+    if (!suppressed.has(label)) signals.push(`sink:${label}`);
   }
 
   const riskyParam = block.params.find((p) => RISKY_PARAM_RE.test(p));

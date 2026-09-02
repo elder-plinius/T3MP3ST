@@ -32,26 +32,34 @@ function block(body: string): CodeBlock {
 
 const NEUTRAL_CTX = { isEntryPoint: false, reachable: false };
 
-// (language, body, substring the sink label must contain). Each body is a real
-// cross-language sink that classifies attack_surface but had no evidence label.
+// (language, body, exact sink label expected). Each body is a real cross-language
+// sink that classified attack_surface but had no evidence label. The label is
+// asserted EXACTLY and as the ONLY sink signal, so a double-count (which would
+// inflate priority via +10*riskSignals.length) fails the test. Covers all 11
+// new SINK_EVIDENCE_RES entries; `popen`/`Runtime.getRuntime` are the two that
+// textually overlap a generic Python label and must be de-duplicated to one.
 const CROSS_LANG_SINKS: Array<[string, string, string]> = [
-  ['go/exec', 'func run(u string) error {\n  return exec.Command("sh", "-c", u).Run()\n}', 'exec.Command'],
-  ['java/ProcessBuilder', 'void run(String cmd) {\n  new ProcessBuilder(cmd).start();\n}', 'ProcessBuilder'],
-  ['go/http.Get', 'func fetchIt(u string) {\n  http.Get(u)\n}', 'http.Get'],
-  ['go/client.Do', 'func send(req *Request) {\n  client.Do(req)\n}', 'client.Do'],
-  ['js/fetch', 'async function load(u) {\n  return fetch(u)\n}', 'fetch'],
-  ['js/axios', 'function load(u) {\n  return axios.get(u)\n}', 'axios'],
-  ['c/system', 'void run(char *cmd) {\n  system(cmd);\n}', 'system'],
-  ['c/execl', 'void run(char *p) {\n  execl(p, p, 0);\n}', 'exec'],
+  ['go/exec.Command', 'func run(u string) error {\n  return exec.Command("sh", "-c", u).Run()\n}', 'sink:exec.Command'],
+  ['java/Runtime', 'void run(String cmd) {\n  Runtime.getRuntime().exec(cmd);\n}', 'sink:Runtime.getRuntime'],
+  ['java/ProcessBuilder', 'void run(String cmd) {\n  new ProcessBuilder(cmd).start();\n}', 'sink:ProcessBuilder'],
+  ['go/http.Get', 'func fetchIt(u string) {\n  http.Get(u)\n}', 'sink:http.Get/Post/NewRequest'],
+  ['node/http.request', 'function send(opts) {\n  return https.request(opts)\n}', 'sink:http.request'],
+  ['go/client.Do', 'func send(req *Request) {\n  client.Do(req)\n}', 'sink:client.Do/Get/Post'],
+  ['js/fetch', 'async function load(u) {\n  return fetch(u)\n}', 'sink:fetch()'],
+  ['js/axios', 'function load(u) {\n  return axios.get(u)\n}', 'sink:axios'],
+  ['c/system', 'void run(char *cmd) {\n  system(cmd);\n}', 'sink:system()'],
+  ['c/popen', 'void run(char *cmd) {\n  popen(cmd, "r");\n}', 'sink:popen()'],
+  ['c/execl', 'void run(char *p) {\n  execl(p, p, 0);\n}', 'sink:execl/execv'],
 ];
 
 describe('cross-language sink evidence (#165)', () => {
-  it.each(CROSS_LANG_SINKS)('%s classifies attack_surface WITH a sink label', (_lang, body, needle) => {
+  it.each(CROSS_LANG_SINKS)('%s → attack_surface with exactly one sink label', (_lang, body, label) => {
     const { exposure, riskSignals } = classify(block(body), NEUTRAL_CTX);
     expect(exposure).toBe('attack_surface');
     const sinks = riskSignals.filter((s) => s.startsWith('sink:'));
-    expect(sinks, `expected a sink: label for ${_lang}, got ${JSON.stringify(riskSignals)}`).not.toHaveLength(0);
-    expect(sinks.join(' ')).toContain(needle);
+    // exactly one — a double-count (e.g. popen also matching open()) would inflate
+    // priority and is the bug this asserts against
+    expect(sinks, `${_lang}: expected exactly [${label}], got ${JSON.stringify(riskSignals)}`).toEqual([label]);
   });
 
   it('invariant: every attack_surface-by-sink body carries at least one sink: label', () => {
@@ -64,6 +72,20 @@ describe('cross-language sink evidence (#165)', () => {
         `${lang}: attack_surface with no sink evidence`,
       ).toBe(true);
     }
+  });
+
+  it('keeps a separate generic sink that co-occurs with an overlapping specific one', () => {
+    // The specific sink's text is a superset of a generic one (`popen(`⊃`open(`;
+    // `…exec(`⊃`exec(`). Suppression is per-occurrence, not existence-based: when a
+    // body has BOTH the overlapping specific call AND a distinct real generic call,
+    // the generic must still report — dropping it would hide a real sink.
+    const cBody = 'void run(char *cmd, char *path) {\n  popen(cmd, "r");\n  int fd = open(path, 0);\n}';
+    const cSinks = classify(block(cBody), NEUTRAL_CTX).riskSignals.filter((s) => s.startsWith('sink:')).sort();
+    expect(cSinks, `C popen+open, got ${JSON.stringify(cSinks)}`).toEqual(['sink:open()', 'sink:popen()']);
+
+    const jBody = 'void run(String cmd, String code) {\n  Runtime.getRuntime().exec(cmd);\n  engine.exec(code);\n}';
+    const jSinks = classify(block(jBody), NEUTRAL_CTX).riskSignals.filter((s) => s.startsWith('sink:')).sort();
+    expect(jSinks, `Java Runtime+exec, got ${JSON.stringify(jSinks)}`).toEqual(['sink:Runtime.getRuntime', 'sink:exec()']);
   });
 
   it('Python evidence is unchanged (control)', () => {
