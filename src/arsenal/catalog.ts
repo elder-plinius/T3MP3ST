@@ -323,7 +323,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     outputFormats: ['json', 'text'],
     installHint: 'brew install wpscanteam/tap/wpscan  # or: gem install wpscan',
     commandHint: 'wpscan --url https://example.com --format json',
-    parserStatus: 'planned',
+    parserStatus: 'structured',
     notes: 'WordPress CMS, plugin, and theme enumeration; validate findings before reporting.',
   },
   {

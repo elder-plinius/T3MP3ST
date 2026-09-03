@@ -1,0 +1,116 @@
+{
+  "banner": {
+    "description": "WordPress Security Scanner by the WPScan Team",
+    "version": "3.8.28"
+  },
+  "start_time": 1725400000,
+  "target_url": "https://target.example.com",
+  "target_ip": "192.0.2.10",
+  "effective_url": "https://target.example.com/",
+  "interesting_findings": [
+    {
+      "url": "https://target.example.com/xmlrpc.php",
+      "to_s": "XML-RPC seems to be enabled: https://target.example.com/xmlrpc.php",
+      "type": "xmlrpc",
+      "found_by": "Link Tag (Passive Detection)",
+      "confidence": 30,
+      "references": {
+        "url": ["http://codex.wordpress.org/XML-RPC_Pingback_API"]
+      },
+      "interesting_entries": []
+    },
+    {
+      "url": "https://target.example.com/readme.html",
+      "to_s": "WordPress readme file found",
+      "type": "readme",
+      "found_by": "Direct Access (Aggressive Detection)",
+      "confidence": 100,
+      "references": {},
+      "interesting_entries": []
+    }
+  ],
+  "version": {
+    "number": "6.4.2",
+    "release_date": "2023-12-06",
+    "status": "insecure",
+    "found_by": "Rss Generator (Passive Detection)",
+    "confidence": 100,
+    "interesting_entries": [],
+    "confirmed_by": {},
+    "vulnerabilities": [
+      {
+        "title": "WordPress Core - Fixture Vulnerability (test data)",
+        "fixed_in": "6.4.3",
+        "references": {
+          "url": ["https://wordpress.org/news/category/security/"],
+          "wpvulndb": ["00000"]
+        }
+      }
+    ]
+  },
+  "main_theme": {
+    "slug": "twentytwentyfour",
+    "location": "https://target.example.com/wp-content/themes/twentytwentyfour/",
+    "outdated": false,
+    "vulnerabilities": [],
+    "version": { "number": "1.0", "confidence": 80 }
+  },
+  "plugins": {
+    "woocommerce": {
+      "slug": "woocommerce",
+      "location": "https://target.example.com/wp-content/plugins/woocommerce/",
+      "latest_version": "4.5.0",
+      "outdated": true,
+      "vulnerabilities": [
+        {
+          "title": "WooCommerce < 4.1.0 - Unescaped Metadata when Duplicating Products",
+          "fixed_in": "4.1.0",
+          "references": {
+            "url": ["https://plugins.trac.wordpress.org/browser/woocommerce/tags/4.1.0/readme.txt?rev=2298743"],
+            "wpvulndb": ["10220"]
+          }
+        },
+        {
+          "title": "WooCommerce < 4.2.1 - Potential Cross-Site Scripting (XSS) via SelectWoo",
+          "fixed_in": "4.2.1",
+          "references": {
+            "url": ["https://woocommerce.wordpress.com/2020/06/22/woocommerce-4-2-1-security-and-fix-release/"],
+            "wpvulndb": ["10282"]
+          }
+        }
+      ],
+      "version": { "number": "3.9.2", "confidence": 100 }
+    },
+    "contact-form-7-datepicker": {
+      "slug": "contact-form-7-datepicker",
+      "location": "https://target.example.com/wp-content/plugins/contact-form-7-datepicker/",
+      "latest_version": "2.6.0",
+      "outdated": false,
+      "vulnerabilities": [
+        {
+          "title": "Contact Form 7 Datepicker <= 2.6.0 - Authenticated Stored Cross-Site Scripting (XSS)",
+          "fixed_in": null,
+          "references": {
+            "cve": ["2020-11516"],
+            "url": ["https://www.wordfence.com/blog/2020/04/high-severity-vulnerability-leads-to-closure-of-plugin-with-over-100000-installations/"],
+            "wpvulndb": ["10164"]
+          }
+        }
+      ],
+      "version": null
+    },
+    "akismet": {
+      "slug": "akismet",
+      "location": "https://target.example.com/wp-content/plugins/akismet/",
+      "outdated": false,
+      "vulnerabilities": [],
+      "version": null
+    }
+  },
+  "users": {
+    "admin": { "id": 1, "confidence": 100 },
+    "editor": { "id": 2, "confidence": 100 }
+  },
+  "scan_aborted": false,
+  "requests_done": 42
+}

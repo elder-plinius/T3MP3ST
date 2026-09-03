@@ -531,6 +531,74 @@ function parseArjun(raw: string): ToolFinding[] {
   return out;
 }
 
+// ── wpscan --format json : WP core/plugin/theme vulns + interesting findings ──────────────
+// WPScan emits ONE JSON document: { version, main_theme, plugins{}, themes{},
+// interesting_findings[], users{}, … } with vulns as { title, fixed_in, references:
+// { cve: ['2020-11516'], url: [...], wpvulndb: [...] } } — CVE refs arrive WITHOUT the
+// 'CVE-' prefix. WPScan never scores severity, so this mapping is documented, not invented:
+// core vulns on a core WPScan itself labels 'insecure' → high; other confirmed component
+// vulns → medium; enumeration / interesting findings → info.
+function parseWpscan(raw: string): ToolFinding[] {
+  const doc = asObj(jsonDoc(raw));
+  if (Object.keys(doc).length === 0) return [];
+  const out: ToolFinding[] = [];
+  const pushVulns = (component: string, node: unknown, severity: Severity) => {
+    const vulns = asObj(node).vulnerabilities;
+    if (!Array.isArray(vulns)) return;
+    for (const item of vulns) {
+      const v = asObj(item);
+      const title = String(v.title ?? '');
+      if (!title) continue;
+      const refs = asObj(v.references);
+      const f: ToolFinding = {
+        title: `${component}: ${title}`,
+        severity,
+        details: truncate(asStrArray(refs.url).join(' ') || title),
+      };
+      const cves = asStrArray(refs.cve).map((c) => (/^CVE-/i.test(c) ? c : `CVE-${c}`));
+      if (cves.length) f.cve = cves;
+      const fixed = String(v.fixed_in ?? '');
+      if (fixed) f.remediation = `update ${component} to ${fixed}`;
+      out.push(f);
+    }
+  };
+  const version = asObj(doc.version);
+  const coreNum = String(version.number ?? '');
+  if (coreNum) {
+    pushVulns(`WordPress core ${coreNum}`, version, String(version.status ?? '') === 'insecure' ? 'high' : 'medium');
+  }
+  for (const [slug, node] of Object.entries(asObj(doc.plugins))) pushVulns(`plugin ${slug}`, node, 'medium');
+  for (const [slug, node] of Object.entries(asObj(doc.themes))) pushVulns(`theme ${slug}`, node, 'medium');
+  const mainTheme = asObj(doc.main_theme);
+  if (mainTheme.slug) pushVulns(`theme ${String(mainTheme.slug)}`, mainTheme, 'medium');
+  const interesting = doc.interesting_findings;
+  if (Array.isArray(interesting)) {
+    for (const item of interesting) {
+      const o = asObj(item);
+      const label = String(o.to_s ?? o.url ?? '');
+      if (!label) continue;
+      out.push({
+        title: `wpscan: ${truncate(label, 80)}`,
+        severity: 'info',
+        details: [
+          o.url && `url: ${redactString(String(o.url))}`,
+          o.found_by && `found_by: ${String(o.found_by)}`,
+          o.confidence !== undefined && `confidence: ${String(o.confidence)}`,
+        ].filter(Boolean).join(' | '),
+      });
+    }
+  }
+  const users = Object.keys(asObj(doc.users));
+  if (users.length) {
+    out.push({
+      title: `wpscan: ${users.length} user(s) enumerated`,
+      severity: 'info',
+      details: `Usernames: ${users.join(', ')} — valid account names for password-policy review, not proof of compromise.`,
+    });
+  }
+  return out;
+}
+
 const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   nuclei: parseNuclei,
   httpx: parseHttpx,
@@ -547,6 +615,7 @@ const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   wafw00f: parseWafw00f,
   trufflehog: parseTrufflehog,
   arjun: parseArjun,
+  wpscan: parseWpscan,
 };
 
 /** Adapter ids that have a structured output parser wired here. */
