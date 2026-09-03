@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { LLMMessage } from '../types/index.js';
 
 export type ContextKind =
@@ -133,8 +134,9 @@ function summaryData(items: readonly ContextItem[]): string {
 function summaryItem(content: string, sourceIds: string[]): ContextItem {
   const encodedData = JSON.stringify({ sourceIds, content })
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const sourceDigest = createHash('sha256').update(JSON.stringify(sourceIds)).digest('hex');
   return {
-    id: `summary:${sourceIds.join(',')}`,
+    id: `context-summary:${sourceDigest}`,
     kind: 'summary',
     trust: 'generated',
     message: {
