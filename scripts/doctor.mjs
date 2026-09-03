@@ -25,16 +25,26 @@ async function fileExists(path) {
 
 async function commandPath(binary) {
   try {
-    const { stdout } = await execFileAsync('which', [binary], { timeout: 1500 });
-    return stdout.trim();
+    const cmd = process.platform === 'win32' ? 'where.exe' : 'which';
+    const { stdout } = await execFileAsync(cmd, [binary], { timeout: 2500 });
+    return stdout.trim().split(/\r?\n/)[0];
   } catch {
+    if (process.platform === 'win32') {
+      try {
+        const { stdout } = await execFileAsync('wsl.exe', ['-e', 'which', binary], { timeout: 3000 });
+        const trimmed = stdout.trim();
+        if (trimmed.startsWith('/')) return `wsl:${trimmed}`;
+      } catch {
+        // ignore wsl fallback error
+      }
+    }
     return '';
   }
 }
 
-async function apiGet(path) {
+async function apiGet(path, timeoutMs = 10000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 2500);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${baseUrl}${path}`, { signal: controller.signal });
     const text = await response.text();
@@ -45,6 +55,8 @@ async function apiGet(path) {
       data = { raw: text };
     }
     return { ok: response.ok, status: response.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: err, data: {} };
   } finally {
     clearTimeout(timer);
   }
@@ -117,12 +129,12 @@ async function main() {
   }
 
   if (apiReachable) {
-    const preflight = await apiGet('/api/preflight');
-    check('Capability preflight', preflight.ok && typeof preflight.data.score === 'number', `${preflight.data.score ?? 'n/a'}/100`);
-    const arsenal = await apiGet('/api/arsenal/status');
-    check('Arsenal status', arsenal.ok && arsenal.data.schema_version === 't3mp3st_arsenal_status/v1', `${arsenal.data.summary?.installedCommandReady ?? 0}/${arsenal.data.summary?.commandReady ?? 0} installed`);
+    const preflight = await apiGet('/api/preflight', 20000);
+    check('Capability preflight', preflight.ok && typeof preflight.data.score === 'number', `${preflight.data.score ?? 'n/a'}/100${preflight.error ? ' (' + preflight.error.message + ')' : ''}`);
+    const arsenal = await apiGet('/api/arsenal/status', 20000);
+    check('Arsenal status', arsenal.ok && arsenal.data.schema_version === 't3mp3st_arsenal_status/v1', `${arsenal.data.summary?.installedCommandReady ?? 0}/${arsenal.data.summary?.commandReady ?? 0} installed${arsenal.error ? ' (' + arsenal.error.message + ')' : ''}`);
     check('Arsenal does not fake empty coverage', arsenal.ok && arsenal.data.summary?.unmodeled === false, `unmodeled=${arsenal.data.summary?.unmodeled}`);
-    const activation = await apiGet('/api/arsenal/activation');
+    const activation = await apiGet('/api/arsenal/activation', 20000);
     check('Arsenal activation plan', activation.ok && activation.data.schema_version === 't3mp3st_arsenal_activation/v1', `${activation.data.summary?.total || 0} wired / doc ${activation.data.localPlanDoc || 'missing'}`);
   }
 

@@ -393,12 +393,55 @@
         .egress-proxied { border-color: rgba(0,255,136,0.4); background: rgba(0,255,136,0.08); }
         .egress-proxied .egress-dot { background: #00ff88; box-shadow: 0 0 6px rgba(0,255,136,0.7); }
         .egress-proxied .egress-ip { color: #7CFFC4; }
-        .egress-leak { border-color: rgba(255,64,64,0.55); background: rgba(255,64,64,0.12); }
-        .egress-leak .egress-dot { background: #ff4040; box-shadow: 0 0 8px rgba(255,64,64,0.8); animation: egressPulse .8s ease-in-out infinite; }
-        .egress-leak .egress-label, .egress-leak .egress-ip { color: #ff8080; }
-        .egress-error { border-color: rgba(255,176,32,0.4); }
-        .egress-error .egress-dot { background: #ffb020; }
+        .egress-leak { border-color: #ff0033 !important; background: rgba(255,0,51,0.16) !important; animation: egressGlowPulse 1.2s ease-in-out infinite !important; }
+        .egress-leak .egress-dot { background: #ff0033 !important; box-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033 !important; animation: egressDotPulse 1.2s ease-in-out infinite !important; }
+        .egress-leak .egress-label { color: #ff4d6d !important; font-weight: 700 !important; text-shadow: 0 0 8px rgba(255,0,51,0.8) !important; }
+        .egress-leak .egress-ip { color: #ffffff !important; font-weight: 800 !important; text-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033, 0 0 30px rgba(255,0,51,0.9) !important; animation: egressTextPulse 1.2s ease-in-out infinite !important; }
+        .egress-no-ip, .egress-error { border-color: #ff0033 !important; background: rgba(255,0,51,0.16) !important; animation: egressGlowPulse 1.2s ease-in-out infinite !important; }
+        .egress-no-ip .egress-dot, .egress-error .egress-dot { background: #ff0033 !important; box-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033 !important; animation: egressDotPulse 1.2s ease-in-out infinite !important; }
+        .egress-no-ip .egress-label, .egress-error .egress-label { color: #ff4d6d !important; font-weight: 700 !important; text-shadow: 0 0 8px rgba(255,0,51,0.8) !important; }
+        .egress-no-ip .egress-ip, .egress-error .egress-ip { color: #ffffff !important; font-weight: 800 !important; text-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033, 0 0 30px rgba(255,0,51,0.9) !important; animation: egressTextPulse 1.2s ease-in-out infinite !important; }
         @keyframes egressPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+        @keyframes egressGlowPulse {
+            0%, 100% {
+                border-color: #ff0033;
+                background: rgba(255, 0, 51, 0.22);
+                box-shadow: 0 0 15px rgba(255, 0, 51, 0.85), 0 0 30px rgba(255, 0, 51, 0.45), inset 0 0 12px rgba(255, 0, 51, 0.35);
+            }
+            50% {
+                border-color: rgba(255, 0, 51, 0.45);
+                background: rgba(255, 0, 51, 0.08);
+                box-shadow: 0 0 6px rgba(255, 0, 51, 0.35), inset 0 0 4px rgba(255, 0, 51, 0.1);
+            }
+        }
+        @keyframes egressDotPulse {
+            0%, 100% { transform: scale(1.2); box-shadow: 0 0 12px #ff0033, 0 0 22px #ff0033; }
+            50% { transform: scale(0.85); box-shadow: 0 0 4px #ff0033; }
+        }
+        @keyframes egressTextPulse {
+            0%, 100% { opacity: 1; text-shadow: 0 0 10px #ff0033, 0 0 22px #ff0033, 0 0 35px rgba(255, 0, 51, 0.8); }
+            50% { opacity: 0.55; text-shadow: 0 0 4px #ff0033, 0 0 8px rgba(255, 0, 51, 0.4); }
+        }
+        @keyframes egressGlowPulse {
+            0%, 100% {
+                border-color: #ff0033;
+                background: rgba(255, 0, 51, 0.22);
+                box-shadow: 0 0 15px rgba(255, 0, 51, 0.85), 0 0 30px rgba(255, 0, 51, 0.45), inset 0 0 12px rgba(255, 0, 51, 0.35);
+            }
+            50% {
+                border-color: rgba(255, 0, 51, 0.45);
+                background: rgba(255, 0, 51, 0.08);
+                box-shadow: 0 0 6px rgba(255, 0, 51, 0.35), inset 0 0 4px rgba(255, 0, 51, 0.1);
+            }
+        }
+        @keyframes egressDotPulse {
+            0%, 100% { transform: scale(1.2); box-shadow: 0 0 12px #ff0033, 0 0 22px #ff0033; }
+            50% { transform: scale(0.85); box-shadow: 0 0 4px #ff0033; }
+        }
+        @keyframes egressTextPulse {
+            0%, 100% { opacity: 1; text-shadow: 0 0 10px #ff0033, 0 0 22px #ff0033, 0 0 35px rgba(255, 0, 51, 0.8); }
+            50% { opacity: 0.55; text-shadow: 0 0 4px #ff0033, 0 0 8px rgba(255, 0, 51, 0.4); }
+        }
 
         .btn {
             padding: 8px 16px;
@@ -4579,7 +4622,7 @@
                             </div>
                         </div>
                         <!-- Table header -->
-                        <div style="display: grid; grid-template-columns: 60px 70px 1fr 140px 90px 36px; gap: 0; padding: 4px 14px; background: rgba(255,255,255,0.02); border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 8px; text-transform: uppercase; letter-spacing: 1px; color: #444;">
+                        <div style="display: grid; grid-template-columns: 60px 65px 1fr 130px 80px 75px; gap: 0; padding: 4px 14px; background: rgba(255,255,255,0.02); border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 8px; text-transform: uppercase; letter-spacing: 1px; color: #444;">
                             <div>Severity</div>
                             <div>Type</div>
                             <div>Finding</div>
@@ -14270,19 +14313,43 @@ Be brutally honest. This is not a pep talk.`;
         }
 
         // ═══════════ FINDINGS / LOOT SYSTEM ═══════════
+        function openFindingInEvidenceVault(f) {
+            if (!f) return;
+            const targetPayload = {
+                id: f.id,
+                title: f.title,
+                target: f.target,
+                type: f.type,
+                timestamp: Date.now()
+            };
+            try {
+                localStorage.setItem('t3mp3st_target_vault_finding', JSON.stringify(targetPayload));
+            } catch (e) {}
+
+            const targetHash = 'finding-' + encodeURIComponent(f.id || f.title);
+            if (window.__t3mpEmbedded || (window.self !== window.top)) {
+                parent.postMessage({ type: 't3mp3st:nav', href: 'evidence.html#' + targetHash, targetFinding: targetPayload }, '*');
+            } else {
+                location.href = 'evidence.html#' + targetHash;
+            }
+        }
+        window.openFindingInEvidenceVault = openFindingInEvidenceVault;
+
         function addFinding(finding) {
-            // finding: { severity: 'critical'|'high'|'medium'|'low'|'info', type: 'vuln'|'cred'|'access'|'info', title, target, phase, detail, evidence }
+            // finding: { severity: 'critical'|'high'|'medium'|'low'|'info', type: 'vuln'|'cred'|'access'|'info', title, target, phase, detail, evidence, command, recommendation }
             const f = {
-                id: missionFindings.length + 1,
-                timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+                id: finding.id || ('f' + (missionFindings.length + 1)),
+                timestamp: finding.timestamp || new Date().toLocaleTimeString('en-US', { hour12: false }),
                 severity: finding.severity || 'info',
                 type: finding.type || 'vuln',
                 title: finding.title || 'Unknown Finding',
                 target: finding.target || '-',
                 phase: finding.phase || MissionContext.currentPhase || '-',
-                detail: finding.detail || '',
+                detail: finding.detail || finding.description || '',
                 evidence: finding.evidence || '',
-                provenance: finding.provenance || ''
+                provenance: finding.provenance || '',
+                command: finding.command || '',
+                recommendation: finding.recommendation || finding.remediation || ''
             };
             missionFindings.push(f);
             renderFindingsRow(f);
@@ -14326,9 +14393,13 @@ Be brutally honest. This is not a pep talk.`;
             row.className = 'finding-row';
             row.setAttribute('data-severity', f.severity);
             row.setAttribute('data-type', f.type);
-            row.style.cssText = `display: grid; grid-template-columns: 60px 70px 1fr 140px 90px 36px; gap: 0; padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); align-items: center; font-size: 10px; transition: background 0.2s; cursor: pointer;`;
+            row.style.cssText = `display: grid; grid-template-columns: 60px 65px 1fr 130px 80px 75px; gap: 0; padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); align-items: center; font-size: 10px; transition: background 0.2s; cursor: pointer;`;
+            row.onclick = function(e) {
+                if (e.target.closest('button.copy-btn')) return;
+                openFindingInEvidenceVault(f);
+            };
             row.onmouseenter = function(e) {
-                this.style.background = 'rgba(' + rgb + ',0.12)';
+                this.style.background = 'rgba(' + rgb + ',0.14)';
                 if (typeof showFindingAttackTooltip === 'function') showFindingAttackTooltip(e, f);
             };
             row.onmousemove = function(e) {
@@ -14339,13 +14410,17 @@ Be brutally honest. This is not a pep talk.`;
                 if (typeof hideFindingAttackTooltip === 'function') hideFindingAttackTooltip();
             };
 
+            const idx = missionFindings.indexOf(f);
             row.innerHTML = `
                 <div><span style="padding: 1px 6px; background: rgba(${rgb},0.15); border: 1px solid rgba(${rgb},0.3); border-radius: 3px; font-size: 8px; color: ${color}; text-transform: uppercase; font-weight: bold;">${f.severity}</span></div>
                 <div style="color: #888;">${typeIcons[f.type] || ''} ${f.type}</div>
-                <div style="color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor:pointer;" onclick="showFindingDetail(${f.id - 1})">${escapeHtml(f.title)}${provBadge}</div>
+                <div style="color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor:pointer;" title="Click to open in Evidence Vault">${escapeHtml(f.title)}${provBadge}</div>
                 <div style="color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 9px;" title="${escapeHtml(f.target)}">${escapeHtml(f.target)}</div>
                 <div style="color: #555; font-size: 9px;">${f.phase}</div>
-                <div><button onclick="event.stopPropagation(); copyFinding(${f.id - 1})" title="Copy" style="background: none; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; color: #555; cursor: pointer; font-size: 10px; padding: 1px 5px;">⧉</button></div>
+                <div style="display: flex; gap: 4px; align-items: center; justify-content: flex-end;">
+                    <button type="button" class="vault-btn" onclick="event.stopPropagation(); openFindingInEvidenceVault(missionFindings[${idx >= 0 ? idx : 0}])" title="Open in Evidence Vault" style="background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.35); border-radius: 3px; color: #00ff88; cursor: pointer; font-size: 9px; padding: 2px 5px; font-weight: bold;">🔐 Vault</button>
+                    <button type="button" class="copy-btn" onclick="event.stopPropagation(); copyFinding(${idx >= 0 ? idx : 0})" title="Copy finding text" style="background: none; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; color: #555; cursor: pointer; font-size: 10px; padding: 1px 5px;">⧉</button>
+                </div>
             `;
 
             body.insertBefore(row, body.firstChild);
@@ -17990,34 +18065,40 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const d = await res.json();
                 window._lastEgressCheck = d;
-                const ip = (d.exit && d.exit.ip) ? d.exit.ip : '—';
+                const rawIp = (d.exit && d.exit.ip) ? String(d.exit.ip).trim() : '';
+                const hasValidIp = rawIp && rawIp !== '—' && rawIp !== 'n/a' && rawIp !== 'none' && rawIp !== 'null' && rawIp !== 'undefined';
                 badge.className = 'egress-badge';
-                if (d.leak) {
+                if (!hasValidIp) {
+                    badge.classList.add('egress-no-ip');
+                    if (label) label.textContent = 'IP:';
+                    val.textContent = 'NO ACTIVE IP';
+                    badge.title = '⚠ No active IP address detected. Check network connection or proxy status.';
+                } else if (d.leak) {
                     // exit IP === real IP → not anonymized
                     badge.classList.add('egress-leak');
-                    label.textContent = d.proxyEnabled ? 'LEAK:' : 'IP:';
-                    val.textContent = ip;
+                    if (label) label.textContent = d.proxyEnabled ? 'LEAK:' : 'IP:';
+                    val.textContent = rawIp;
                     badge.title = d.proxyEnabled
-                        ? `⚠ LEAK: exit IP equals your real IP (${ip}). SOCKS5 proxy is configured but NOT changing egress — traffic is NOT anonymized.`
-                        : `⚠ No proxy: test traffic leaves from your real IP (${ip}). Configure a SOCKS5 proxy in Settings → Network.`;
+                        ? `⚠ LEAK: exit IP equals your real IP (${rawIp}). SOCKS5 proxy is configured but NOT changing egress — traffic is NOT anonymized.`
+                        : `⚠ No proxy: test traffic leaves from your real IP (${rawIp}). Configure a SOCKS5 proxy in Settings → Network.`;
                 } else {
                     badge.classList.add('egress-proxied');
-                    label.textContent = 'IP:';
-                    val.textContent = ip;
+                    if (label) label.textContent = 'IP:';
+                    val.textContent = rawIp;
                     const cc = (d.exit && d.exit.country) ? ` · ${d.exit.country}` : '';
                     const via = (d.proxy && d.proxy.url) ? d.proxy.url : 'SOCKS5';
                     badge.title = `Proxied egress via ${via}${cc}. Your real IP (${(d.direct && d.direct.ip) || 'unknown'}) is hidden from targets.`;
                 }
             } catch (e) {
-                badge.className = 'egress-badge egress-error';
-                label.textContent = 'IP:';
-                val.textContent = 'n/a';
-                badge.title = 'Egress IP check failed: ' + ((e && e.message) ? e.message : e) + ' (is the backend running?)';
+                badge.className = 'egress-badge egress-no-ip egress-error';
+                if (label) label.textContent = 'IP:';
+                val.textContent = 'NO ACTIVE IP';
+                badge.title = 'Egress IP check failed (no active IP): ' + ((e && e.message) ? e.message : e) + ' (is the backend running?)';
             }
         }
         // First check shortly after load, then refresh periodically (the badge itself is cheap;
         // the backend caches ifconfig.co for ~15s so polling doesn't hammer it).
-        setTimeout(() => refreshEgressIp(false), 1500);
+        setTimeout(() => refreshEgressIp(false), 50);
         setInterval(() => refreshEgressIp(false), 30000);
 
         // ═══════════ AUTONOMOUS MISSION LAUNCHER ═══════════

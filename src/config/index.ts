@@ -865,7 +865,7 @@ class ConfigManager {
           if (pkg?.name === 't3mp3st') envPaths.push(repoEnv);
         }
       }
-    } catch {}
+    } catch { /* ignore package.json read failure */ }
     envPaths.push(homedirEnv, homeEnv);
 
     let envProvider: string | undefined;

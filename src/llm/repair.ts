@@ -24,13 +24,17 @@ export class ToolcallRepairer {
     // 1. Direct parse attempt
     try {
       return JSON.parse(str);
-    } catch (_) {}
+    } catch {
+      /* continue to repair steps */
+    }
 
     // 2. Strip surrounding markdown code blocks (```json ... ``` or ``` ...)
     str = str.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     try {
       return JSON.parse(str);
-    } catch (_) {}
+    } catch {
+      /* continue to brace extraction */
+    }
 
     // 3. Extract outermost curly brace pair
     const firstBrace = str.indexOf('{');
@@ -39,12 +43,14 @@ export class ToolcallRepairer {
       str = str.substring(firstBrace, lastBrace + 1);
       try {
         return JSON.parse(str);
-      } catch (_) {}
+      } catch {
+        /* continue to syntax repairs */
+      }
     }
 
     // 4. Common LLM syntax repairs:
     // - Remove trailing commas before } or ]
-    let repaired = str.replace(/,\s*([\}\]])/g, '$1');
+    let repaired = str.replace(/,\s*([}\]])/g, '$1');
     // - Convert single-quoted keys and values to double quotes
     repaired = repaired.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, '"$1"');
     // - Fix unquoted object keys: { key: "value" } -> { "key": "value" }
@@ -52,7 +58,9 @@ export class ToolcallRepairer {
 
     try {
       return JSON.parse(repaired);
-    } catch (_) {}
+    } catch {
+      /* fallback to regex extraction */
+    }
 
     // 5. If JSON parsing still fails, attempt key-value regex extraction
     const fallbackObj: Record<string, any> = {};

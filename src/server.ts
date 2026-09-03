@@ -381,7 +381,7 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
 
   // So infiltration can continue prior work: wire the durable per‑target scan notes provider
   // (5 notes / 1200 chars, same cap the AgentLoop prompt shows) into every dispatch.
-  try { tempestCommand.setScanNotesProvider((target: string) => scanNotesForTarget(target, { maxNotes: 5, charCap: 1200 })); } catch {}
+  try { tempestCommand.setScanNotesProvider((target: string) => scanNotesForTarget(target, { maxNotes: 5, charCap: 1200 })); } catch { /* ignore */ }
 
   // Record EVERY task's tool results + summary into the Evidence Vault (by domain)
   // while the mission runs — findings alone only capture the formal claims, not the
@@ -445,6 +445,7 @@ interface ParsedCommand {
 }
 
 const SHELL_META = /[|&;$<>`\\]/;
+// eslint-disable-next-line no-control-regex
 const COMMAND_CONTROL = /[\x00-\x1F\x7F-\x9F\u2028\u2029]/;
 const CURL_TRANSPORT_OVERRIDE_FLAGS = new Set([
   '--resolve',
@@ -931,7 +932,7 @@ function upsertMissionFindingToLedger(finding: {
     try {
       const t = command.targetEnv?.getAllTargets?.().find(x => x && x.id === rawTargetId);
       if (t && typeof t.address === 'string' && t.address.trim()) target = t.address.trim();
-    } catch {}
+    } catch { /* ignore target resolution error */ }
   }
   const dedupeKey = `${title.toLowerCase()}::${target.toLowerCase()}`;
   const existing = [...findingsLedger.values()].find(
@@ -949,19 +950,20 @@ function upsertMissionFindingToLedger(finding: {
   // evidence item is skipped, never fatal.
   const attachEvidence = (record: FindingRecord): void => {
     if (!Array.isArray(finding.evidence)) return;
-    for (const ev of finding.evidence.slice(0, 6)) {
+    for (const ev of finding.evidence.slice(0, 20)) {
       const content = typeof ev?.content === 'string' ? ev.content.trim() : '';
       if (!content) continue;
       const evidenceId = newId('evidence');
+      const evCommand = (ev as any).command || ev.metadata?.tool || undefined;
       evidenceLedger.set(evidenceId, {
         id: evidenceId,
         missionId: record.missionId,
         findingId: record.id,
         type: 'log',
         title: ev.metadata?.tool ? `Tool output — ${ev.metadata.tool}` : 'Tool output',
-        summary: redactLedgerText(content.slice(0, 2000)),
+        summary: redactLedgerText(content, 32000),
         source: 'tool',
-        command: ev.metadata?.tool ? redactLedgerText(ev.metadata.tool, 240) : undefined,
+        command: evCommand ? redactLedgerText(String(evCommand), 1200) : undefined,
         provenanceStrength: 'tool',
         resourceIds: [],
         createdAt: now,
@@ -1008,7 +1010,7 @@ function upsertMissionFindingToLedger(finding: {
   findingsLedger.set(record.id, record);
   // Best-effort durable per-target scan note so a later scan of the same target can
   // resume without re-probing already-mapped surface. Deduped + capped.
-  try { autoScanNoteForFinding(record, finding); } catch {}
+  try { autoScanNoteForFinding(record, finding); } catch { /* ignore note recording error */ }
 }
 
 /** Extract the most domain-like token (URL host / domain / IP) from free scan text — keys evidence by asset. */
@@ -1161,7 +1163,7 @@ function recordScanEvidence(params: {
   for (const existing of findingsLedger.values()) {
     if (existing.title === title && nowMs - Date.parse(existing.createdAt) < 30_000) return null;
   }
-  const detail = redactLedgerText(String(params.detail || '').trim());
+  const detail = redactLedgerText(String(params.detail || '').trim(), 32000);
   const evidence: EvidenceEntry = {
     id: newId('evidence'),
     missionId: params.missionId,
@@ -1169,11 +1171,11 @@ function recordScanEvidence(params: {
     findingId: undefined,
     type: params.command ? 'command' : 'log',
     title,
-    summary: detail || redactLedgerText(String(params.summary || '').slice(0, 4000)),
+    summary: detail ? detail : redactLedgerText(String(params.summary || '').slice(0, 4000)),
     source: params.source,
     provenanceStrength: 'tool',
     uri: target !== 'unknown-asset' ? target : undefined,
-    command: params.command ? redactLedgerText(params.command.slice(0, 1200)) : undefined,
+    command: params.command ? redactLedgerText(params.command.slice(0, 2400)) : undefined,
     resourceIds: [],
     createdAt: now,
   };
@@ -1186,7 +1188,7 @@ function recordScanEvidence(params: {
     family: 'web_api',
     title,
     target,
-    claim: redactLedgerText(String(params.summary || '').slice(0, 2000)) || 'Scan result recorded automatically.',
+    claim: detail ? (detail.length > 200 ? detail.slice(0, 8000) : detail) : (redactLedgerText(String(params.summary || '').slice(0, 4000)) || 'Scan result recorded automatically.'),
     impact: 'Informational — recorded automatically from scan output.',
     severity: 'info',
     confidence: 0.5,
@@ -6652,7 +6654,7 @@ async function readEnvFileMap(filePath: string): Promise<Map<string, string>> {
     const eq = t.indexOf('=');
     if (eq === -1) continue;
     const k = t.slice(0, eq).trim();
-    let v = t.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    const v = t.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
     m.set(k, v);
   }
   return m;
@@ -8256,7 +8258,7 @@ app.get('/api/mission/status', (_req: Request, res: Response) => {
 app.get('/api/pack/status', (_req: Request, res: Response): void => {
   const cmd = getTempestCommand();
   const stats = cmd ? cmd.getCoordinationStats() : { enabled: false, leadsPosted: 0, followupsSpawned: 0, uniqueFindingsChased: 0 };
-  let leads: { open: number; claimed: number; confirmed: number; refuted: number; dead: number; total: number } = { open: 0, claimed: 0, confirmed: 0, refuted: 0, dead: 0, total: 0 };
+  const leads: { open: number; claimed: number; confirmed: number; refuted: number; dead: number; total: number } = { open: 0, claimed: 0, confirmed: 0, refuted: 0, dead: 0, total: 0 };
   let liveAgents = 0;
   try {
     if (cmd) {
@@ -8271,7 +8273,7 @@ app.get('/api/pack/status', (_req: Request, res: Response): void => {
       }
       liveAgents = board.getLiveAgents().length;
     }
-  } catch {}
+  } catch { /* ignore pack board query error */ }
   res.json({
     enabled: stats.enabled,
     leadsPosted: stats.leadsPosted,
@@ -8574,7 +8576,7 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
     try {
       const t = cmd?.targetEnv.getAllTargets().find(x => x && x.id === key);
       if (t && typeof t.address === 'string' && t.address.trim()) return t.address.trim();
-    } catch {}
+    } catch { /* ignore target resolution error */ }
     return key;
   };
   const live = (cmd ? cmd.vault.getAllFindings().map((f) => ({ ...f, target: resolveAddr(f.targetId) })) : []);
@@ -8596,9 +8598,19 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
         severity: f.severity,
         target: f.target,
         description: f.claim,
+        detail: f.impact ? `${f.claim}\n\nImpact:\n${f.impact}` : f.claim,
         phase: 'ledger',
-        evidence: evidences.map((e) => ({ type: e.type, content: e.summary })),
+        evidence: evidences.map((e) => ({
+          type: e.type,
+          content: e.summary,
+          command: e.command,
+          source: e.source,
+          title: e.title,
+          createdAt: e.createdAt,
+        })),
+        command: evidences.find(e => e.command)?.command || undefined,
         recommendation: f.recommendedFix || undefined,
+        provenance: 'tool',
       };
     });
   const merged = [...live];
@@ -8633,7 +8645,7 @@ function providerRunsKeyless(provider: string): boolean {
 
 function readPositiveTimeoutEnv(name: string): number | undefined {
   const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return undefined;
+  if (raw === undefined || raw === null || raw.trim() === '') return undefined;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

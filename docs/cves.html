@@ -398,12 +398,38 @@
         .egress-proxied { border-color: rgba(0,255,136,0.4); background: rgba(0,255,136,0.08); }
         .egress-proxied .egress-dot { background: #00ff88; box-shadow: 0 0 6px rgba(0,255,136,0.7); }
         .egress-proxied .egress-ip { color: #7CFFC4; }
-        .egress-leak { border-color: rgba(255,64,64,0.55); background: rgba(255,64,64,0.12); }
-        .egress-leak .egress-dot { background: #ff4040; box-shadow: 0 0 8px rgba(255,64,64,0.8); animation: egressPulse .8s ease-in-out infinite; }
-        .egress-leak .egress-label, .egress-leak .egress-ip { color: #ff8080; }
-        .egress-error { border-color: rgba(255,176,32,0.4); }
-        .egress-error .egress-dot { background: #ffb020; }
+        .egress-leak { border-color: #ff0033 !important; background: rgba(255,0,51,0.16) !important; animation: egressGlowPulse 1.2s ease-in-out infinite !important; }
+        .egress-leak .egress-dot { background: #ff0033 !important; box-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033 !important; animation: egressDotPulse 1.2s ease-in-out infinite !important; }
+        .egress-leak .egress-label { color: #ff4d6d !important; font-weight: 700 !important; text-shadow: 0 0 8px rgba(255,0,51,0.8) !important; }
+        .egress-leak .egress-ip { color: #ffffff !important; font-weight: 800 !important; text-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033, 0 0 30px rgba(255,0,51,0.9) !important; animation: egressTextPulse 1.2s ease-in-out infinite !important; }
+        .egress-no-ip, .egress-error { border-color: #ff0033 !important; background: rgba(255,0,51,0.16) !important; animation: egressGlowPulse 1.2s ease-in-out infinite !important; }
+        .egress-no-ip .egress-dot, .egress-error .egress-dot { background: #ff0033 !important; box-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033 !important; animation: egressDotPulse 1.2s ease-in-out infinite !important; }
+        .egress-no-ip .egress-label, .egress-error .egress-label { color: #ff4d6d !important; font-weight: 700 !important; text-shadow: 0 0 8px rgba(255,0,51,0.8) !important; }
+        .egress-no-ip .egress-ip, .egress-error .egress-ip { color: #ffffff !important; font-weight: 800 !important; text-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033, 0 0 30px rgba(255,0,51,0.9) !important; animation: egressTextPulse 1.2s ease-in-out infinite !important; }
         @keyframes egressPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+        @keyframes egressGlowPulse {
+            0%, 100% {
+                border-color: #ff0033;
+                background: rgba(255, 0, 51, 0.22);
+                box-shadow: 0 0 15px rgba(255, 0, 51, 0.85), 0 0 30px rgba(255, 0, 51, 0.45), inset 0 0 12px rgba(255, 0, 51, 0.35);
+            }
+            50% {
+                border-color: rgba(255, 0, 51, 0.45);
+                background: rgba(255, 0, 51, 0.08);
+                box-shadow: 0 0 6px rgba(255, 0, 51, 0.35), inset 0 0 4px rgba(255, 0, 51, 0.1);
+            }
+        }
+        @keyframes egressDotPulse {
+            0%, 100% { transform: scale(1.2); box-shadow: 0 0 12px #ff0033, 0 0 22px #ff0033; }
+            50% { transform: scale(0.85); box-shadow: 0 0 4px #ff0033; }
+        }
+        @keyframes egressTextPulse {
+            0%, 100% { opacity: 1; text-shadow: 0 0 10px #ff0033, 0 0 22px #ff0033, 0 0 35px rgba(255, 0, 51, 0.8); }
+            50% { opacity: 0.55; text-shadow: 0 0 4px #ff0033, 0 0 8px rgba(255, 0, 51, 0.4); }
+        }
+        @keyframes egressPulseDot { 0%,100% { opacity: 1; transform: scale(1); box-shadow: 0 0 10px rgba(255,64,64,0.9); } 50% { opacity: .3; transform: scale(0.85); box-shadow: 0 0 2px rgba(255,64,64,0.2); } }
+        @keyframes egressPulseText { 0%,100% { opacity: 1; text-shadow: 0 0 8px rgba(255,64,64,0.9); } 50% { opacity: .35; text-shadow: 0 0 2px rgba(255,64,64,0.2); } }
+        @keyframes egressPulseBorder { 0%,100% { border-color: rgba(255,64,64,0.8); box-shadow: 0 0 10px rgba(255,64,64,0.4); } 50% { border-color: rgba(255,64,64,0.25); box-shadow: 0 0 2px rgba(255,64,64,0.05); } }
 
         .page-content { padding: 24px; max-width: 1440px; width: 100%; margin: 0 auto; }
         .stats-grid {
@@ -1474,7 +1500,7 @@
         }
 
         setInterval(() => T3MP3ST_API.checkHealth(), 10000);
-        setTimeout(() => refreshEgressIp(false), 1500);
+        setTimeout(() => refreshEgressIp(false), 50);
         setInterval(() => refreshEgressIp(false), 30000);
     </script>
     <script src="embed.js"></script>

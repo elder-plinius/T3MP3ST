@@ -584,7 +584,7 @@ export class DFIRManager {
     task.executedAt = new Date().toISOString();
 
     let output = '';
-    let success = true;
+    const success = true;
     const now = new Date().toLocaleTimeString();
 
     switch (playbookType) {

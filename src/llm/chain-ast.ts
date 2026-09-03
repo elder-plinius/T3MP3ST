@@ -150,6 +150,7 @@ export class ChainAST {
 
 export function sanitizeJSONControlChars(s: string): string {
   // Keep \n (\u000A), \t (\u0009), \r (\u000D); strip the rest of C0 range.
+  // eslint-disable-next-line no-control-regex
   return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 }
 

@@ -776,7 +776,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
         cvss: finding.cvss,
         cve: finding.cve,
         cwe: finding.cwe,
-        exploitAvailable: finding.exploitedAt != null,
+        exploitAvailable: finding.exploitedAt !== undefined && finding.exploitedAt !== null,
         references: finding.references,
       });
     }
@@ -862,7 +862,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // Pack-board lease reaper — frees expired claims so another agent can take them.
     if (this.coordinationEnabled && !this.packReaperTimer) {
       this.packReaperTimer = setInterval(() => {
-        try { this.packBoard.releaseExpiredClaims(Date.now()); } catch {}
+        try { this.packBoard.releaseExpiredClaims(Date.now()); } catch { /* ignore */ }
       }, 30_000);
     }
 
@@ -940,7 +940,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     }
     // Abort every in-flight dispatch so recon/infiltrator/exfiltrator actually stop
     for (const op of this.dispatchOperators.values()) {
-      try { op.abortActiveTask('mission stopped by operator'); } catch {}
+      try { op.abortActiveTask('mission stopped by operator'); } catch { /* ignore abort error */ }
     }
     this.activeDispatches.clear();
     this.dispatchStartTimes.clear();
@@ -996,7 +996,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
 
       // Abort in-flight tasks if any were stuck and reset LLM sessions
       for (const op of this.dispatchOperators.values()) {
-        try { op.abortActiveTask('mission resumed by operator'); } catch {}
+        try { op.abortActiveTask('mission resumed by operator'); } catch { /* ignore abort error */ }
       }
       for (const op of this.cell.getAllOperators()) {
         op.resetLLMSession();
@@ -1069,7 +1069,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     const DEFAULT_TASK_TIMEOUT_MS = 900000; // 15 minutes — a frontier model via a router can take ~60s per agent turn and a recon task needs several turns; 5 min reaped legitimately-working tasks
     const LOCAL_AGENT_TASK_TIMEOUT_MS = 1800000; // local CLI agents can need multiple slow turns
     const raw = process.env.T3MP3ST_TASK_TIMEOUT_MS;
-    if (raw != null && raw.trim() !== '') {
+    if (raw !== undefined && raw !== null && raw.trim() !== '') {
       const parsed = Number(raw);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;
     }
@@ -1346,16 +1346,16 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       // 4 minutes per turn on a multi-turn recon task stays alive as long as it is
       // demonstrably still working; only a genuinely silent dispatch is reaped.
       const lastActivity = this.dispatchLastActivity.get(taskId) ?? startedAt;
-      const silentFor = lastActivity != null ? now - lastActivity : Number.POSITIVE_INFINITY;
+      const silentFor = lastActivity !== undefined && lastActivity !== null ? now - lastActivity : Number.POSITIVE_INFINITY;
       const overTime = silentFor >= this.taskTimeoutMs;
 
       // Wedge symptom: operator claims to be working (executing/tasked) but has no
       // current task — the promise silently dropped it. Only treat this as a wedge
       // once the backstop window has elapsed, so a normal in-between-status tick
       // (e.g. the brief gap before currentTask is set) is never misread as hung.
-      const wedged = operator != null &&
+      const wedged = operator !== undefined && operator !== null &&
         (operator.status === 'executing' || operator.status === 'tasked') &&
-        operator.state.currentTask == null &&
+        (operator.state.currentTask === undefined || operator.state.currentTask === null) &&
         overTime;
 
       if (!overTime && !wedged) continue;
@@ -1436,7 +1436,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     // Keeps the gladiator feed live without the UI needing a poll backstop.
     try {
       const _packToSse = (event: string, data: unknown) => {
-        try { broadcast('pack:' + event, data as Record<string, unknown>); } catch {}
+        try { broadcast('pack:' + event, data as Record<string, unknown>); } catch { /* ignore sse broadcast error */ }
       };
       this.packBoard.on('board:event', (ev: any) => _packToSse('event', ev));
       this.packBoard.on('lead:posted', (lead: any) => _packToSse('lead:posted', { lead }));
@@ -1447,7 +1447,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.packBoard.on('lead:refuted', (lead: any) => _packToSse('lead:refuted', { lead }));
       this.packBoard.on('lead:status-changed', (payload: any) => _packToSse('lead:status-changed', payload));
       this.packBoard.on('agent:heartbeat', (status: any) => _packToSse('agent:heartbeat', { status }));
-    } catch {}
+    } catch { /* ignore pack board bridge setup error */ }
     this.on('tick', (count) => {
       // Broadcast status every 5 ticks to avoid flooding. Include `active` + the active
       // mission summary so the SSE shape matches GET /api/mission/status — the bare

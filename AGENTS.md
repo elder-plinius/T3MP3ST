@@ -2,6 +2,105 @@
 
 Operator behavior rules live in `AGENTS.override.md`. This file tracks project status and session work so nothing slips between sessions. **Mandatory Invariant:** `AGENTS.md` is updated after every completed step, task, and architectural action.
 
+## Session Log — 2026-09-03 (Jarvis) — PR #163 Review Remediation: Zero Lint Errors, Clean Doctor & Whitespace Pass
+
+**Request:** "can you check the status on the PR i did on github" followed by "can you do what it suggests without messing up the code?"
+
+### 1) Investigation & PR Status:
+- Fetched exact status for PR #163 (`elder-plinius/T3MP3ST`, branch `xxmafiaxxx:feat/threat-intel-cve-vault-dfir-suite`).
+- PR is open with `CHANGES_REQUESTED` by maintainer `jmagly`.
+- Maintainer split the omnibus 90-file PR (+355k lines) into 13 modular tracker issues (#171–#183) starting with #171 (CISA KEV / EPSS feed ingestion).
+- Reviewer `lyubomir-bozhinov` submitted 2 inline security comments (which were already investigated and hardened locally in the prior session).
+- Maintainer flagged `npm run test:pr` failing with lint errors and whitespace issues.
+
+### 2) Zero-Risk Code Cleanup & Gate Resolution:
+- **Lint Errors (All 39 errors eliminated repo-wide):**
+  - `src/tools/dfir.ts`: converted un-reassigned `let success` to `const`.
+  - `src/tools/rapid-response.ts`: converted un-reassigned `let host` to `const`.
+  - `src/redact.ts`: cleaned unnecessary escaped hyphen `\-` in regex character classes.
+  - `src/tools/cve-feed.ts`: added descriptive ignore comments inside empty catch blocks (`no-empty`).
+  - `src/llm/chain-ast.ts`: annotated intentional control-character regex with `// eslint-disable-next-line no-control-regex`.
+  - `src/llm/repair.ts`: removed unused error bindings, added comments in catch blocks, removed unnecessary `\}` escape.
+  - `src/server.ts`: added comments to empty catch blocks (lines 384, 934, 1012, 8275, 8578), disabled control regex on line 448, converted `v` and `leads` to `const`, and replaced loose `== null` with strict equality `=== undefined || === null` on line 8647.
+  - `src/cli.ts`: wrapped lexical declarations in `case 'view':`, `case 'provider':`, and `case 'apikey':` blocks in curly braces (`no-case-declarations`).
+  - `src/config/index.ts`: added comment to empty catch block on line 868.
+  - `src/index.ts`: replaced loose `!= null` and `== null` with strict equality on lines 779, 1072, 1349, 1356, 1358; added comments to empty catch blocks on lines 865, 943, 999, 1439, 1450.
+- **Doctor Diagnostic Script (`scripts/doctor.mjs`):**
+  - Updated `commandPath()` to support Windows `where.exe` alongside `which`, with fallback to WSL binary detection.
+  - Added error handling and realistic timeouts (20s) for capability preflight and arsenal status checks.
+- **Whitespace / Formatting:**
+  - Verified `git diff --check`: 0 whitespace errors remaining.
+
+### 3) Verification:
+- `eslint src/**/*.ts --quiet`: **0 errors**.
+- `tsc --noEmit`: **0 errors**.
+- `npm run build`: **0 errors**, compiled clean.
+- `npm run doctor`: **PASS** (36/40 checks passed, 0 blockers).
+- Key test suites (`evidence-vault-navigation`, `api-key-env-static`, `local-api-hardening-static`, `ui-inline-scripts-parse`): **75/75 passing**.
+
+---
+
+## Session Log — 2026-09-03 (Jarvis) — Findings & Loot → Evidence Vault Deep-Link & Verbose Scan Details
+
+**Request:** "in the findings and loot section when you click on it it should open in the corresponding evidence vault entry. i want verbose details on the scans. not just small notes in evidence vault"
+
+### 1) Findings & Loot → Evidence Vault Navigation:
+- **War Room Dashboard (`docs/index.html`):**
+  - Updated `renderFindingsRow(f)`: each row is now interactive with `cursor: pointer`, hover feedback, and an explicit `🔐 Vault` action button alongside the copy button.
+  - Clicking any row (or its title, or the `🔐 Vault` button) invokes `openFindingInEvidenceVault(f)`.
+  - Stashes target finding metadata (`id`, `title`, `target`, `type`) in `localStorage` under `t3mp3st_target_vault_finding` and sets hash `evidence.html#finding-<idOrTitle>`.
+  - Bridges across the persistent app shell: dispatches `parent.postMessage({ type: 't3mp3st:nav', href: 'evidence.html#' + targetHash, targetFinding })` so framed navigation smoothly swaps shell tab focus and forwards the focus target to the newly active frame.
+- **Shell Bridge (`docs/shell.js`):**
+  - Enhanced nav message handler to parse target hashes and post `t3mp3st:focus_finding` events to `frame.contentWindow` upon switching to `evidence.html`.
+- **Evidence Vault (`docs/evidence.html`):**
+  - Implemented `focusVaultFinding(targetInfo)`: handles both live shell messages, hash navigation, and `localStorage` handoffs on boot.
+  - Automatically expands the asset's domain group (`window.vaultOpenGroups[domain] = true`).
+  - Automatically expands the specific finding block (`window.vaultOpenFindingsMap[matchIndex] = true`).
+  - Smoothly scrolls the matching finding block (`#vault-finding-${matchIndex}`) into view and pulses with an intense neon green highlight halo (`.vault-highlight-pulse`).
+
+### 2) Verbose Scan Details & Rich Tool Output in Evidence Vault:
+- **Backend Persistence (`src/server.ts`):**
+  - Expanded `attachEvidence()`: raised slice limit from 6 to 20 tool artifacts and raised text retention from 2,000 to 32,000 characters so full raw terminal / tool outputs (nmap, nuclei, curl, ffuf, sqlmap, etc.) are never truncated into tiny summaries.
+  - Enhanced `recordScanEvidence()`: stores full raw scan output (`detail`) up to 32,000 chars, preserves the full command line executed up to 2,400 chars, and populates `FindingRecord.claim` with real scan intelligence instead of generic placeholders.
+  - Updated `GET /api/mission/findings`: returns rich evidence metadata including `command`, `title`, `source`, and timestamps.
+- **Vault UI Visualization (`docs/evidence.html`):**
+  - Implemented comprehensive finding breakdown:
+    - **Target & Phase Chips:** Target asset, Port, Phase, Category, Provenance (Tool-backed vs Model-asserted), and Finding ID.
+    - **Scan Command Executed:** Monospace terminal command block (`$ <command>`) with a 1-click Copy Command button.
+    - **Technical Claim & Analysis:** Detailed vulnerability analysis and technical claim with severity-accented border.
+    - **Raw Tool Evidence & Outputs:** Individual cards per tool artifact displaying tool title, source, execution timestamp, command, full scrollable monospace terminal output (up to 500px or expandable, not 180px), and individual 1-click copy buttons, plus a top-level "Copy All Evidence" action.
+    - **Actionable Remediation:** Prescribed fixes, configurations, and verification guidelines.
+    - **Complete Finding Report:** Added `window.copyFindingToClipboard(fi)` to copy a full Markdown audit report of the finding in 1 click.
+  - Enhanced `lootRow`: displays command lines and full scan summaries with copy buttons.
+
+### 3) Verification:
+- Created unit test suite `src/__tests__/evidence-vault-navigation.test.ts` verifying cross-frame navigation, auto-expansion, command preservation, and server limits: 5/5 tests passing.
+- Ran `ui-inline-scripts-parse.test.ts`: all 16 HTML documents parsed clean (48/48 tests passing).
+- `npm run build` compiled clean with 0 errors. Background server restarted on port 3333.
+
+---
+
+**Request:** "not done. when there is no ip address is should glow red. and pulse. fix it!!!"
+
+### Implementation & Visual Polish:
+1. **Intense Neon Red Glow Styling (`docs/*.html` + `docs/shell.html`):**
+   - Implemented high-intensity neon alert styling for `.egress-no-ip`, `.egress-error`, and `.egress-leak`:
+     - `border-color: #ff0033 !important;`
+     - Multi-tier outer and inner glow: `box-shadow: 0 0 15px rgba(255, 0, 51, 0.85), 0 0 30px rgba(255, 0, 51, 0.45), inset 0 0 12px rgba(255, 0, 51, 0.35);`
+     - Background: `rgba(255, 0, 51, 0.16) !important;`
+     - Dot: `background: #ff0033`, `box-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033` with scaling pulse animation `@keyframes egressDotPulse`.
+     - Text & Label: Crisp white text (`#ffffff`, font-weight 800) with triple-layer neon glow `text-shadow: 0 0 10px #ff0033, 0 0 20px #ff0033, 0 0 35px rgba(255, 0, 51, 0.8);` pulsing with `@keyframes egressTextPulse`.
+   - Full container pulse with `@keyframes egressGlowPulse` breathing between intense neon halo and subtle glow.
+2. **Immediate Boot Refresh:**
+   - Reduced initial refresh delay from 1500ms to 50ms across all pages so the badge updates immediately on load without lingering in a dull grey state.
+   - Synchronized across all 16 HTML documents in `docs/` (including `shell.html`).
+3. **Verification:**
+   - Evaluated live in headless Chrome via CDP: verified element transitions, captured screenshot crop, and confirmed vivid red neon halo, glowing dot, and text pulse.
+   - Vitest suite `src/__tests__/ui-inline-scripts-parse.test.ts` passed 48/48 tests across all documents.
+   - `npm run build` compiled clean with 0 errors.
+
+---
+
 ## Session Log — 2026-09-03 (Jarvis) — PR #163 Security Hardening: /api/config/env Cross-Origin Leak & Target .env Loading Closed
 
 **Request:** "got this from github. see if its real then apply the fixes it suggests" (PR #163 review comments on `src/server.ts` and `src/config/index.ts`).

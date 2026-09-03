@@ -282,7 +282,7 @@ export const RAPID_RESPONSE_CATALOG: RapidResponseCheck[] = [
     remediation: 'Upgrade OpenSSH to 9.8p1+ or set LoginGraceTime 0 in sshd_config.',
     run: async (baseUrl, timeoutMs = 6000) => {
       const target = normalizeUrl(baseUrl);
-      let host = target.replace(/^https?:\/\//i, '').split('/')[0].split(':')[0];
+      const host = target.replace(/^https?:\/\//i, '').split('/')[0].split(':')[0];
       const res = await safeProbe(`http://${host}:22`, { method: 'GET' }, timeoutMs);
       const text = (res.text || res.error || '').toUpperCase();
       const match = text.match(/SSH-2\.0-OPENSSH[_-]([0-9.]+)/i);

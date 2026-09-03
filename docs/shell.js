@@ -73,8 +73,26 @@
         if (ev.source !== frame.contentWindow || !frameIsSameOrigin()) return;
         var m = ev.data || {};
         if (m.type === 't3mp3st:nav' && typeof m.href === 'string') {
-            var p = m.href.split('/').pop();
-            if (PAGES.indexOf(p) > -1) goTo(p);
+            var raw = m.href.split('/').pop();
+            var parts = raw.split('#');
+            var p = parts[0].split('?')[0];
+            var hash = parts[1] || '';
+            if (PAGES.indexOf(p) > -1) {
+                goTo(p);
+                var forwardMsg = function() {
+                    try {
+                        if (frame && frame.contentWindow) {
+                            frame.contentWindow.postMessage({
+                                type: 't3mp3st:focus_finding',
+                                targetFinding: m.targetFinding,
+                                hash: hash
+                            }, '*');
+                        }
+                    } catch (e) {}
+                };
+                setTimeout(forwardMsg, 150);
+                setTimeout(forwardMsg, 450);
+            }
         } else if (m.type === 't3mp3st:state') {
             applyState(m);
         }
