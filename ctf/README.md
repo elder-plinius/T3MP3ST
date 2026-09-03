@@ -154,6 +154,23 @@ filesystem writes outside workdir
    curl http://localhost:PORT/
    ```
 
+### Weak-RSA lab
+
+The `rsa-weak` challenge service has only an internal Docker network. A
+separately constrained allow-list gateway owns the loopback-only host port.
+
+```bash
+npm run test:ctf-rsa
+docker compose -f ctf/docker-compose.yml up -d --build rsa-weak-gateway
+curl --fail http://127.0.0.1:9101/health
+python3 ctf/docker/crypto/rsa-weak/solve.py
+docker compose -f ctf/docker-compose.yml down --remove-orphans
+```
+
+The final teardown command is mandatory. See
+`docker/crypto/rsa-weak/PROVENANCE.md` for source, construction, container pin,
+reproduction, and sensitive-data review.
+
 ## Comparison to Industry Benchmarks
 
 | Benchmark | Method | Verification | Our Approach |

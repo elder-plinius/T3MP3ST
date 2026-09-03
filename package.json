@@ -63,6 +63,7 @@
     "cybench:live": "node scripts/cybench-bench.mjs --hunter live",
     "test:flag-grading": "node scripts/test-flag-grading.mjs",
     "test:cybench-ci": "node scripts/test-cybench-ci.mjs",
+    "test:ctf-rsa": "node scripts/test-ctf-rsa-weak.mjs",
     "tools:check": "bash scripts/check-tools-image.sh",
     "tools:build": "bash tools/build.sh",
     "test:tools-dockerfile": "node scripts/test-tools-dockerfile.mjs",

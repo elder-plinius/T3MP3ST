@@ -178,9 +178,11 @@
       "difficulty": 1,
       "points": 100,
       "docker": {
-        "image": "t3mp3st/ctf-rsa-weak:latest",
+        "image": "t3mp3st/ctf-rsa-weak:local",
         "dockerfile": "../docker/crypto/rsa-weak/Dockerfile",
-        "ports": ["9101:80"]
+        "ports": ["127.0.0.1:9101:8080"],
+        "healthcheck": "http://localhost:8080/health",
+        "teardown": "docker compose down --remove-orphans"
       },
       "target": {
         "host": "localhost",
@@ -198,7 +200,7 @@
         "location": "decrypted_message"
       },
       "time_limit_seconds": 300,
-      "source": "CSAW-inspired"
+      "source": "T3MP3ST issue #193"
     },
     {
       "id": "forensics_memory_dump",

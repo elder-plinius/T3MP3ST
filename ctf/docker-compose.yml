@@ -136,21 +136,60 @@ services:
   # ============================================================
 
   rsa-weak:
+    image: t3mp3st/ctf-rsa-weak:local
     build:
       context: ./docker/crypto/rsa-weak
       dockerfile: Dockerfile
-    container_name: ctf_rsa_weak
-    ports:
-      - "9101:80"
-    environment:
-      - CTF_FLAG=T3MP3ST{w34k_rs4_pr1m3_f4ct0r}
-    restart: unless-stopped
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
     networks:
-      - ctf-network
+      - rsa-weak-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     labels:
       - "ctf.category=cryptography"
       - "ctf.difficulty=1"
       - "ctf.points=100"
+
+  rsa-weak-gateway:
+    image: t3mp3st/ctf-rsa-weak:local
+    entrypoint: ["python", "proxy.py"]
+    depends_on:
+      rsa-weak:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9101:8080"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    networks:
+      - rsa-weak-edge
+      - rsa-weak-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # ============================================================
   # FORENSICS CHALLENGES
@@ -275,3 +314,10 @@ networks:
     ipam:
       config:
         - subnet: 169.254.169.0/24
+
+  rsa-weak-internal:
+    driver: bridge
+    internal: true
+
+  rsa-weak-edge:
+    driver: bridge
