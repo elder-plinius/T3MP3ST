@@ -82,6 +82,15 @@ unrelated provider/config churn, benchmark fixture removals, provenance doc
 removals, or safety-test removals. If the branch has drifted, recreate it from
 current `main` and reapply only the intended change.
 
+When a contribution uses an earlier PR as notes, reference material, or a code
+source, say so in the **Prior work and attribution** section. Identify adapted
+paths or concepts and describe the fresh verification applied; prior review and
+CI do not transfer to a new head. For focused implementations derived from
+[PR #163](https://github.com/elder-plinius/T3MP3ST/pull/163), thank and mention
+`@xxmafiaxxx` in both the PR body and the issue completion comment. The
+[decomposition roadmap](.aiwg/planning/pr-163-decomposition-roadmap.md) defines
+the execution order and closeout evidence for issues #171–#183.
+
 Maintainers run `npm run test:release` and `npm audit --audit-level=high` against
 the exact release tag before publishing. The tag workflow creates one
 deterministic source ZIP, verifies it, records SHA-256 checksums, and retains a
