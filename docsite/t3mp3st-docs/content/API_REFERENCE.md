@@ -116,6 +116,15 @@ Tool requests should be scoped to authorized targets. External binary availabili
 | `POST` | `/api/admiral/suggest` | Request mission suggestions |
 | `POST` | `/api/admiral/launch` | Launch from Admiral flow |
 
+## CVE Vault
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/cve-vault/search` | Search server-refreshed CISA KEV and optional FIRST EPSS data by observed technology |
+| `POST` | `/api/recon/correlate-cves` | Correlate observations with caller-supplied, already-ingested feed snapshots |
+
+`POST /api/cve-vault/search` accepts `{ "query": "vendor or product" }`. Results are always `unverified-candidate` records and include CISA/FIRST provenance, retrieval timestamps, stale state, warnings, and any per-feed refresh errors. A CVE match does not establish that the observed version is affected. The endpoint returns `503` when neither fresh nor cached CISA KEV data exists.
+
 ## Evidence, Findings, And Retests
 
 | Method | Path | Purpose |

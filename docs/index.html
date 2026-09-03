@@ -6,6 +6,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>⚡</text></svg>">
     <title>T3MP3ST - Command & Control Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="cve-vault.css" rel="stylesheet">
     <script>
         // Apply the saved theme before first paint (no flash of default theme).
         try { var _t3mpTheme = localStorage.getItem('t3mp3st_theme'); if (_t3mpTheme && _t3mpTheme !== 'storm') document.documentElement.setAttribute('data-theme', _t3mpTheme); } catch (e) {}
@@ -3492,6 +3493,9 @@
                 <div class="nav-item" data-page="evidence">
                     <span class="icon">🔐</span> Evidence Vault
                 </div>
+                <div class="nav-item" data-page="cve-vault">
+                    <span class="icon">🛡️</span> CVE Vault
+                </div>
 
                 <div class="nav-label">Ranges</div>
                 <div class="nav-item" data-page="benchmarks">
@@ -6045,6 +6049,20 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                         <button class="btn btn-primary" onclick="navigateTo('settings')">Configure API Keys →</button>
                     </div>
                 </div>
+                <div class="page" id="page-cve-vault">
+                    <div class="card" id="cveVaultApp" aria-labelledby="cveVaultTitle" aria-busy="false">
+                        <div class="card-header"><h2 class="card-title" id="cveVaultTitle">CVE Vault</h2></div>
+                        <p>Search CISA KEV with optional FIRST EPSS context. Matches are candidates, not proof that an observed version is vulnerable.</p>
+                        <form class="cve-vault-controls">
+                            <label>Vendor or product <input data-vault-query required maxlength="200" autocomplete="off" placeholder="e.g. Apache HTTP Server"></label>
+                            <label>Filter <select data-vault-filter><option value="all">All</option><option value="epss">Has EPSS</option><option value="fresh">Current feeds</option><option value="stale">Stale feeds</option></select></label>
+                            <button class="btn btn-primary" type="submit">Search</button>
+                        </form>
+                        <noscript>CVE Vault search requires JavaScript. Use POST /api/cve-vault/search from a local API client.</noscript>
+                        <p class="cve-vault-status" data-vault-status role="status" aria-live="polite"></p>
+                        <div class="cve-vault-layout"><div class="cve-vault-results" data-vault-results role="listbox" aria-label="CVE candidates"></div><article class="cve-vault-detail" data-vault-detail aria-live="polite"></article></div>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
@@ -7667,7 +7685,7 @@ Correlating findings across agents, identifying patterns, producing actionable i
         function navigateTo(page) {
             document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === page));
             document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
-            const titles = { warroom: 'War Room', 'live-scan': 'Live Scan', receipts: 'Scope Receipts', operators: 'Operatives', evidence: 'Evidence Vault', arsenal: 'Arsenal', terminal: 'Terminal', benchmarks: 'Benchmarks', configs: 'Config Library', 'ctf-range': 'CTF Range', general: 'Op Admiral', selfimprove: 'Self-Improvement', settings: 'Settings', about: 'About' };
+            const titles = { warroom: 'War Room', 'live-scan': 'Live Scan', receipts: 'Scope Receipts', operators: 'Operatives', evidence: 'Evidence Vault', 'cve-vault': 'CVE Vault', arsenal: 'Arsenal', terminal: 'Terminal', benchmarks: 'Benchmarks', configs: 'Config Library', 'ctf-range': 'CTF Range', general: 'Op Admiral', selfimprove: 'Self-Improvement', settings: 'Settings', about: 'About' };
             document.getElementById('pageTitle').textContent = titles[page] || 'War Room';
             document.getElementById('sidebar').classList.remove('open');
             if (page === 'live-scan') setTimeout(() => window.refreshLiveScanPage?.(), 50);
@@ -27503,5 +27521,6 @@ Be specific and actionable. Format as structured JSON.`;
 </script>
 <script src="sounds.js"></script>
 <script src="findings-sort.js"></script>
+<script src="cve-vault.js"></script>
 </body>
 </html>

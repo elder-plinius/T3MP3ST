@@ -7688,6 +7688,9 @@ import {
   ATTACK_GRAPH_SCHEMA, type AttackGraph,
 } from './recon/attack-graph.js';
 import { handleCorrelationApi } from './threat-intel/correlation.js';
+import { CveVaultService } from './threat-intel/vault.js';
+
+const cveVaultService = new CveVaultService();
 
 /**
  * POST /api/recon/correlate-cves — correlate observed technology names with an
@@ -7696,6 +7699,12 @@ import { handleCorrelationApi } from './threat-intel/correlation.js';
  */
 app.post('/api/recon/correlate-cves', (req: Request, res: Response): void => {
   const result = handleCorrelationApi(req.body);
+  res.status(result.status).json(result.body);
+});
+
+/** POST /api/cve-vault/search — refresh audited feeds server-side and return unverified candidates. */
+app.post('/api/cve-vault/search', async (req: Request, res: Response): Promise<void> => {
+  const result = await cveVaultService.search(req.body);
   res.status(result.status).json(result.body);
 });
 
