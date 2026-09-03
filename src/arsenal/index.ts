@@ -3269,21 +3269,208 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 // SUBPROCESS TOOL EXECUTION
 // =============================================================================
 
+export interface BinaryLocation {
+  available: boolean;
+  path: string | null;
+  inWsl: boolean;
+  distro?: string;
+  /** When this entry was cached — negative (not-found) results expire so a cold WSL start self-heals. */
+  cachedAt?: number;
+}
+
+const binaryLocationCache = new Map<string, BinaryLocation>();
+
 /**
- * Check if a command-line tool is available on the system
+ * Clear the binary location cache (useful for testing or after installing tools)
  */
-export async function isToolAvailable(command: string): Promise<boolean> {
-  try {
-    await execFileAsync('which', [command], { timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+export function clearBinaryLocationCache(): void {
+  binaryLocationCache.clear();
 }
 
 /**
- * Run a subprocess tool with timeout and output capture
+ * Locate multiple command-line binaries on the host PATH, or falling back to WSL (e.g. Kali Linux) on Windows.
  */
+export async function findBinaryLocations(commands: string[]): Promise<Map<string, BinaryLocation>> {
+  const result = new Map<string, BinaryLocation>();
+  const needed: string[] = [];
+
+  const NEGATIVE_TTL_MS = 60_000;
+  for (const cmd of commands) {
+    const cached = binaryLocationCache.get(cmd);
+    if (cached) {
+      const expired = !cached.available && cached.cachedAt && Date.now() - cached.cachedAt > NEGATIVE_TTL_MS;
+      if (!expired) {
+        result.set(cmd, cached);
+        continue;
+      }
+      binaryLocationCache.delete(cmd);
+    }
+    needed.push(cmd);
+  }
+
+  if (needed.length === 0) {
+    return result;
+  }
+
+  if (process.platform === 'win32') {
+    let whereStdout = '';
+    try {
+      const res = await execFileAsync('where.exe', needed, { timeout: 6000 });
+      whereStdout = res.stdout || '';
+    } catch (err: unknown) {
+      const e = err as { stdout?: string };
+      whereStdout = (e && typeof e.stdout === 'string') ? e.stdout : '';
+    }
+
+    const hostFound = new Map<string, string>();
+    for (const line of whereStdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed && (trimmed.includes(':\\') || trimmed.startsWith('\\'))) {
+        const binWithExt = trimmed.split('\\').pop() || '';
+        const binBase = binWithExt.replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+        if (binBase && !hostFound.has(binBase)) {
+          hostFound.set(binBase, trimmed);
+        }
+      }
+    }
+
+    const missingOnHost: string[] = [];
+    for (const cmd of needed) {
+      const lower = cmd.toLowerCase();
+      if (hostFound.has(lower)) {
+        const loc: BinaryLocation = { available: true, path: hostFound.get(lower)!, inWsl: false, cachedAt: Date.now() };
+        binaryLocationCache.set(cmd, loc);
+        result.set(cmd, loc);
+      } else {
+        missingOnHost.push(cmd);
+      }
+    }
+
+    // Batch query WSL for remaining tools
+    if (missingOnHost.length > 0) {
+      const distro = process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      let wslStdout = '';
+      try {
+        const res = await execFileAsync('wsl.exe', ['-d', distro, '-e', 'which', ...missingOnHost], { timeout: 15000 });
+        wslStdout = res.stdout || '';
+      } catch (err: unknown) {
+        const e = err as { stdout?: string };
+        wslStdout = (e && typeof e.stdout === 'string') ? e.stdout : '';
+      }
+
+      const wslFound = new Map<string, string>();
+      for (const line of wslStdout.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (trimmed && trimmed.startsWith('/')) {
+          const binName = trimmed.split('/').pop();
+          if (binName) {
+            wslFound.set(binName, trimmed);
+          }
+        }
+      }
+
+      for (const cmd of missingOnHost) {
+        if (wslFound.has(cmd)) {
+          const fullPath = wslFound.get(cmd)!;
+          const loc: BinaryLocation = {
+            available: true,
+            path: `wsl:${distro}:${fullPath}`,
+            inWsl: true,
+            distro,
+            cachedAt: Date.now(),
+          };
+          binaryLocationCache.set(cmd, loc);
+          result.set(cmd, loc);
+        } else {
+          const loc: BinaryLocation = { available: false, path: null, inWsl: false, cachedAt: Date.now() };
+          binaryLocationCache.set(cmd, loc);
+          result.set(cmd, loc);
+        }
+      }
+    }
+  } else {
+    // POSIX host batch query
+    let posixStdout = '';
+    try {
+      const res = await execFileAsync('which', needed, { timeout: 6000 });
+      posixStdout = res.stdout || '';
+    } catch (err: unknown) {
+      const e = err as { stdout?: string };
+      posixStdout = (e && typeof e.stdout === 'string') ? e.stdout : '';
+    }
+
+    const posixFound = new Map<string, string>();
+    for (const line of posixStdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed && trimmed.startsWith('/')) {
+        const binName = trimmed.split('/').pop();
+        if (binName) posixFound.set(binName, trimmed);
+      }
+    }
+
+    for (const cmd of needed) {
+      if (posixFound.has(cmd)) {
+        const fullPath = posixFound.get(cmd)!;
+        const loc: BinaryLocation = { available: true, path: fullPath, inWsl: false, cachedAt: Date.now() };
+        binaryLocationCache.set(cmd, loc);
+        result.set(cmd, loc);
+      } else {
+        const loc: BinaryLocation = { available: false, path: null, inWsl: false, cachedAt: Date.now() };
+        binaryLocationCache.set(cmd, loc);
+        result.set(cmd, loc);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Locate a single command-line binary on the host PATH, or falling back to WSL (e.g. Kali Linux) on Windows.
+ */
+export async function findBinaryLocation(command: string): Promise<BinaryLocation> {
+  const map = await findBinaryLocations([command]);
+  return map.get(command) || { available: false, path: null, inWsl: false };
+}
+
+/**
+ * Check if a command-line tool is available on the system (native host or WSL bridge)
+ */
+export async function isToolAvailable(command: string): Promise<boolean> {
+  const loc = await findBinaryLocation(command);
+  return loc.available;
+}
+
+/**
+ * Run a subprocess tool with timeout and output capture (with automatic WSL bridge routing if binary is inside WSL)
+ */
+/**
+ * Run a command directly inside a WSL distro — WITHOUT runSubprocess's re-routing. Needed when the
+ * command IS wsl.exe: interop exposes wsl.exe inside the distro PATH, so runSubprocess('wsl.exe', …)
+ * double-nests (wsl -d X -e wsl.exe -d X -e …) and the inner relay fails with execvpe(wsl.exe).
+ */
+export async function runWsl(
+  distro: string,
+  args: string[],
+  options?: { timeout?: number; maxOutput?: number }
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const timeout = options?.timeout ?? 60000;
+  const maxOutput = options?.maxOutput ?? 1024 * 1024;
+  try {
+    const { stdout, stderr } = await execFileAsync('wsl.exe', ['-d', distro, '-e', ...args], {
+      timeout,
+      maxBuffer: maxOutput,
+    });
+    return { stdout: stdout || '', stderr: stderr || '', exitCode: 0 };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; code?: number; killed?: boolean };
+    if (err.killed) {
+      return { stdout: err.stdout || '', stderr: 'Process killed (timeout)', exitCode: -1 };
+    }
+    return { stdout: err.stdout || '', stderr: err.stderr || String(error), exitCode: err.code || 1 };
+  }
+}
+
 export async function runSubprocess(
   command: string,
   args: string[],
@@ -3292,8 +3479,19 @@ export async function runSubprocess(
   const timeout = options?.timeout ?? 60000;
   const maxOutput = options?.maxOutput ?? 1024 * 1024; // 1MB
 
+  let execCmd = command;
+  let execArgs = args;
+
+  if (process.platform === 'win32') {
+    const loc = await findBinaryLocation(command);
+    if (loc.inWsl && loc.distro) {
+      execCmd = 'wsl.exe';
+      execArgs = ['-d', loc.distro, '-e', command, ...args];
+    }
+  }
+
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, {
+    const { stdout, stderr } = await execFileAsync(execCmd, execArgs, {
       timeout,
       maxBuffer: maxOutput,
     });
@@ -3533,6 +3731,151 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       } finally {
         if (configDir) await rm(configDir, { recursive: true, force: true });
       }
+    },
+  },
+  {
+    name: 'creddump7_dump',
+    description: 'Extract Windows credentials from registry hives with creddump7 (pwdump/cachedump/lsadump). Offline: operates on SYSTEM/SAM/security hive files or an extracted hive set — never on the live host.',
+    category: 'cred',
+    parameters: [
+      { name: 'action', type: 'string', description: 'Extraction action: pwdump | cachedump | lsadump', required: true },
+      { name: 'systemHive', type: 'string', description: 'Path to the SYSTEM hive (WSL-accessible, e.g. /mnt/c/...)', required: true },
+      { name: 'samHive', type: 'string', description: 'Path to the SAM hive (pwdump/lsadump) or SECURITY hive (cachedump)', required: true },
+    ],
+    handler: async (context) => {
+      if (!(await isToolAvailable('creddump7'))) {
+        return { success: false, error: 'creddump7 is not installed. Install it with: apt install creddump7 (Kali Linux WSL).' };
+      }
+      const action = String(context.parameters.action || '').toLowerCase();
+      const systemHive = String(context.parameters.systemHive || '').trim();
+      const samHive = String(context.parameters.samHive || '').trim();
+      if (!['pwdump', 'cachedump', 'lsadump'].includes(action)) {
+        return { success: false, error: 'action must be one of: pwdump, cachedump, lsadump' };
+      }
+      // /usr/bin/creddump7 is a display wrapper (cd + tree + spawns a shell — it hangs non-interactive).
+      // Call the real python scripts directly through the WSL bridge.
+      const loc = await findBinaryLocation('creddump7');
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const script = `/usr/share/creddump7/${action}.py`;
+      const result = await runWsl(distro, ['python3', script, systemHive, samHive], { timeout: 60000 });
+      const ok = result.exitCode === 0 && /:/i.test(result.stdout);
+      return {
+        success: ok,
+        output: result.stdout || result.stderr,
+        error: ok ? undefined : (result.stderr || 'creddump7 returned no credential lines — verify hive paths are WSL-accessible'),
+      };
+    },
+  },
+  {
+    name: 'mimikatz_exec',
+    description: 'Run a mimikatz module command (e.g. sekurlsa::logonpasswords, lsadump::sam). Requires wine in the Kali WSL distro (mimikatz.exe is a Windows PE) — reports the missing runtime honestly instead of pretending.',
+    category: 'cred',
+    parameters: [
+      { name: 'command', type: 'string', description: 'mimikatz module::command (allowlisted charset, e.g. sekurlsa::logonpasswords)', required: true },
+    ],
+    handler: async (context) => {
+      const loc = await findBinaryLocation('mimikatz');
+      if (!loc.available) {
+        return { success: false, error: 'mimikatz is not installed. Install it with: apt install mimikatz (Kali Linux WSL).' };
+      }
+      const command = String(context.parameters.command || '').trim();
+      // Allowlist: module::command shapes only — no quotes/pipes/redirects (the PE gets this as a single argv token).
+      if (!/^[A-Za-z0-9_:.!\- /@]{3,120}$/.test(command) || /['";|&$<>]/.test(command)) {
+        return { success: false, error: 'command must be a plain mimikatz module::command (e.g. sekurlsa::logonpasswords) — quotes/pipes/redirects are rejected' };
+      }
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const exe = '/usr/share/windows-resources/mimikatz/x64/mimikatz.exe';
+      const wineProbe = await runWsl(distro, ['which', 'wine'], { timeout: 15000 });
+      if (!wineProbe.stdout.trim()) {
+        return { success: false, error: `mimikatz.exe is a Windows PE — wine is not installed in WSL ${distro}. Install it with: wsl -d ${distro} apt install wine (or run the exe natively on an admin Windows host).` };
+      }
+      const result = await runWsl(distro, ['wine', exe, command, 'exit'], { timeout: 90000 });
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout,
+        error: result.exitCode !== 0 ? result.stderr : undefined,
+      };
+    },
+  },
+  {
+    name: 'rubeus_exec',
+    description: 'Run a Rubeus Kerberos verb (kerberoast, asreproast, klist, triage). Requires mono in the Kali WSL distro (Rubeus.exe is a .NET assembly) and a reachable domain for ticket abuse.',
+    category: 'cred',
+    parameters: [
+      { name: 'verb', type: 'string', description: 'Rubeus verb: kerberoast | asreproast | klist | triage | dump', required: true },
+      { name: 'args', type: 'string', description: 'Extra Rubeus args, slash-form only (e.g. /nowrap /dc:dc01.corp.local)', required: false },
+    ],
+    handler: async (context) => {
+      const loc = await findBinaryLocation('rubeus');
+      if (!loc.available) {
+        return { success: false, error: 'rubeus is not installed. Install it with: apt install rubeus (Kali Linux WSL).' };
+      }
+      const verb = String(context.parameters.verb || '').toLowerCase();
+      if (!['kerberoast', 'asreproast', 'klist', 'triage', 'dump'].includes(verb)) {
+        return { success: false, error: 'verb must be one of: kerberoast, asreproast, klist, triage, dump' };
+      }
+      const extra = String(context.parameters.args || '').trim();
+      // Slash-form args only — rejects quotes/pipes/redirects and anything not starting with / or a bare flag token.
+      if (extra && !/^[A-Za-z0-9_:./=@\- ,]{1,200}$/.test(extra)) {
+        return { success: false, error: 'args must be Rubeus slash-form flags (e.g. /nowrap /dc:dc01) — quotes/pipes/redirects are rejected' };
+      }
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const exe = '/usr/share/windows-resources/rubeus/Rubeus.exe';
+      const monoProbe = await runWsl(distro, ['which', 'mono'], { timeout: 15000 });
+      if (!monoProbe.stdout.trim()) {
+        return { success: false, error: `Rubeus.exe is a .NET assembly — mono is not installed in WSL ${distro}. Install it with: wsl -d ${distro} apt install mono-complete` };
+      }
+      const argv = extra ? [verb, ...extra.split(/\s+/)] : [verb];
+      const result = await runWsl(distro, ['mono', exe, ...argv], { timeout: 90000 });
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout,
+        error: result.exitCode !== 0 ? result.stderr : undefined,
+      };
+    },
+  },
+  {
+    name: 'xsser_scan',
+    description: 'Run XSSer against a target URL to detect/exploit XSS vectors (reflected, stored, DOM, XST). Mode url audits a single URL; mode all auto-audits the whole target. Active: injects test payloads.',
+    category: 'web',
+    parameters: [
+      { name: 'url', type: 'string', description: 'Target URL (e.g. http://host:8082/page)', required: true },
+      { name: 'mode', type: 'string', description: 'url (single URL, default) | all (auto-audit entire target)', required: false },
+      { name: 'extraArgs', type: 'string', description: 'Extra XSSer dash-form flags only (e.g. -v --Cw 1)', required: false },
+    ],
+    handler: async (context) => {
+      const loc = await findBinaryLocation('xsser');
+      if (!loc.available) {
+        return { success: false, error: 'xsser is not installed. Install it with: apt install xsser (Kali Linux WSL).' };
+      }
+      const url = String(context.parameters.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) {
+        return { success: false, error: 'url must be an absolute http(s) URL' };
+      }
+      // XSSer needs its payload keyword in the URL to know where to inject — auto-append the
+      // standard probe (?xss=XSS) so a bare page URL still produces a meaningful audit.
+      let probeUrl = url;
+      if (!/XSS/i.test(url)) probeUrl = url + (url.includes('?') ? '&' : '?') + 'xss=XSS';
+      const mode = String(context.parameters.mode || 'url').toLowerCase();
+      const flag = mode === 'all' ? '--all' : '-u';
+      const extra = String(context.parameters.extraArgs || '').trim();
+      if (extra && /['";|&$<>]/.test(extra)) {
+        return { success: false, error: 'extraArgs must be plain XSSer dash-form flags — quotes/pipes/redirects are rejected' };
+      }
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const argv = [flag, probeUrl, ...(extra ? extra.split(/\s+/) : [])];
+      const result = await runWsl(distro, ['xsser', ...argv], { timeout: 180000 });
+      const hitCount = (result.stdout.match(/XSS/gi) || []).length;
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout || result.stderr,
+        error: result.exitCode !== 0 ? result.stderr : undefined,
+        findings: (/vulnerab|succeeded/i.test(result.stdout)) ? [{
+          title: 'XSS Candidate Vectors — ' + probeUrl,
+          severity: 'low',
+          details: 'XSSer reported candidate XSS vector hits (' + hitCount + ' XSS mentions in report) — verify manually before treating as confirmed.',
+        }] : undefined,
+      };
     },
   },
 ];

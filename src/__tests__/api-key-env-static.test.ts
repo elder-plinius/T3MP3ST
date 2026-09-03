@@ -36,7 +36,8 @@ describe('API key environment handling hardening', () => {
     const block = configLoadEnvBlock();
     expect(block).toContain("join(homedir(), '.t3mp3st', '.env')");
     expect(block).toContain("join(process.cwd(), '.env')");
-    expect(block).toContain("existsSync(join(process.cwd(), 'package.json'))");
+    expect(block).toContain("pkg?.name === 't3mp3st'");
+    expect(block).toContain("process.env.T3MP3ST_DEV === '1'");
   });
 
   it('the Settings pages persist keys into the gitignored .env and the server masks them', () => {

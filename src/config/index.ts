@@ -155,7 +155,7 @@ const DEFAULT_SETTINGS: TempestSettings = {
 
   venice: {
     baseUrl: 'https://api.venice.ai/api/v1',
-    defaultModel: 'llama-3.3-70b',
+    defaultModel: 'qwen-3-8-27b',
   },
 
   anthropic: {
@@ -194,11 +194,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
   // Hugging Face Inference Providers expose a unified OpenAI-compatible router at
   // /v1. The OpenAIAdapter posts to `${baseUrl}/chat/completions`, so the base URL
   // ends at /v1 → https://router.huggingface.co/v1/chat/completions. Model ids are
-  // the full HF repo id (e.g. meta-llama/Llama-3.3-70B-Instruct), optionally with a
+  // the full HF repo id (e.g. Qwen/Qwen3.8-27B), optionally with a
   // `:provider` suffix to pin a specific inference backend.
   huggingface: {
     baseUrl: 'https://router.huggingface.co/v1',
-    defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
+    defaultModel: 'Qwen/Qwen3.8-27B',
   },
 
   // NanoGPT's canonical OpenAI-compatible base. The OpenAIAdapter appends
@@ -283,8 +283,8 @@ export interface ModelInfo {
 export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   venice: [
     {
-      id: 'llama-3.3-70b',
-      name: 'Llama 3.3 70B (Venice)',
+      id: 'qwen-3-8-27b',
+      name: 'Qwen 3.8 27B (Venice)',
       provider: 'Venice',
       contextWindow: 65536,
       maxOutput: 8192,
@@ -521,8 +521,8 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
     },
     {
-      id: "meta-llama/llama-3.3-70b",
-      name: "Llama 3.3 70B",
+      id: "qwen/qwen3.8-27b",
+      name: "Qwen 3.8 27B",
       provider: "Meta",
       contextWindow: 131072,
       maxOutput: 4096,
@@ -692,8 +692,8 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   // are just curated, tool-capable defaults.
   huggingface: [
     {
-      id: 'meta-llama/Llama-3.3-70B-Instruct',
-      name: 'Llama 3.3 70B Instruct (Hugging Face)',
+      id: 'Qwen/Qwen3.8-27B',
+      name: 'Qwen 3.8 27B (Hugging Face)',
       provider: 'HuggingFace',
       contextWindow: 131072,
       maxOutput: 8192,
@@ -848,14 +848,24 @@ class ConfigManager {
     // homedir). In prod / installed use, the homedir file wins — same
     // locations the Settings→.env bridge writes to. Never read a target repo's
     // .env when cwd is a hunt target; the guard is: repo .env only if CWD
-    // looks like the T3MP3ST package itself (package.json present).
+    // positively identifies as the T3MP3ST package checkout (package.json name === 't3mp3st').
     const repoEnv = join(process.cwd(), '.env');
     const homedirEnv = join(homedir(), '.t3mp3st', '.env');
     const homeEnv = join(homedir(), '.env');
     // Order: repo .env first in dev (authoritative for Settings), then
     // homedir fallbacks. Real env vars still win (process.env[key]===undefined gate).
     const envPaths: string[] = [];
-    try { if (existsSync(join(process.cwd(), 'package.json'))) envPaths.push(repoEnv); } catch {}
+    try {
+      if (process.env.T3MP3ST_DEV === '1') {
+        envPaths.push(repoEnv);
+      } else {
+        const pkgPath = join(process.cwd(), 'package.json');
+        if (existsSync(pkgPath)) {
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+          if (pkg?.name === 't3mp3st') envPaths.push(repoEnv);
+        }
+      }
+    } catch {}
     envPaths.push(homedirEnv, homeEnv);
 
     let envProvider: string | undefined;

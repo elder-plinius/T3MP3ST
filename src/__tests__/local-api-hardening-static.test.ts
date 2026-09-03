@@ -57,6 +57,14 @@ describe('local API authorization hardening invariants', () => {
     expect(route).toMatch(/Access-Control-Allow-Origin['"]\]\s*=\s*origin/);
   });
 
+  it('/api/config/env does not grant wildcard CORS and rejects foreign browser origins', () => {
+    const route = routeBlock("app.get('/api/config/env'", "app.delete('/api/config/env/:provider'");
+
+    expect(route).not.toMatch(/Access-Control-Allow-Origin/);
+    expect(route).toMatch(/const\s+origin\s*=\s*_?req\.get\(['"]origin['"]\)/);
+    expect(route).toMatch(/origin\s*&&\s*!isLoopbackOrigin\(origin\)/);
+  });
+
   it('/api/tools/execute binds approval to the parsed command target, not a caller-supplied target override', () => {
     const route = routeBlock("app.post('/api/tools/execute'", "app.post('/api/tools/recon'");
 

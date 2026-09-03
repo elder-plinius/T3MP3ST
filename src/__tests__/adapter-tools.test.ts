@@ -350,9 +350,15 @@ describe('invocation-honesty guard — every mintable adapter is classified, non
   const KNOWN_DEBT = new Set([
     'feroxbuster', 'osv-scanner', 'hashcat', 'apktool', 'yara',
   ]);
+  // Their real invocation lives in bespoke hand-written tools (mimikatz_exec / creddump7_dump /
+  // rubeus_exec in EXTERNAL_TOOLS) or guard-gated surfaces (chntpw hive reset, Burp proxy bridge) —
+  // the generic  mint is not their interface.
+  const BESPOKE_HANDLERS = new Set([
+    'mimikatz', 'creddump7', 'rubeus', 'chntpw', 'burpsuite', 'xsser',
+  ]);
 
   const mintable = TOOL_ADAPTERS.filter(isMintable);
-  const classified = [POSITIONAL_TARGET_OK, OPERATOR_DRIVEN, KNOWN_DEBT];
+  const classified = [POSITIONAL_TARGET_OK, OPERATOR_DRIVEN, KNOWN_DEBT, BESPOKE_HANDLERS];
 
   it('every mintable adapter is either templated or explicitly filed under one fall-through reason', () => {
     const unaccounted = mintable

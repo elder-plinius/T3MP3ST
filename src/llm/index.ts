@@ -234,6 +234,10 @@ class OpenRouterAdapter implements LLMProviderAdapter {
     }));
   }
 
+  // Hook for provider-specific request-body extras. Base implementation is a no-op;
+  // Venice overrides it for thinking-model plumbing.
+  protected applyProviderRequestExtras(_body: Record<string, unknown>): void {}
+
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const validation = this.validateConfig();
     if (!validation.valid) {
@@ -255,6 +259,7 @@ class OpenRouterAdapter implements LLMProviderAdapter {
       top_p: options?.topP,
       stop: options?.stopSequences,
     };
+    this.applyProviderRequestExtras(requestBody);
 
     const tools = this.formatTools(options?.tools);
     if (tools) requestBody.tools = tools;
@@ -415,6 +420,17 @@ class VeniceAdapter extends OpenRouterAdapter {
       };
     }
     return { valid: true };
+  }
+
+  protected applyProviderRequestExtras(body: Record<string, unknown>): void {
+    // Qwen 3.8 and other Venice thinking models stream the answer into
+    // reasoning_content and leave content empty unless thinking is disabled —
+    // T3MP3ST reads message.content only (measured 2026-09-01: with thinking on,
+    // a 1000-token budget returned content:"" and 5.5s with the flag vs 8.9s empty).
+    body.venice_parameters = {
+      ...((body.venice_parameters as Record<string, unknown> | undefined) || {}),
+      disable_thinking: true,
+    };
   }
 }
 

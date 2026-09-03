@@ -19,7 +19,7 @@ describe('Venice provider wiring (parity with OpenRouter)', () => {
     const cfg = config.getLLMConfig('venice');
     expect(cfg.provider).toBe('venice');
     expect(cfg.baseUrl).toBe('https://api.venice.ai/api/v1');
-    expect(cfg.model).toBe('llama-3.3-70b');
+    expect(cfg.model).toBe('qwen-3-8-27b');
     expect(cfg.apiKey).toBe(KEY);
   });
 

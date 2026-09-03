@@ -73,7 +73,7 @@ export {
   KILL_CHAIN_ORDER,
   PHASE_DESCRIPTIONS,
 } from './operators/index.js';
-export type { OperatorEvents, CellEvents, ArchetypeProfile } from './operators/index.js';
+export type { OperatorEvents, CellEvents, ArchetypeProfile, MissionAuthorization } from './operators/index.js';
 
 // Mission
 export {
@@ -106,8 +106,8 @@ export {
 export type { EvidenceVaultEvents } from './evidence/index.js';
 
 // Arsenal
-export { Arsenal, successResult, failResult, createToolContext, BUILTIN_TOOLS, EXTERNAL_TOOLS, isToolAvailable, runSubprocess } from './arsenal/index.js';
-export type { ArsenalEvents, ToolExecution } from './arsenal/index.js';
+export { Arsenal, successResult, failResult, createToolContext, BUILTIN_TOOLS, EXTERNAL_TOOLS, isToolAvailable, runSubprocess, findBinaryLocation, findBinaryLocations, clearBinaryLocationCache } from './arsenal/index.js';
+export type { ArsenalEvents, ToolExecution, BinaryLocation } from './arsenal/index.js';
 
 // Agent Loop
 export { AgentLoop, createAgentLoop, runAgentTask, ExecutionMonitor, formatEnhancedToolResponse, performMentor, fixToolCallArgs } from './agent/index.js';
@@ -229,6 +229,7 @@ export { KillChainPhase } from './types/index.js';
 export type { OpsecConfig, Finding, Credential, Target, DetectionEvent } from './types/index.js';
 
 import { OperatorCell, OperatorAgent, ARCHETYPE_PROFILES, PHASE_ARCHETYPES, KILL_CHAIN_ORDER } from './operators/index.js';
+import type { MissionAuthorization } from './operators/index.js';
 import { PackBoard } from './pack/board.js';
 import { randomUUID } from 'node:crypto';
 import { createPrivateReportWorkspace, readPrivateToolReport } from './arsenal/report-workspace.js';
@@ -356,6 +357,9 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   private scanNotesProvider?: (target: string) => string;
   /** Operator-selected kill-chain focus phase (from the War Room SITREP). Empty = balanced chain (default). */
   private missionFocus: string = '';
+  /** Operator-granted authorization for this mission — the scan-approval banner receipt(s)
+   * (or lab-scope auto-grant). Briefed into every operator's task prompts. */
+  private missionAuthorization: MissionAuthorization | null = null;
 
   /**
    * The swarm's shared, verifiable blackboard (Phase-2 coordination). One board per mission run:
@@ -1514,6 +1518,11 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       operator.setMissionFocus(this.missionFocus);
     }
 
+    // Propagate the operator's mission authorization to any operator spawned after it was set.
+    if (this.missionAuthorization) {
+      operator.setMissionAuthorization(this.missionAuthorization);
+    }
+
     return operator;
   }
 
@@ -1548,6 +1557,22 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     this.missionFocus = String(phase || '');
     for (const operator of this.cell.getAllOperators()) {
       operator.setMissionFocus(this.missionFocus);
+    }
+  }
+
+  /**
+   * Record the operator's authorization for this mission — the approval granted through
+   * the scan authorization banner (receipt ids) or the lab-scope auto-grant. That approval
+   * IS the bots' authorization for the whole scan: it is briefed into every operator's
+   * task prompts so agents execute without pausing to request authorization.
+   */
+  public setMissionAuthorization(auth: MissionAuthorization | null): void {
+    this.missionAuthorization = auth || null;
+    if (this.missionAuthorization) {
+      console.log(`[T3MP3ST][AUTH] Mission authorization recorded (${this.missionAuthorization.source}) — receipts: ${this.missionAuthorization.receipts.map(r => r.id).join(', ') || 'lab-scope'}`);
+    }
+    for (const operator of this.cell.getAllOperators()) {
+      operator.setMissionAuthorization(this.missionAuthorization);
     }
   }
 
@@ -1598,6 +1623,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     activeMission: string | null;
     stallReason: string | null;
     taskProgress: number | null;
+    authorization?: MissionAuthorization;
     progress: ScanProgressEvent[];
     tasks: Array<{
       id: string;
@@ -1625,6 +1651,7 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       activeMission: activeMission?.id || null,
       stallReason: this.stallReason,
       taskProgress: this.getTaskProgress(),
+      authorization: this.missionAuthorization || undefined,
       progress: [...this.progressEvents],
       tasks: activeMission
         ? taskQueue.getForMission(activeMission.id).map(task => ({

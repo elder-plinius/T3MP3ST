@@ -32,6 +32,10 @@ RUN apt-get update \
         dnsutils \
         python3 \
         python3-pip \
+        mimikatz \
+        creddump7 \
+        rubeus \
+        xsser \
         seclists \
         wordlists \
         git \

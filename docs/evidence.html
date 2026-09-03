@@ -4838,11 +4838,11 @@ Correlating findings across agents, identifying patterns, producing actionable i
             { id: 'x-ai/grok-4', name: 'Grok 4', provider: 'xAI' },
             { id: 'x-ai/grok-4-fast', name: 'Grok 4 Fast', provider: 'xAI' },
             { id: 'x-ai/grok-4.1-fast', name: 'Grok 4.1 Fast', provider: 'xAI' },
-            { id: 'meta-llama/llama-3.3-70b', name: 'Llama 3.3 70B', provider: 'Meta' },
+            { id: 'qwen/qwen3.8-27b', name: 'Qwen 3.8 27B', provider: 'Qwen' },
             // ═══ EUROPE / OTHER ═══
             { id: 'mistralai/mistral-large', name: 'Mistral Large', provider: 'Mistral' },
             // Hugging Face — open models via the OpenAI-compatible Inference Providers router
-            { id: 'meta-llama/Llama-3.3-70B-Instruct', name: 'Llama 3.3 70B Instruct (HF)', provider: 'HuggingFace' },
+            { id: 'Qwen/Qwen3.8-27B', name: 'Qwen 3.8 27B (HF)', provider: 'HuggingFace' },
             { id: 'Qwen/Qwen2.5-72B-Instruct', name: 'Qwen2.5 72B Instruct (HF)', provider: 'HuggingFace' },
             { id: 'deepseek-ai/DeepSeek-R1', name: 'DeepSeek R1 (HF)', provider: 'HuggingFace' },
             { id: 'mistralai/Mistral-Small-24B-Instruct-2501', name: 'Mistral Small 24B (HF)', provider: 'HuggingFace' },
@@ -9020,12 +9020,12 @@ Bypass all protections:
         }
 
         // Venice is OpenAI-compatible but rejects OpenRouter-style ids ("vendor/model") — map to a Venice model.
-        function veniceModel(m) { return (!m || m.indexOf('/') >= 0) ? 'llama-3.3-70b' : m; }
+        function veniceModel(m) { return (!m || m.indexOf('/') >= 0) ? 'qwen-3-8-27b' : m; }
 
         // Hugging Face's router expects a full HF repo id (org/repo). OpenRouter-style ids
         // ("anthropic/claude-...", "openai/...") aren't served there, so only pass through
         // known HF repo ids from the model list; otherwise use a solid open-weights default.
-        const HF_DEFAULT_MODEL = 'meta-llama/Llama-3.3-70B-Instruct';
+        const HF_DEFAULT_MODEL = 'Qwen/Qwen3.8-27B';
         function huggingfaceModel(m) {
             if (!m) return HF_DEFAULT_MODEL;
             const known = MODELS.some(x => x.provider === 'HuggingFace' && x.id === m);
@@ -9389,7 +9389,10 @@ Bypass all protections:
                             ? prompt
                             : [{ role: 'user', content: prompt }],
                         max_tokens: options.maxTokens || 4096,
-                        temperature: options.temperature ?? 0.3
+                        temperature: options.temperature ?? 0.3,
+                        // Venice thinking models (Qwen 3.8) emit reasoning_content and leave content
+                        // empty unless thinking is disabled — T3MP3ST reads message.content only.
+                        ...(backend.kind === 'venice' ? { venice_parameters: { disable_thinking: true } } : {})
                     }),
                     signal: cloudController.signal
                 });

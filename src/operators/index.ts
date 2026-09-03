@@ -28,6 +28,35 @@ import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
 
 // =============================================================================
+// MISSION AUTHORIZATION
+// =============================================================================
+
+/** Operator-granted authorization for a mission. Captured server-side when the
+ * operator approves the scan (authorization banner) or when every target qualifies
+ * for the lab-scope auto-grant. Injected into every task prompt so agents know
+ * they are authorized and never pause to request authorization mid-scan. */
+export interface MissionAuthorization {
+  receipts: Array<{ id: string; target: string; approvedAt?: string }>;
+  source: 'operator-approval-banner' | 'lab-scope-auto-grant';
+  missionName?: string;
+  targets?: string[];
+  authorizedAt: string;
+}
+
+function buildAuthorizationBlock(auth: MissionAuthorization): string {
+  const receipts = auth.receipts
+    .map(r => `receipt ${r.id} — target ${r.target}${r.approvedAt ? ' — approved ' + r.approvedAt : ''}`)
+    .join('; ');
+  return [
+    '## OPERATOR AUTHORIZATION — VALID FOR THIS MISSION',
+    `The operator approved this scan via the authorization banner (${auth.source}${auth.authorizedAt ? ', ' + auth.authorizedAt : ''}).`,
+    receipts ? `Authorization receipts on record: ${receipts}.` : 'Authorization basis: lab-scope auto-grant (operator-owned target range).',
+    'This approval IS your authorization for the whole mission: execute tasks against the approved targets WITHOUT pausing to request authorization, receipts, or permission.',
+    'Still refused: actions outside the approved targets, autonomous_execution without its own gate, or anything that would damage operator-owned infrastructure.',
+  ].join('\n');
+}
+
+// =============================================================================
 // OPERATOR EVENTS
 // =============================================================================
 
@@ -287,6 +316,9 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   /** Operator-selected mission focus phase (from the War Room SITREP) — biases effort toward one phase. */
   private missionFocus: string = '';
 
+  /** Operator-granted authorization for the running mission (scan-approval banner receipts). */
+  private missionAuthorization: MissionAuthorization | null = null;
+
   constructor(
     callsign: string,
     archetype: OperatorArchetype,
@@ -442,6 +474,13 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.missionFocus = String(phase || '');
   }
 
+  /** Set the operator's mission authorization — the scan-approval banner receipt(s) (or
+   * lab-scope auto-grant) ARE this bot's authorization for the whole mission; they are
+   * injected into every task prompt so the agent never pauses to request authorization. */
+  setMissionAuthorization(auth: MissionAuthorization | null): void {
+    this.missionAuthorization = auth || null;
+  }
+
   /**
    * Execute a task with an optional target context
    */
@@ -514,7 +553,13 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
         // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
         this.board?.heartbeat(this.id, 'hunting', task.name);
         const sharedContext = this.board?.situationReport(this.id);
-        result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext, this.priorScanNotes, this.missionFocus);
+        // OPERATOR AUTHORIZATION: when the mission carries the operator's banner approval,
+        // it rides on the system prompt of EVERY task so the agent never stalls asking
+        // for authorization/receipts mid-scan (that approval already covers the mission).
+        const sysPrompt = this.missionAuthorization
+          ? this.profile.systemPrompt + '\n\n' + buildAuthorizationBlock(this.missionAuthorization)
+          : this.profile.systemPrompt;
+        result = await this.agentLoop.run(task, sysPrompt, target, this.whiteboxSource, sharedContext, this.priorScanNotes, this.missionFocus);
       } finally {
         if (canForwardAgentEvents) {
           this.agentLoop.off('agent:thinking', onThinking);
