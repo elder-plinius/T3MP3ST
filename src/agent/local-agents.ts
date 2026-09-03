@@ -400,7 +400,10 @@ function wellKnownBinDirs(home: string): string[] {
 export function resolveBin(bin: string): string | undefined {
   if (isWin32()) {
     try {
-      const out = execFileSync('where.exe', [bin], { encoding: 'utf8', timeout: 5000 });
+      // stdio pipes stderr explicitly: execFileSync otherwise relays the child's stderr to the
+      // console, so every probed-but-absent agent printed where.exe's
+      // "INFO: Could not find files for the given pattern(s)." at boot.
+      const out = execFileSync('where.exe', [bin], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
       const hits = out.split(NEWLINE_RE).map((h) => h.trim()).filter(Boolean);
       return (
         hits.find((h) => /\.exe$/i.test(h)) ??
@@ -433,12 +436,42 @@ export function resolveBin(bin: string): string | undefined {
  *
  * A `.cmd`/`.bat` shim can't be spawned with shell:false on Windows. It must run through cmd.exe, but
  * hand-rolling `spawn('cmd.exe', ['/d','/s','/c', shim, ...args])` is unsafe because cmd.exe re-parses
- * the command tail with its own quoting rules. Letting Node launch the resolved shim with shell:true
- * uses Node's patched argument escaping path, so adversarial prompt text stays a literal argument.
+ * the command tail with its own quoting rules. The shim is therefore launched with shell:true as a
+ * single pre-quoted command STRING — Node 24 deprecates the args-array + shell:true form (DEP0190)
+ * because it concatenates without escaping, so the Windows quote rules below are applied ourselves:
+ * each argument becomes one literal cmd.exe word regardless of embedded spaces, quotes, or adversarial
+ * prompt text. cmd.exe does not treat & | < > as metacharacters inside double quotes, so quoted args
+ * containing them still arrive as literals.
  */
 function spawnAgent(resolvedBin: string, args: string[], options: import('child_process').SpawnOptions): import('child_process').ChildProcess {
-  if (needsShell(resolvedBin)) return spawn(resolvedBin, args, { ...options, shell: true });
-  return spawn(resolvedBin, args, { ...options, shell: false });
+  if (!needsShell(resolvedBin)) return spawn(resolvedBin, args, { ...options, shell: false });
+  const command = [resolvedBin, ...args].map(quoteWindowsArg).join(' ');
+  return spawn(command, { ...options, shell: true });
+}
+
+/**
+ * Quotes one argument for a cmd.exe-mediated launch (same scheme cross-spawn uses for .cmd shims):
+ * quote whenever the arg is empty or carries whitespace, a quote, or a cmd metacharacter; inside the
+ * quotes an embedded `"` is doubled to `""` — which the C runtime argv parser reads as one literal
+ * quote AND cmd.exe's toggle parser reads as state-neutral, so `| & < >` inside quotes stay literal.
+ * Backslash runs are doubled where they precede a quote (CRT rule); cmd.exe ignores them either way.
+ */
+function quoteWindowsArg(arg: string): string {
+  if (arg !== '' && !/[\s"|&<>^]/.test(arg)) return arg;
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') {
+      backslashes++;
+    } else if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2) + '""';
+      backslashes = 0;
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+      backslashes = 0;
+    }
+  }
+  return out + '\\'.repeat(backslashes * 2) + '"';
 }
 
 function needsShell(resolvedBin: string): boolean {

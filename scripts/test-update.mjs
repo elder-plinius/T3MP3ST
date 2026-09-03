@@ -57,7 +57,8 @@ function bashExe() {
     const r = spawnSync('bash', ['-c', 'exit 0'], { stdio: 'pipe' });
     return r.status === 0 ? 'bash' : null;
   }
-  const result = spawnSync('where', ['git'], { shell: true, stdio: 'pipe', encoding: 'utf8' });
+  // where.exe is a real executable — no shell needed (args-array + shell:true is DEP0190 on Node 24).
+  const result = spawnSync('where.exe', ['git'], { stdio: 'pipe', encoding: 'utf8' });
   if (result.status !== 0 || !result.stdout.trim()) return null;
   const gitPath = result.stdout.trim().split(/\r?\n/)[0];
   const dir = dirname(gitPath);

@@ -2,6 +2,70 @@
 
 Operator behavior rules live in `AGENTS.override.md`. This file tracks project status and session work so nothing slips between sessions. **Mandatory Invariant:** `AGENTS.md` is updated after every completed step, task, and architectural action.
 
+## Session Log — 2026-09-03 (Jarvis) — Provenance-Safe CISA KEV / EPSS Feed Ingestion (#171) & Windows Agent Launch Hardening
+
+**Request:** "hurry up and upload to git" & "go bitch"
+
+### 1) Implementation & Hardening:
+- **CISA KEV & FIRST EPSS Feed Ingestion Engine (`src/tools/cve-feed.ts`):**
+  - Upgraded `CveFeedEngine` to satisfy all acceptance criteria for roadmap Issue #171.
+  - Implemented explicit metadata & provenance retention (`schema_version: 't3mp3st_cve_feed/v1'`, source URLs for CISA KEV and FIRST EPSS, retrieval timestamps, cache provenance tagging).
+  - Implemented deterministic CVE ID normalization (`normalizeCveId`), deduplication preserving highest-fidelity enrichments, and multi-criteria query/pagination.
+  - Added robust network resilience: timeout handling via `AbortController`, max payload limits (`50MB` limit to protect against size exhaustion), malformed JSON handling, and seamless fallback to seed/disk cache.
+  - Added stale cache detection (`isCacheStale`) with 24-hour TTL threshold.
+  - Maintained backward compatibility for existing endpoints (`queryEpss` alias, `filteredCount`, and overloaded timeout parameters).
+- **Unit Test Coverage (`src/__tests__/cve-feed.test.ts`):**
+  - Created 13-test comprehensive test suite covering metadata retention, normalization, deduplication, filtering, pagination, network timeouts, size rejection, malformed responses, and stale cache detection.
+  - All 13 tests passing.
+- **Windows Local Agent Spawn Hardening (`src/agent/local-agents.ts`, `scripts/update.mjs`, `scripts/test-update.mjs`):**
+  - Silenced `where.exe` child process stderr streaming to eliminate spurious console warnings on boot.
+  - Hardened Windows `.cmd`/`.bat` spawning by wrapping command lines with exact Windows quoting rules, resolving Node 24 `DEP0190` deprecation notices.
+
+### 2) Verification:
+- `eslint src/**/*.ts --quiet`: **0 errors**.
+- `tsc --noEmit`: **0 errors**.
+- `npm run build`: **0 errors**, compiled clean.
+- Unit tests (`cve-feed.test.ts` + `cve-vault.test.ts`): **19/19 passing**.
+
+---
+
+## Session Log — 2026-09-03 (Jarvis) — Credentials Ledger Persistence, Evidence Vault Recovery & Nuclei Templates Integration
+
+**Request:** "now install some nuclei scanning templates" & "shit not being stored in vault. fix your shit code. where are the found api keys and credentials that were in the evidence vault?"
+
+### 1) Root Cause Diagnosis:
+- **Zero Credential Persistence:** `src/server.ts` had ledgers for `findingsLedger`, `evidenceLedger`, `hypothesisLedger`, etc., but completely lacked a `credentialsLedger`.
+- **Misrouted Live Harvest:** When operators or tools harvested credentials, they stored them in `cmd.vault.addCredential()`. However, `GET /api/mission/findings` only inspected `cmd.cell.getAllCredentials()` (which was always empty) and returned `credentials: []` whenever a mission stopped or the server restarted.
+- **Lost Credential Leads:** Scans that captured weak credentials (`admin:welcome` on `bounxup.com`), session cookies (`wsc_bounxupuser_session`), and CTF flags (`T3MP3ST{...}`) only dumped into scan text and finding claims; no automated credential indexing existed to promote them into structured credentials.
+- **Evidence Vault Display Gaps:** In `docs/evidence.html`, the `credentialCount` stat card was never updated (stuck at 0), and credentials were only listed in a single generic `(credentials)` accordion without being filed under their respective asset domains (`bounxup.com`, `http://localhost:9201`, etc.).
+
+### 2) Implementation:
+- **Persistent `credentialsLedger` (`src/server.ts`):**
+  - Added `credentialsLedger = new Map<string, CredentialRecord>()` with full persistence in `buildStateSnapshot()` and `restoreStateSnapshot()`.
+  - Implemented `extractCredentialsFromText()` to detect and parse CTF flags, weak login leads, admin credentials, API keys (AWS, GCP, GitHub, Anthropic, OpenAI, Stripe), JWT/bearer tokens, and session cookies.
+  - Implemented `recordCredentialToLedger()` with deduplication by `type::username::domain`.
+  - Implemented `reindexCredentialsFromLedgers()` to automatically backfill credentials from historical findings and evidence on boot.
+  - Wired `tempestCommand.on('credential:harvested')` to persist harvested credentials immediately.
+  - Wired `recordScanEvidence()` and `upsertMissionFindingToLedger()` to run credential extraction on all incoming scan outputs and findings.
+  - Added dedicated endpoint `GET /api/credentials` returning `{ credentials, count }`.
+  - Updated `GET /api/mission/findings` to merge `credentialsLedger` + `cmd.vault` + `cmd.cell` and return deduplicated credentials with accurate `type: 'cred'`.
+- **Evidence Vault Visualization (`docs/evidence.html`):**
+  - Updated `renderFindings()`: `#credentialCount` stat card now dynamically reflects the total credentials count (15 active).
+  - Credentials are filed BOTH under their specific domain accordions (e.g. `bounxup.com`) AND in the dedicated `(credentials)` category.
+  - Built rich `credRow()` component: color-coded key tags (`PASSWORD`, `API_KEY`, `SESSION`, `FLAG`), username/account, target domain, privilege level badge (`ADMIN`), secret display with 1-click `Copy Secret` action, tool source, and notes.
+- **Nuclei Templates Integration:**
+  - Configured `C:\Users\Raul\AppData\Roaming\nuclei\.templates-config.json` pointing directly to `C:\Users\Raul\nuclei-templates`.
+  - Verified 9,505 YAML vulnerability scanning templates installed and active under `C:\Users\Raul\nuclei-templates`.
+
+### 3) Verification:
+- Created unit test suite `src/__tests__/credentials-vault-persistence.test.ts` (5/5 passed).
+- Ran `src/__tests__/evidence-vault-navigation.test.ts` (5/5 passed).
+- Ran `src/__tests__/ui-inline-scripts-parse.test.ts` across all 16 HTML documents (48/48 passed).
+- Verified `GET /api/credentials` and `GET /api/mission/findings`: returned all 15 captured credentials, tokens, session cookies, and flags.
+- Built clean with `npm run build` (0 errors). Restarted server on port 3333.
+
+---
+
 ## Session Log — 2026-09-03 (Jarvis) — Nuclei v3 Installation & Templates Setup
 
 **Request:** "nuclei is not installed. Install: go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
@@ -16,6 +80,7 @@ Operator behavior rules live in `AGENTS.override.md`. This file tracks project s
 ### 2) Verification:
 - Executed `nuclei -version`: **Engine Version v3.11.1** active and responding.
 - Verified on PATH via `Get-Command nuclei`: located at `C:\Users\Raul\go\bin\nuclei.exe`.
+- 2026-09-03 re-verification (double-check pass): templates-config.json points at `C:\Users\Raul\nuclei-templates` with template set **v10.4.8**; disk has **13,641 YAML** templates and `nuclei -tl` loads **13,203** (4,410 tagged `cve`); live smoke scan vs lab CTF container `http://localhost:8080` (`-tags tech`) executed end-to-end and correctly detected `tech-detect:python` (Flask sqli-basic). Counts are higher than the 9,505/3,628 noted earlier — template set was updated to v10.4.8 since the original install. All green.
 
 ---
 
