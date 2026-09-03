@@ -22,6 +22,7 @@ import type { LLMConfig, LLMMessage, LLMResponse, LLMProvider, LLMToolDefinition
 import { config } from '../config/index.js';
 import { localAgentChat } from '../agent/local-agents.js';
 import { fetchBypassingProxy } from '../net/proxy.js';
+import { enforceToolCallBoundary } from './tool-call-boundary.js';
 
 // =============================================================================
 // LLM EVENTS
@@ -1134,7 +1135,7 @@ class LocalAdapter implements LLMProviderAdapter {
       // requests so the ReAct loop EXECUTES them instead of abstaining on turn 0.
       // This is the fallback — only used when native didn't yield tool_calls.
       const textToolCalls = !nativeToolCalls && options?.tools?.length
-        ? parseTextToolCalls(content)
+        ? enforceToolCallBoundary(content, options.tools).calls
         : undefined;
 
       const toolCalls = nativeToolCalls ?? textToolCalls;
@@ -1379,7 +1380,7 @@ class CodexAdapter implements LLMProviderAdapter {
 
       const trimmed = content.trim();
       // Tool-calling over text: parse the agent's tool requests so the ReAct loop EXECUTES them.
-      const toolCalls = options?.tools?.length ? parseTextToolCalls(trimmed) : undefined;
+      const toolCalls = options?.tools?.length ? enforceToolCallBoundary(trimmed, options.tools).calls : undefined;
       return {
         content: trimmed,
         model: this.config.model || 'codex-default',
@@ -1546,7 +1547,7 @@ class LocalAgentAdapter implements LLMProviderAdapter {
     if (reuseSession && parsed?.sessionId) this.claudeSessionId = parsed.sessionId;
     // Tool-calling over text: if the Arsenal was offered, parse the agent's tool requests so the
     // ReAct loop EXECUTES them instead of treating this planning turn as the (abstaining) final answer.
-    const toolCalls = options?.tools?.length ? parseTextToolCalls(content) : undefined;
+    const toolCalls = options?.tools?.length ? enforceToolCallBoundary(content, options.tools).calls : undefined;
     return {
       content,
       model: `local-agent:${agentId}${agentModel ? '/' + agentModel : ''}`,

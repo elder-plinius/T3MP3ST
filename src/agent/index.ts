@@ -22,6 +22,7 @@ import type {
   Target,
   Task,
 } from '../types/index.js';
+import { reflectStrategy, type StrategicReflection } from '../llm/tool-call-boundary.js';
 
 // =============================================================================
 // TYPES
@@ -110,6 +111,7 @@ export interface AgentEvents {
   'agent:tool_call': { name: string; args: Record<string, unknown>; source?: 'agent' | 'backend_seeded' };
   'agent:tool_result': { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' };
   'agent:thinking': { content: string };
+  'agent:reflection': { reflection: StrategicReflection };
   'agent:complete': AgentResult;
   'agent:error': { error: Error; step: number };
 }
@@ -300,9 +302,25 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
           // vector or a final debrief — don't let the agent grind the budget on a dead approach.
           noProgress = allFindings.length > findingsBefore ? 0 : noProgress + 1;
           if (noProgress >= 4 && i < this.options.maxIterations - 2) {
+            const reflection = reflectStrategy({
+              successful: false,
+              duplicate: false,
+              attempts: noProgress,
+              maxAttempts: 5,
+              boundary: {
+                scope: target?.address ? [target.address] : [],
+                approvedTools: [],
+                approvalsRequired: Boolean(this.arsenal.getApprovalController()),
+                receiptsRequired: true,
+                evidenceRequired: true,
+                remainingIterations: this.options.maxIterations - i - 1,
+                remainingTokens: Math.max(0, this.options.maxTokens - tokensUsed),
+              },
+            });
+            this.emit('agent:reflection', { reflection });
             messages.push({
               role: 'user',
-              content: '[System: 4 iterations with no new findings. Either pursue a GENUINELY different vector/tool/argument now, or produce your final debrief if the surface is exhausted. Do not keep repeating the current approach.]',
+              content: `[System reflection (advisory only; all scope, approval, receipt, budget, and evidence gates still apply): ${reflection.recommendation}]`,
             });
             noProgress = 0;
           }
