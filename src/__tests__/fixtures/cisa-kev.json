@@ -1,0 +1,11 @@
+{
+  "title": "CISA Known Exploited Vulnerabilities Catalog",
+  "catalogVersion": "2026.09.01",
+  "dateReleased": "2026-09-01T10:00:00.000Z",
+  "count": 3,
+  "vulnerabilities": [
+    {"cveID":"CVE-2024-0001","vendorProject":"Example","product":"Widget","vulnerabilityName":"Example flaw","dateAdded":"2026-08-01","shortDescription":"fixture","requiredAction":"Apply updates","dueDate":"2026-08-22","knownRansomwareCampaignUse":"Unknown","notes":""},
+    {"cveID":"cve-2024-0001","vendorProject":"Duplicate","product":"Duplicate","vulnerabilityName":"Duplicate","dateAdded":"2026-08-01","shortDescription":"fixture","requiredAction":"Apply updates","dueDate":"2026-08-22","knownRansomwareCampaignUse":"Unknown","notes":""},
+    {"cveID":"CVE-2025-12345","vendorProject":"Acme","product":"Anvil","vulnerabilityName":"Anvil flaw","dateAdded":"2026-08-02","shortDescription":"fixture","requiredAction":"Remove product","dueDate":"2026-08-23","knownRansomwareCampaignUse":"Known","notes":""}
+  ]
+}

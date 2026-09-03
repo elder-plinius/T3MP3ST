@@ -1641,3 +1641,5 @@ export function getBanner(): string {
 
 // Default export
 export default createTempest;
+
+export * from './threat-intel/feed.js';
