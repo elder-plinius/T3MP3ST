@@ -2,9 +2,41 @@
 
 Operator behavior rules live in `AGENTS.override.md`. This file tracks project status and session work so nothing slips between sessions. **Mandatory Invariant:** `AGENTS.md` is updated after every completed step, task, and architectural action.
 
-## Session Log — 2026-09-03 (Jarvis) — Provenance-Safe CISA KEV / EPSS Feed Ingestion (#171) & Windows Agent Launch Hardening
+## Session Log — 2026-09-03 (Jarvis) — Nuclei Template Path Junction & Evidence Vault JavaScript Syntax Repair
 
-**Request:** "hurry up and upload to git" & "go bitch"
+**Requests:**
+- "Could not run nuclei: no templates provided for scan"
+- "Could not find template 'C:\Users\Raul\AppData\Local\nuclei-templates': could not find file: open C:\Users\Raul\AppData\Local\nuclei-templates: The system cannot find the file specified."
+- "the fucking vault is n[ot working]"
+
+### 1) Root Cause Diagnoses:
+- **Nuclei Template Path Resolution:** Nuclei v3 on Windows defaults to looking for templates under `%LOCALAPPDATA%\nuclei-templates` (`C:\Users\Raul\AppData\Local\nuclei-templates`). However, templates were previously installed under `%USERPROFILE%\nuclei-templates` (`C:\Users\Raul\nuclei-templates`). When `nuclei` was invoked without an explicit `-t` flag (or with `-tags`), it looked in the default local AppData directory, failed to find it, and halted with `could not find file: open C:\Users\Raul\AppData\Local\nuclei-templates`. In addition, `nuclei_scan` tool and adapter definitions lacked a `templates` parameter to allow specifying template paths/categories.
+- **Evidence Vault JavaScript Syntax Crash:** In `docs/evidence.html`, a duplicate `const creds` was declared at line 6101 and line 6104 in `renderFindings()`. In modern ES6 execution, duplicate lexical declaration throws `Uncaught SyntaxError: Identifier 'creds' has already been declared`. This caused Script block 2 to completely fail compilation in the browser, leaving the entire Evidence Vault UI unresponsive and blank.
+
+### 2) Implementation & Resolution:
+- **Directory Junction & Config Sync for Nuclei:**
+  - Created NTFS directory junction: `C:\Users\Raul\AppData\Local\nuclei-templates` -> `C:\Users\Raul\nuclei-templates` (`mklink /J`).
+  - Synced `.templates-config.json` to `C:\Users\Raul\AppData\Local\nuclei\.templates-config.json` and `C:\Users\Raul\.templates-config.json`.
+  - Added `templates` (with aliases `template` / `t`) parameter to `nuclei_scan` tool in `src/arsenal/index.ts` and `src/arsenal/adapter-tools.ts`, forwarding `-t` arguments into the execution command.
+- **Evidence Vault Script Syntax Fix (`docs/evidence.html`):**
+  - Removed duplicate `const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];` declaration at line 6104.
+  - Verified all 9 inline script blocks in `docs/evidence.html` compile cleanly via `vm.Script`.
+  - Expanded `src/__tests__/ui-inline-scripts-parse.test.ts` to execute `vm.Script` syntax verification across ALL 15 HTML documents in `docs/` to permanently prevent syntax regressions in any dashboard page.
+
+### 3) Verification:
+- Verified `nuclei -validate -silent`: successfully loaded and validated all installed templates with 0 path errors.
+- Verified `nuclei -tags tech -tl`: loaded matching templates without error.
+- Verified `docs/evidence.html` inline scripts compile cleanly with 0 syntax errors.
+- `ui-inline-scripts-parse.test.ts`: **63/63 tests passing** across all HTML documents.
+- `tsc --noEmit`: **0 errors**.
+- `npm run build`: **0 errors**, compiled clean.
+- Background server restarted on port 3333; verified `/api/credentials` (15 items) and `/api/mission/findings` (200 items) responding immediately.
+
+---
+
+## Session Log — 2026-09-03 (Jarvis) — CISA KEV / EPSS Ingestion (#171) & Multi-Branch Git Publishing
+
+**Request:** "hurry up and upload to git", "finish up", "go bitch", & "update agents.md"
 
 ### 1) Implementation & Hardening:
 - **CISA KEV & FIRST EPSS Feed Ingestion Engine (`src/tools/cve-feed.ts`):**
@@ -21,11 +53,56 @@ Operator behavior rules live in `AGENTS.override.md`. This file tracks project s
   - Silenced `where.exe` child process stderr streaming to eliminate spurious console warnings on boot.
   - Hardened Windows `.cmd`/`.bat` spawning by wrapping command lines with exact Windows quoting rules, resolving Node 24 `DEP0190` deprecation notices.
 
-### 2) Verification:
+### 2) Multi-Branch Git Deliveries (Pushed Live to GitHub):
+- **Branch 1 (Omnibus Suite): `feat/threat-intel-cve-vault-dfir-suite`**
+  - Commit `828b7ac`: refactor(server): modernize cve feed endpoint invocations with typed options.
+  - Commit `696d8d9`: feat(intel): upgrade CveFeedEngine for Issue #171 with provenance and test suite.
+  - Commit `04771c8`: feat(vault): add credentials ledger extraction, persistence, and evidence vault indexing.
+  - Commit `4d81be3`: fix(quality): resolve 39 lint errors, doctor checks on Windows, and secure local endpoints.
+  - PR #163 on `elder-plinius/T3MP3ST` updated live; all lint/typecheck/whitespace/build blockers cleared.
+- **Branch 2 (Focused Roadmap PR for Issue #171): `feat/171-cve-feed-ingestion`**
+  - Commit `da99f26`: feat(intel): provenance-safe CISA KEV and EPSS feed ingestion (#171).
+  - Branched directly off `upstream/main` (`6296d0e`).
+  - Scoped strictly to 2 files: `src/tools/cve-feed.ts` and `src/__tests__/cve-feed.test.ts`.
+  - Decoupled completely from UI, server, and storage changes per maintainer acceptance criteria.
+  - Pushed to `origin/feat/171-cve-feed-ingestion` and ready to open as PR referencing Issue #171.
+
+### 3) Verification:
 - `eslint src/**/*.ts --quiet`: **0 errors**.
 - `tsc --noEmit`: **0 errors**.
 - `npm run build`: **0 errors**, compiled clean.
 - Unit tests (`cve-feed.test.ts` + `cve-vault.test.ts`): **19/19 passing**.
+- Claim verification (`npm run verify-claims`): **27/27 passed**.
+- Local daemon server running on port 3333; verified `/api/credentials`, `/api/health`, and `/api/cves/feed`.
+
+---
+
+## Session Log — 2026-09-03 (Jarvis) — DEP0190 & where.exe console-noise purge (Node 24 compatibility)
+
+**Request:** Raul pasted server output: `INFO: Could not find files for the given pattern(s).` + `(node:47272) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true...` — both traced to the RUNNING server process (PID 47272 confirmed via netstat on :3333).
+
+### Root causes (4 call sites):
+1. **INFO leak** — `src/agent/local-agents.ts` `resolveBin()`: `execFileSync('where.exe', [bin])` — Node's `execFileSync` relays the child's **stderr to the parent console by default**, so every probed-but-absent agent binary printed where.exe's INFO line at each local-agent detection.
+2. **DEP0190 (spawn path)** — `spawnAgent()`: `spawn(resolvedBin, args, { shell: true })` for `.cmd/.bat` shims — args-array + shell:true is deprecated in Node 24 (concatenates without escaping). Proved empirically the old form was genuinely unsafe: an arg `a|b&c` was executed as a pipe by cmd.exe.
+3. **DEP0190 (version probe)** — `execFile(exe, spec.versionArgs, { shell: needsShell(exe) })` during local-agent detection.
+4. **DEP0190 (scripts)** — `scripts/update.mjs` + `scripts/test-update.mjs`: `spawnSync('where', [name], { shell: true })` (and a POSIX `spawnSync('command', ['-v', …], { shell: true })`).
+
+### Fixes:
+- `resolveBin()` where.exe probe now passes `stdio: ['ignore', 'pipe', 'pipe']` so stderr is captured, not relayed.
+- New `quoteWindowsArg()` (cross-spawn-style): quotes args carrying whitespace/quotes/cmd metacharacters; embedded `"` doubled to `""` — which the CRT argv parser reads as one literal quote AND cmd.exe's toggle parser reads as state-neutral; backslash runs doubled before quotes. `spawnAgent()` now launches shims as a single pre-quoted command STRING with shell:true (no args array → no DEP0190).
+- Version probe split: real binaries keep `execFile(file, args)` without shell; shims go through `exec(pre-quoted-string)` — both DEP0190-free.
+- `update.mjs`/`test-update.mjs`: `spawnSync('where.exe', [name])` without shell (real exe); POSIX branch `spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name])` (injection-safe positional).
+- Verified the quoting matrix empirically at BOTH cmd level (echo `%*` shim) and CRT level (node argv dumper): 10/10 args arrive intact incl. `say "hi"`, `a|b&c`, `<>&|`, `50% done`, trailing `\`, and pathological `a\"b` — strictly safer than the old raw concatenation.
+
+### Also fixed (build was broken): 3 cve-feed API call sites in `src/server.ts` — `filteredCount: result.total` (query() shape change), `syncLiveFeed({ timeoutMs: 15000 })` (SyncOptions object), `fetchLiveEpss()` (renamed from queryEpss). `tsc --noEmit` now exits 0.
+
+### Verification:
+- `npm run build` clean; dist contains all fixes (grep-verified).
+- `npm run update:dry` + `npm run test:update`: zero warnings, ALL PASS.
+- Server restarted on :3333 — boot log AND a full `/api/agents/local/detect` run: **0** DEP0190/INFO lines (was 2 INFO + 1 DEP0190 per detect).
+- Vitest: local-agent dispatch/selection/provider/home + cve-feed suites 39/39 pass.
+- NOTE: `local-agent-path-resolution.test.ts` fails 29/30 on Windows — PRE-EXISTING (verified by running the suite against the pre-session 04771c8 file: identical failures; the suite is POSIX-focused, `#!/bin/sh` fakes). Not caused by this work; a platform-gate (`skipIf(win32)`) is the follow-up.
+- NOTE: a concurrent agent session committed the cve-feed work + in-flight tree mid-session (696d8d9, 828b7ac at 13:04) — which briefly made `git status` look clean while edits were on disk; archaeology documented here to avoid future confusion.
 
 ---
 
