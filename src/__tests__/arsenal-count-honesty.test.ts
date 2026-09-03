@@ -11,7 +11,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // ARSENAL COUNT HONESTY — the "advertised = real, and nothing is silently dead".
 //
-// The arsenal advertises "108 tools". verify-claims defends that number by counting
+// The arsenal advertises "110 tools". verify-claims defends that number by counting
 // `id:`/`name:` source lines — a SOURCE-LINE count, which would keep passing even if
 // an entry became uncallable. This test locks the number to the REAL registered arrays
 // and, more importantly, pins the invariant that makes the count honest:
@@ -34,16 +34,16 @@ const isGated = (a: ToolAdapter) =>
   a.execution === 'catalog_only' || a.execution === 'import_only';
 
 describe('arsenal count honesty (advertised = real registered surface)', () => {
-  it('the advertised "108 tools" is the real registered surface, not a source-line count', () => {
+  it('the advertised "110 tools" is the real registered surface, not a source-line count', () => {
     const total = TOOL_ADAPTERS.length + BUILTIN_TOOLS.length + EXTERNAL_TOOLS.length;
     // Locks the headline to code. If the arsenal grows/shrinks, update this AND the
     // README / verify-claims headline together — that is the point of the lock.
     expect(
       total,
-      `arsenal size drifted from the advertised 109 (adapters=${TOOL_ADAPTERS.length}, ` +
+      `arsenal size drifted from the advertised 110 (adapters=${TOOL_ADAPTERS.length}, ` +
         `built-ins=${BUILTIN_TOOLS.length}, externals=${EXTERNAL_TOOLS.length}) — ` +
         'update the README / verify-claims headline to match',
-    ).toBe(109);
+    ).toBe(110);
     expect(total).toBeGreaterThanOrEqual(80); // stays consistent with verify-claims' `>= 80` gate
   });
 

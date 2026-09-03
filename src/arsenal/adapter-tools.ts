@@ -216,6 +216,12 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     defaultTimeoutMs: 300_000,
     build: (target) => ['-h', target],
   },
+  wpscan: {
+    targetParam: 'url',
+    defaultTimeoutMs: 300_000,
+    // JSON straight to stdout; --no-banner keeps the banner out of the parsed output.
+    build: (target) => ['--url', target, '--format', 'json', '--no-banner'],
+  },
   httpx: {
     targetParam: 'url',
     defaultTimeoutMs: 60_000,

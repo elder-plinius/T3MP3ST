@@ -279,6 +279,16 @@ describe('source / supply-chain scanners run a real invocation (not `<binary> <t
   });
 });
 
+describe('wpscan runs a real invocation (not `<binary> <url>`)', () => {
+  // Without a bespoke template wpscan would fall through to `wpscan <url>` and emit unstructured
+  // text; the template forces the --url form with JSON on stdout for downstream parsing.
+  it('builds the WordPress scan argv with JSON to stdout and no banner', async () => {
+    const deps = makeDeps();
+    await mint('wpscan', deps).handler(ctx({ url: 'https://example.com' }));
+    expect(deps.spawns[0]).toEqual(['--url', 'https://example.com', '--format', 'json', '--no-banner']);
+  });
+});
+
 describe('reverse / mobile / smart-contract analysers run a real invocation (not `<binary> <file>`)', () => {
   // Each entry: [adapter id, params, expected argv]. Without bespoke templates these all fell through
   // to DEFAULT_TEMPLATE and spawned `['<file>']` — a broken invocation for a subcommand/flag-driven
