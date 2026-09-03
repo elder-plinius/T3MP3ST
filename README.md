@@ -271,6 +271,7 @@ Deeper reading: [WALL_FORENSICS](docs/WALL_FORENSICS.md) (per-challenge misses),
 | [MCP Guide](docs/MCP_GUIDE.md) | MCP server setup and `security_recon` usage |
 | [FEATURES.md](FEATURES.md) | feature-by-feature status (`[x]` shipped / `[~]` partial / `[ ]` planned) |
 | [SCOPE_AND_AUTHORIZATION](docs/SCOPE_AND_AUTHORIZATION.md) | authority model, scope receipts, evidence and retest rules |
+| [AUTHENTICATED_WORKFLOWS](docs/AUTHENTICATED_WORKFLOWS.md) | current authenticated-request support, capability diagnostics, and the design boundary for interactive signup |
 | [VERIFIED_PROVENANCE](docs/VERIFIED_PROVENANCE.md) | how findings become tool-proven instead of model-asserted |
 | [CONTRIBUTION_RECEIPTS](docs/CONTRIBUTION_RECEIPTS.md) | PR receipt template for scope, run mode, model/harness labels, redaction, and verification |
 | [MODEL_MATRIX](docs/MODEL_MATRIX.md) | Reproducible cross-model benchmark matrix and arbitrary variant-test model selection |

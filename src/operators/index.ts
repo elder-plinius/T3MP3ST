@@ -26,6 +26,7 @@ import type { ToolResult } from '../types/index.js';
 import type { Target } from '../types/index.js';
 import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
+import { diagnoseOperatorCapabilities } from './capability-diagnostics.js';
 
 // =============================================================================
 // OPERATOR EVENTS
@@ -194,6 +195,7 @@ export function listOperatorPrompts() {
   return (Object.keys(ARCHETYPE_PROFILES) as OperatorArchetype[]).map((a) => {
     const base = ARCHETYPE_PROFILES[a];
     const ov = OPERATOR_OVERRIDES[a];
+    const systemPrompt = (ov && ov.systemPrompt) || base.systemPrompt;
     return {
       archetype: a,
       name: base.name,
@@ -202,9 +204,10 @@ export function listOperatorPrompts() {
       toolCategories: base.toolCategories,
       capabilities: base.capabilities,
       techniques: base.techniques,
-      systemPrompt: (ov && ov.systemPrompt) || base.systemPrompt,
+      systemPrompt,
       defaultSystemPrompt: base.systemPrompt,
       params: getOperatorParams(a),
+      capabilityDiagnostics: diagnoseOperatorCapabilities(systemPrompt, base.defaultTools),
       overridden: !!(ov && (ov.systemPrompt || (ov.params && Object.keys(ov.params).length))),
     };
   });

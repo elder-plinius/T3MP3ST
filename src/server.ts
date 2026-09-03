@@ -6586,8 +6586,13 @@ app.post('/api/operators/prompt', (req: Request, res: Response): void => {
     return;
   }
   setOperatorOverride(archetype as OperatorArchetype, override);
-  broadcastEvent('operator:prompt_updated', { archetype, hasPrompt: override.systemPrompt !== undefined, hasParams: !!override.params });
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
+  broadcastEvent('operator:prompt_updated', {
+    archetype,
+    hasPrompt: override.systemPrompt !== undefined,
+    hasParams: !!override.params,
+    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
+  });
   res.json({ ok: true, archetype, operator: updated });
 });
 
@@ -6598,8 +6603,12 @@ app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
     return;
   }
   resetOperatorOverride(archetype as OperatorArchetype);
-  broadcastEvent('operator:prompt_updated', { archetype, reset: true });
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
+  broadcastEvent('operator:prompt_updated', {
+    archetype,
+    reset: true,
+    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
+  });
   res.json({ ok: true, archetype, operator: updated });
 });
 

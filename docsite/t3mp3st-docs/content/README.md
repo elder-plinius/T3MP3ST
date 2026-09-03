@@ -20,6 +20,7 @@ Start here when you want to install, run, integrate, or contribute to T3MP3ST.
 | [Getting Started](#getting-started) | Install, first launch, first safe mission, updates, and troubleshooting |
 | [Scope and Authorization](#scope-and-authorization) | Rules of engagement, target receipts, and evidence requirements |
 | [Target Headers](#target-headers) | Supplying auth headers for an explicitly authorized target origin |
+| [Authenticated Workflow Boundaries](#authenticated-workflows) | Current authenticated-request support and the approval boundary for future interactive workflows |
 | [Arsenal Activation Plan](#arsenal-activation-plan) | Installing optional external tools and understanding adapter readiness |
 | [Team Preview](#team-preview) | Ten-minute UI walkthrough for preview builds |
 
