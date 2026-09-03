@@ -68,6 +68,8 @@ scripts/.export-denylist.local
 !.aiwg/plugins/**
 !.aiwg/bt6-maintainer.yaml
 !.aiwg/bt6-maintainer.lock.json
+!.aiwg/quickref.json
+!.aiwg/quickref.config.json
 
 server.pid
 
