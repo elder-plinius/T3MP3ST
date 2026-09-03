@@ -7208,7 +7208,7 @@ app.get('/api/cves/feed', (req: Request, res: Response) => {
     highEpssCount: summary.highEpssCount,
     probesAvailableCount: summary.probesAvailableCount,
     lastSyncedAt: summary.lastSyncedAt,
-    filteredCount: result.filteredCount,
+    filteredCount: result.total,
     offset,
     limit,
     items: result.items
@@ -7217,7 +7217,7 @@ app.get('/api/cves/feed', (req: Request, res: Response) => {
 
 app.post('/api/cves/sync', async (_req: Request, res: Response): Promise<void> => {
   try {
-    const result = await CveFeedEngine.syncLiveFeed(15000);
+    const result = await CveFeedEngine.syncLiveFeed({ timeoutMs: 15000 });
     emitContractEvent('cve_feed.synced', { count: result.count, timestamp: new Date().toISOString() });
     res.json({ success: true, ...result });
   } catch (err: any) {
@@ -7231,7 +7231,7 @@ app.get('/api/cves/:cveId/epss', async (req: Request, res: Response): Promise<vo
     res.status(400).json({ error: 'cveId required' });
     return;
   }
-  const epss = await CveFeedEngine.queryEpss(cveId);
+  const epss = await CveFeedEngine.fetchLiveEpss(cveId);
   res.json({ success: true, ...epss });
 });
 
