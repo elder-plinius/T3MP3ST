@@ -293,6 +293,49 @@ describe('wpscan runs a real invocation (not `<binary> <url>`)', () => {
   });
 });
 
+describe('former KNOWN_DEBT adapters run real invocations (feroxbuster / osv-scanner / hashcat / yara)', () => {
+  it('osv-scanner scans a source tree recursively with JSON output', async () => {
+    const deps = makeDeps();
+    await mint('osv-scanner', deps).handler(ctx({ path: 'src' }));
+    expect(deps.spawns[0]).toEqual(['--format', 'json', '--recursive', 'src']);
+  });
+
+  it('osv-scanner degrades gracefully without a target (networked adapter, no spawn)', async () => {
+    const deps = makeDeps();
+    // The catalog marks osv-scanner networked (it talks to the OSV API), so unlike the purely
+    // local supply-chain scanners it does NOT default to "." — it waits for an explicit path.
+    const result = await mint('osv-scanner', deps).handler(ctx({}));
+    expect(result.success).toBe(false);
+    expect(deps.spawns.length).toBe(0);
+  });
+  it('feroxbuster mirrors the ffuf pattern: url + wordlist, JSONL to stdout', async () => {
+    const deps = makeDeps();
+    await mint('feroxbuster', deps).handler(ctx({ url: 'https://example.com', wordlist: 'wl.txt' }));
+    expect(deps.spawns[0]).toEqual(['-u', 'https://example.com', '-w', 'wl.txt', '--json', '-q']);
+  });
+
+  it('hashcat audits a hash file with the potfile disabled (recovered secrets never persist)', async () => {
+    const deps = makeDeps();
+    await mint('hashcat', deps).handler(ctx({ file: 'hashes.txt', wordlist: 'wl.txt' }));
+    expect(deps.spawns[0]).toEqual(['-m', '0', '--potfile-disable', 'hashes.txt', 'wl.txt']);
+  });
+
+  it('yara pairs an explicit ruleset with the artifact', async () => {
+    const deps = makeDeps();
+    await mint('yara', deps).handler(ctx({ file: 'a.bin', rules: 'rules.yar' }));
+    expect(deps.spawns[0]).toEqual(['rules.yar', 'a.bin']);
+  });
+
+  it('yara refuses honestly when no ruleset is given — no spawn', async () => {
+    const deps = makeDeps();
+    // `yara <file>` alone errors ("no rules specified"); the template throws and the factory
+    // handler turns that into a clean failure instead of a broken invocation.
+    const result = await mint('yara', deps).handler(ctx({ file: 'a.bin' }));
+    expect(result.success).toBe(false);
+    expect(deps.spawns.length).toBe(0);
+  });
+});
+
 describe('reverse / mobile / smart-contract analysers run a real invocation (not `<binary> <file>`)', () => {
   // Each entry: [adapter id, params, expected argv]. Without bespoke templates these all fell through
   // to DEFAULT_TEMPLATE and spawned `['<file>']` — a broken invocation for a subcommand/flag-driven
@@ -305,6 +348,7 @@ describe('reverse / mobile / smart-contract analysers run a real invocation (not
     ['exiftool', { file: 'a.out' }, ['-json', 'a.out']],
     ['mythril', { file: 'Vault.sol' }, ['analyze', 'Vault.sol', '-o', 'json']],
     ['apkleaks', { file: 'app.apk' }, ['-f', 'app.apk']],
+    ['apktool', { file: 'app.apk' }, ['d', '-f', 'app.apk', '-o', 'apk-out']],
     ['slither', { path: 'contracts' }, ['contracts', '--json', '-']],
     ['mobsfscan', { path: 'app-src' }, ['--json', 'app-src']],
   ];
@@ -361,9 +405,8 @@ describe('invocation-honesty guard — every mintable adapter is classified, non
   ]);
   // KNOWN DEBT: the positional default is broken/degraded and these SHOULD get a template later.
   // Tracked honestly here rather than hidden — a good follow-up PR shrinks this set.
-  const KNOWN_DEBT = new Set([
-    'feroxbuster', 'osv-scanner', 'hashcat', 'apktool', 'yara',
-  ]);
+  // Currently empty: feroxbuster, osv-scanner, hashcat, apktool, and yara are all templated.
+  const KNOWN_DEBT = new Set<string>();
 
   const mintable = TOOL_ADAPTERS.filter(isMintable);
   const classified = [POSITIONAL_TARGET_OK, OPERATOR_DRIVEN, KNOWN_DEBT];

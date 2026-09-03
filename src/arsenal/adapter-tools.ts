@@ -209,6 +209,16 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
       return ['-u', target, '-w', wordlist, '-mc', mc, '-o', '/dev/stdout', '-of', 'json', '-s'];
     },
   },
+  feroxbuster: {
+    // Recursive content discovery, mirroring ffuf: --json -q streams JSONL to stdout with the
+    // banner/progress UI suppressed, so the output channel stays machine-readable.
+    targetParam: 'url',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => {
+      const wordlist = str(params.wordlist) ?? defaultWordlist();
+      return ['-u', target, '-w', wordlist, '--json', '-q'];
+    },
+  },
   sqlmap: {
     targetParam: 'url',
     defaultTimeoutMs: 300_000,
@@ -361,6 +371,12 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     defaultTimeoutMs: 180_000,
     build: (target, params) => ['-d', scanPath(target, params), '-o', 'json'],
   },
+  'osv-scanner': {
+    // Mirrors the catalog commandHint: JSON to stdout, recursive over the scan path.
+    targetParam: 'path',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => ['--format', 'json', '--recursive', scanPath(target, params)],
+  },
 
   // ── Reverse-engineering / mobile / smart-contract static analysis (local_read, operate on a FILE) ─
   // Without these each falls through to DEFAULT_TEMPLATE and spawns `<binary> <file>` — which for a
@@ -424,6 +440,35 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     targetParam: 'path',
     defaultTimeoutMs: 180_000,
     build: (target, params) => ['--json', scanPath(target, params)],
+  },
+  apktool: {
+    // `apktool <apk>` errors ("a command is required"); decode with a deterministic output dir,
+    // mirroring the catalog commandHint. -f overwrites a stale output dir instead of prompting.
+    targetParam: 'file',
+    defaultTimeoutMs: 300_000,
+    build: (target, params) => ['d', '-f', artifactPath(target, params), '-o', str(params.output) ?? 'apk-out'],
+  },
+  hashcat: {
+    // Receipt-gated credential audit. --potfile-disable honors the catalog note "never store
+    // recovered secrets"; hash mode and wordlist stay operator-tunable via params.
+    targetParam: 'file',
+    defaultTimeoutMs: 600_000,
+    build: (target, params) => {
+      const mode = str(params.mode) ?? '0';
+      const wordlist = str(params.wordlist) ?? '/usr/share/wordlists/rockyou.txt';
+      return ['-m', mode, '--potfile-disable', artifactPath(target, params), wordlist];
+    },
+  },
+  yara: {
+    // YARA needs BOTH a ruleset and a target artifact: `yara <file>` alone errors
+    // ("no rules specified"). Refuse honestly when no ruleset is given.
+    targetParam: 'file',
+    defaultTimeoutMs: 120_000,
+    build: (target, params) => {
+      const rules = str(params.rules);
+      if (!rules) throw new Error('requires a rules file (params.rules).');
+      return [rules, artifactPath(target, params)];
+    },
   },
 
   // ── Recon / OSINT adapters (networked) ─────────────────────────────────────────────────────────
