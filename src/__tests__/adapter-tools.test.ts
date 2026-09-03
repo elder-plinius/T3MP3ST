@@ -58,9 +58,13 @@ const ctx = (parameters: Record<string, unknown>): ToolContext => ({ parameters 
 describe('report-file workspace', () => {
   it('uses a private 0700 directory and cleanup removes the complete workspace', async () => {
     const workspace = await createPrivateReportWorkspace('garak');
-    const dir = dirname(workspace.reportBase);
-    expect((await stat(dir)).mode & 0o777).toBe(0o700);
-    expect(dir).not.toBe('/tmp');
+const dir = dirname(workspace.reportBase);
+// POSIX-only assertion: Windows has no 0700 mode semantics (stat().mode stays
+// generic). The private-dir + cleanup contract itself is asserted on every OS.
+if (process.platform !== 'win32') {
+  expect((await stat(dir)).mode & 0o777).toBe(0o700);
+}
+expect(dir).not.toBe('/tmp');
 
     await workspace.cleanup();
     await expect(access(dir)).rejects.toThrow();

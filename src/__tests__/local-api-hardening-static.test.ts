@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
-const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8');
+// Normalize CRLF→LF so marker searches with '\n' work on Windows checkouts
+// (git autocrlf) exactly as they do on POSIX.
+const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8').replace(/\r\n/g, '\n');
+const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8').replace(/\r\n/g, '\n');
 
 function sourceBlock(startMarker: string, endMarker: string): string {
   const start = serverSource.indexOf(startMarker);

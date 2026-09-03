@@ -123,6 +123,11 @@ export class AgentLoop extends EventEmitter<AgentEvents> {
   private arsenal: Arsenal;
   private options: Required<AgentLoopOptions>;
 
+  /** Swap the LLM this loop drives (phase-based model routing). */
+  setLLM(llm: LLMBackbone): void {
+    this.llm = llm;
+  }
+
   constructor(llm: LLMBackbone, arsenal: Arsenal, options?: AgentLoopOptions) {
     super();
     this.llm = llm;

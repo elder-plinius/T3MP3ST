@@ -26,6 +26,8 @@
 import type { ToolAdapter } from './catalog.js';
 import type { CustomTool, ToolContext, ToolResult } from '../types/index.js';
 import { parseToolOutput } from './parsers.js';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 // =============================================================================
 // INJECTED DEPENDENCIES
@@ -98,8 +100,23 @@ interface ArgTemplate {
   reportFile?: (reportBase: string) => string;
 }
 
-const str = (v: unknown): string | undefined =>
-  typeof v === 'string' && v.trim() ? v.trim() : undefined;
+/**
+ * Default wordlist for content-discovery adapters (ffuf/gobuster/feroxbuster).
+ * Falls back to the bundled SecLists copy when the POSIX default path is
+ * absent (Windows) — a missing wordlist previously made every dir-bruteforce
+ * adapter fail outright. T3MP3ST_WORDLIST overrides both.
+ */
+function defaultWordlist(): string {
+  const env = process.env.T3MP3ST_WORDLIST;
+  if (env && existsSync(env)) return env;
+  const posix = '/usr/share/wordlists/dirb/common.txt';
+  if (existsSync(posix)) return posix;
+  const bundled = join(__dirname, '..', '..', 'tools', 'wordlists', 'common.txt');
+  if (existsSync(bundled)) return bundled;
+  return posix;
+}
+
+const str = (v: unknown): string | undefined =>  typeof v === 'string' && v.trim() ? v.trim() : undefined;
 
 /**
  * Resolve the filesystem PATH a source/supply-chain scanner should run against (semgrep, gitleaks,
@@ -187,7 +204,7 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     targetParam: 'url',
     defaultTimeoutMs: 120_000,
     build: (target, params) => {
-      const wordlist = str(params.wordlist) ?? '/usr/share/wordlists/dirb/common.txt';
+      const wordlist = str(params.wordlist) ?? defaultWordlist();
       const mc = str(params.mc) ?? '200,301,302,403';
       return ['-u', target, '-w', wordlist, '-mc', mc, '-o', '/dev/stdout', '-of', 'json', '-s'];
     },
@@ -202,12 +219,23 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
       return ['-u', target, '--batch', `--level=${level}`, `--risk=${risk}`];
     },
   },
+  arjun: {
+    targetParam: 'url',
+    defaultTimeoutMs: 180_000,
+    // arjun prints discovered parameters to stdout; -oJ needs a file path
+    // which the adapter cannot return, so keep stdout text mode.
+    build: (target, params) => {
+      const args = ['-u', target, '-q', '--stable'];
+      if (str(params.wordlist)) args.push('-w', str(params.wordlist) as string);
+      return args;
+    },
+  },
   gobuster: {
     targetParam: 'url',
     defaultTimeoutMs: 120_000,
     build: (target, params) => {
       const mode = str(params.mode) ?? 'dir';
-      const wordlist = str(params.wordlist) ?? '/usr/share/wordlists/dirb/common.txt';
+      const wordlist = str(params.wordlist) ?? defaultWordlist();
       return [mode, '-u', target, '-w', wordlist, '-q'];
     },
   },

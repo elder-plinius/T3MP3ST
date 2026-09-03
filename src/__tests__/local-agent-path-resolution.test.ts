@@ -58,7 +58,7 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) { try { rmSync(d, { recursive: true, force: true }); } catch { /* noop */ } }
 });
 
-describe('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () => {
+describe.runIf(process.platform !== 'win32')('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () => {
   it('finds a CLI in ~/.local/bin even when PATH omits it (the reported bug)', () => {
     const home = scratch();
     const bin = putExe(join(home, '.local', 'bin'), 'faketool');
@@ -180,7 +180,7 @@ describe('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () 
   });
 });
 
-describe('detectLocalAgents — wiring: a well-known-dir CLI is reported installed (issue #78)', () => {
+describe.runIf(process.platform !== 'win32')('detectLocalAgents — wiring: a well-known-dir CLI is reported installed (issue #78)', () => {
   it('reports Claude Code installed + versioned when `claude` lives in ~/.local/bin and PATH omits it', async () => {
     const home = scratch();
     const claudePath = putExe(join(home, '.local', 'bin'), 'claude');
@@ -217,7 +217,7 @@ describe('detectLocalAgents — wiring: a well-known-dir CLI is reported install
   });
 });
 
-describe('spawn call-sites use the resolved path (issue #78 — detected-but-unspawnable would be worse)', () => {
+describe.runIf(process.platform !== 'win32')('spawn call-sites use the resolved path (issue #78 — detected-but-unspawnable would be worse)', () => {
   // Behavioral, not a spawn spy: if the rewiring regressed to the bare `spec.bin`, spawn('claude')
   // under PATH=/usr/bin:/bin throws ENOENT → ok:false / reject. Success proves the resolved path ran.
   it('runLocalAgent launches the well-known-dir CLI (not the bare name)', async () => {

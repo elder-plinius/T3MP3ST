@@ -80,6 +80,69 @@ export class LLMApiError extends Error {
   }
 }
 
+/**
+ * Opt-in GLOBAL request throttle for the LLM layer, shared across every
+ * LLMBackbone instance in this process. Designed for free-tier backends with
+ * tiny per-minute token budgets (e.g. Groq free: 8k–12k TPM) where a mission's
+ * parallel operators can burn the whole minute budget in one burst.
+ *
+ * Env switches (both off by default → zero behavior change):
+ *   T3MP3ST_LLM_TPM_LIMIT        rolling 60s token budget (est. chars/4)
+ *   T3MP3ST_LLM_MIN_INTERVAL_MS  minimum gap between consecutive requests
+ *   T3MP3ST_LLM_MAX_WAIT_MS      cap on how long a single call may wait (default 5 min)
+ *
+ * The limiter NEVER rejects a call: if the budget stays saturated past the
+ * max-wait cap, the call proceeds anyway (the backend's own retry ladder then
+ * takes over). This keeps missions alive on free tiers instead of dying on
+ * "Request too large" / TPM exhaustion.
+ */
+const throttleWindowMs = 60_000;
+
+interface ThrottleSlice {
+  at: number;
+  tokens: number;
+}
+
+const throttleState: ThrottleSlice[] = [];
+
+function estimateTokens(messages: LLMMessage[]): number {
+  let chars = 0;
+  for (const m of messages) {
+    chars += typeof m.content === 'string' ? m.content.length : 0;
+    if (m.role) chars += m.role.length;
+  }
+  return Math.ceil(chars / 4);
+}
+
+async function throttleLLMRequest(messages: LLMMessage[]): Promise<void> {
+  const tpmLimit = Number(process.env.T3MP3ST_LLM_TPM_LIMIT || '0');
+  const minInterval = Number(process.env.T3MP3ST_LLM_MIN_INTERVAL_MS || '0');
+  const maxWait = Number(process.env.T3MP3ST_LLM_MAX_WAIT_MS || (5 * 60 * 1000));
+  if (!tpmLimit && !minInterval) return;
+
+  const now = Date.now();
+  const requested = estimateTokens(messages);
+  const deadline = now + maxWait;
+
+  while (Date.now() < deadline) {
+    const cut = Date.now() - throttleWindowMs;
+    for (let i = throttleState.length - 1; i >= 0; i--) {
+      if (throttleState[i].at < cut) throttleState.splice(i, 1);
+    }
+    const used = throttleState.reduce((sum, s) => sum + s.tokens, 0);
+    const lastCall = throttleState.length ? throttleState[throttleState.length - 1].at : 0;
+
+    if ((!tpmLimit || used + requested <= tpmLimit) &&
+        (Date.now() - lastCall >= minInterval)) {
+      throttleState.push({ at: Date.now(), tokens: requested });
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throttleState.push({ at: Date.now(), tokens: requested });
+}
+
+
 // API Response types
 interface OpenRouterToolCall {
   id: string;
@@ -1590,13 +1653,18 @@ export function classifyErrorKind(error: Error | null): string {
 }
 
 export class LLMBackbone extends EventEmitter<LLMEvents> {
-  private adapter: LLMProviderAdapter;
-  private config: LLMConfig;
-  private conversationHistory: LLMMessage[] = [];
-  private retryAttempts: number = 3;
-  private retryDelayMs: number = 1000;
+private adapter: LLMProviderAdapter;
+private config: LLMConfig;
+private conversationHistory: LLMMessage[] = [];
+private retryAttempts: number = 3;
+private retryDelayMs: number = 1000;
 
-  constructor(config: LLMConfig) {
+/** Clone this backbone with a different model id (phase-based model routing). */
+withModel(model: string): LLMBackbone {
+  return new LLMBackbone({ ...this.config, model });
+}
+
+constructor(config: LLMConfig) {
     super();
     this.config = config;
     this.adapter = this.createAdapter(config);
@@ -1677,6 +1745,8 @@ export class LLMBackbone extends EventEmitter<LLMEvents> {
   ): Promise<LLMResponse> {
     const startTime = Date.now();
     this.emit('request:start', { messages });
+
+    await throttleLLMRequest(messages);
 
     // The model ladder: primary first, then each configured fallback hop. A hop is
     // tried when the rung above fails for ANY reason that model can't fix itself —

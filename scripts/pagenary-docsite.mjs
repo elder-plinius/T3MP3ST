@@ -46,6 +46,15 @@ const pages = [
     audience: ['operator', 'developer'],
   },
   {
+    source: 'docs/AUTHENTICATED_WORKFLOWS.md',
+    output: 'AUTHENTICATED_WORKFLOWS.md',
+    id: 'authenticated-workflows',
+    title: 'Authenticated Workflow Boundaries',
+    summary: 'Current authenticated-request support and the design boundary for future interactive workflows.',
+    category: 'operator',
+    audience: ['operator', 'developer', 'security-reviewer'],
+  },
+  {
     source: 'docs/ARSENAL_ACTIVATION_PLAN.md',
     output: 'ARSENAL_ACTIVATION_PLAN.md',
     id: 'arsenal-activation-plan',

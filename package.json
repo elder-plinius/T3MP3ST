@@ -113,7 +113,8 @@
     "update:hard": "node scripts/update.mjs --hard",
     "test:update": "node scripts/test-update.mjs",
     "maintainer:check": "node scripts/sync-bt6-maintainer.mjs --check",
-    "maintainer:sync": "node scripts/sync-bt6-maintainer.mjs"
+    "maintainer:sync": "node scripts/sync-bt6-maintainer.mjs",
+    "retest": "npx tsx scripts/retest.mjs"
   },
   "bin": {
     "tempest": "./dist/cli.js",
@@ -149,6 +150,7 @@
     "gradient-string": "^2.0.2",
     "inquirer": "^9.2.15",
     "ora": "^8.0.1",
+    "playwright": "^1.62.1",
     "socks": "^2.8.9",
     "tree-sitter-wasms": "0.1.13",
     "tsx": "^4.7.0",

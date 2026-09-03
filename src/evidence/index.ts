@@ -98,13 +98,72 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
   private credentials: Map<string, Credential> = new Map();
 
   /**
-   * Add a finding
+   * Normalize a finding into its dedup key. Same finding surfaced by several
+   * parallel operators (same title, same target) must not be recorded N times —
+   * the swarm's strongest failure mode is finding inflation through duplicates.
+   * Titles are normalized so near-identical variants merge: "Sensitive Paths
+   * Exposed in robots.txt" and "Sensitive Paths in robots.txt" are the same
+   * finding, not two. Filler words (exposed/discovered/missing/the/a/in/…) are
+   * dropped after lowercasing so only the semantic core is compared.
+   */
+  private static readonly DEDUP_STOP_WORDS = new Set([
+    'the', 'a', 'an', 'in', 'of', 'on', 'at', 'with', 'for', 'from', 'via', 'and', 'or', 'to',
+    'exposed', 'discovered', 'detected', 'found', 'present', 'available', 'missing', 'enabled',
+    'disabled', 'vulnerable', 'issues', 'issue', 'problem', 'warning', 'warning:',
+    'disclosure', 'disclosed', 'leak', 'leaked', 'revealed', 'identified', 'located', 'enumeration',
+  ]);
+
+  private static normalizeTitle(title: string): string {
+    return title
+      .toLowerCase()
+      .replace(/[()]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')
+      .filter(w => w && !EvidenceVault.DEDUP_STOP_WORDS.has(w))
+      .map(w => {
+        // Plural→singular for semantic cores: "paths" == "path". Guarded so
+        // words legitimately ending in -s (class, status, https) stay intact.
+        if (w.length > 4 && /s$/.test(w) && !/(ss|us|is|as|os|ss)$/.test(w)) return w.slice(0, -1);
+        return w;
+      })
+      .join(' ');
+  }
+
+  private dedupKeyOf(f: Finding): string {
+    const title = EvidenceVault.normalizeTitle(f.title);
+    const target = f.targetId || '?';
+    return `${title}@${target}`;
+  }
+
+  /**
+   * Add a finding — deduplicated by (normalized title, target). A duplicate is
+   * merged into the stored copy (extra evidence appended, gate state kept at the
+   * strongest of the two) and the existing record is returned.
    */
   addFinding(finding: Finding): Finding {
     if (!finding.id) {
       finding.id = randomUUID();
     }
     const stored = cloneFinding(finding);
+    const key = this.dedupKeyOf(stored);
+    if (this.findings.size > 0) {
+      for (const existing of this.findings.values()) {
+        if (this.dedupKeyOf(existing) === key) {
+          for (const ev of stored.evidence) {
+            if (!existing.evidence.some(e => e.type === ev.type && e.content === ev.content)) {
+              existing.evidence.push(cloneEvidence(ev));
+            }
+          }
+          if (!existing.verifyGate?.passed && stored.verifyGate?.passed) {
+            existing.verifyGate = stored.verifyGate;
+            existing.verifiedAt = stored.verifiedAt;
+          }
+          this.emit('finding:updated', cloneFinding(existing));
+          return cloneFinding(existing);
+        }
+      }
+    }
     this.findings.set(stored.id, stored);
     this.emit('finding:added', cloneFinding(stored));
     return cloneFinding(stored);

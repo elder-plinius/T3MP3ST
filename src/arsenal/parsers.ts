@@ -355,6 +355,182 @@ function parseGarak(raw: string): ToolFinding[] {
   return out;
 }
 
+// ── sqlmap : text stdout → one finding per vulnerable parameter ──────────────
+// sqlmap has no JSON stdout; its console log carries the verdict in a stable
+// shape: "Parameter: <name> (<where>)" sections with "Type:" lines and
+// "Payload:" evidence, plus a "back-end DBMS is <dbms>" banner. We summarise
+// that — never invent a parameter the log doesn't name.
+function parseSqlmap(raw: string): ToolFinding[] {
+  const text = String(raw);
+  if (!/vulnerable|Parameter:|back-end DBMS/i.test(text)) return [];
+
+  const dbms = (text.match(/back-end DBMS is ([^\n]+)/i)?.[1] ?? '').trim();
+  const vulnParams = new Set<string>();
+  for (const m of text.matchAll(/parameter\s+['"]?([\w.-]+)['"]?\s+is\s+vulnerable/gi)) {
+    vulnParams.add(m[1]);
+  }
+
+  // "Parameter: id (GET)" section headers
+  const blocks: { param: string; where: string; body: string[] }[] = [];
+  let current: { param: string; where: string; body: string[] } | null = null;
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const pm = /Parameter:\s+([\w.-]+)\s*\(([^)]+)\)/i.exec(line);
+    if (pm) {
+      current = { param: pm[1], where: pm[2].trim(), body: [] };
+      blocks.push(current);
+      continue;
+    }
+    if (current) current.body.push(line.trim());
+  }
+  // include standalone "X is vulnerable" params without a section
+  for (const p of vulnParams) {
+    if (!blocks.some((b) => b.param === p)) blocks.push({ param: p, where: '?', body: [] });
+  }
+  const sections: { param: string; where: string; types: string[]; payloads: string[] }[] = [];
+  for (const b of blocks) {
+    const types: string[] = [];
+    const payloads: string[] = [];
+    for (const line of b.body) {
+      const t = /Type:\s*(.+)$/i.exec(line);
+      if (t) types.push(t[1].trim());
+      const p = /Payload:\s*(.+)$/i.exec(line);
+      if (p) payloads.push(truncate(p[1].trim(), 220));
+    }
+    if (types.length === 0 && !vulnParams.has(b.param)) continue;
+    sections.push({ param: b.param, where: b.where, types, payloads });
+  }
+
+  return sections.map((s) => ({
+    title: `SQL Injection in '${s.param}' (${s.where})`,
+    severity: 'high' as const,
+    details: [
+      `sqlmap confirmed injection in parameter '${s.param}' (${s.where}).`,
+      dbms && `DBMS: ${dbms}`,
+      s.types.length && `Types: ${s.types.join('; ')}`,
+      s.payloads.length && `Payload(s): ${s.payloads.join(' || ')}`,
+    ].filter(Boolean).join(' | '),
+    cwe: ['CWE-89'],
+  }));
+}
+
+// ── feroxbuster --json : one aggregate info finding (N reachable paths) ──────
+function parseFeroxbuster(raw: string): ToolFinding[] {
+  const entries: { url: string; status: number; length?: number }[] = [];
+  for (const e of jsonl(raw)) {
+    const u = String(e.url ?? e['url'] ?? '');
+    if (!u) continue;
+    const status = num(e.status) ?? 0;
+    if (status >= 200 && status < 400) {
+      entries.push({ url: u, status, length: num(e.content_length) ?? num(e.length) });
+    }
+  }
+  if (!entries.length) return [];
+  const lines = entries.slice(0, 50).map((e) => `${e.url} (status ${e.status}${e.length !== undefined ? `, len ${e.length}` : ''})`);
+  const more = entries.length > 50 ? `\n… +${entries.length - 50} more` : '';
+  return [{
+    title: `feroxbuster: ${entries.length} reachable path(s) discovered`,
+    severity: 'info',
+    details: lines.join('\n') + more,
+  }];
+}
+
+// ── wafw00f : text output → WAF detection finding ───────────────────────────
+function parseWafw00f(raw: string): ToolFinding[] {
+  const text = String(raw);
+  const out: ToolFinding[] = [];
+  // "[+] The site https://x is behind Cloudflare (Cloudflare)" / "...is behind a WAF named ..."
+  const re = /is behind(?:\s+a\s+WAF)?\s+([^(]+?)\s*\(([^)]+)\)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const name = m[1].trim();
+    const id = m[2].trim();
+    out.push({
+      title: `WAF Detected: ${name}`,
+      severity: 'info',
+      details: `wafw00f identified ${name} (${id}). WAF responses (403/503) must not be interpreted as origin behavior — e.g. blocked HTTP methods or rate-limit errors are the WAF, not the application.`,
+    });
+  }
+  if (out.length === 0 && /no waf|not behind|no firewall/i.test(text)) {
+    out.push({
+      title: 'No WAF Detected',
+      severity: 'info',
+      details: 'wafw00f found no known WAF in front of the target — HTTP status codes likely reflect the origin.',
+    });
+  }
+  return out;
+}
+
+// ── trufflehog --json : one finding per leaked secret ────────────────────────
+function parseTrufflehog(raw: string): ToolFinding[] {
+  const out: ToolFinding[] = [];
+  for (const e of jsonl(raw)) {
+    const meta = asObj(e.SourceMetadata);
+    const data = asObj(meta.Data);
+    const file = String(data.File ?? meta.Filename ?? meta.Path ?? '');
+    const secret = String(e.Raw ?? e.Secret ?? '');
+    const detector = String(e.DetectorName ?? e.decoder_type ?? 'secret');
+    const line = num(data.Line) ?? undefined;
+    const verified = e.Verified === true || e.verified === true;
+    if (!secret || secret.length < 4) continue;
+    out.push({
+      title: `trufflehog: ${detector}${file ? ` in ${file.split(/[\\/]/).pop()}` : ''}`,
+      severity: verified ? 'high' : 'medium',
+      details: [
+        `Detector: ${detector}`,
+        file && `File: ${file}${line !== undefined ? `:${line}` : ''}`,
+        verified ? 'Verified credential' : 'Unverified secret (verify manually)',
+        `Secret: ${secret.slice(0, 60)}${secret.length > 60 ? '…' : ''}`,
+      ].filter(Boolean).join(' | '),
+      cwe: ['CWE-798'],
+    });
+  }
+  return out;
+}
+
+// ── arjun -oJ / text : found hidden parameters per endpoint ──────────────────
+function parseArjun(raw: string): ToolFinding[] {
+  const doc = jsonDoc(raw);
+  const out: ToolFinding[] = [];
+  if (doc && typeof doc === 'object') {
+    for (const [url, paramsRaw] of Object.entries(doc as Record<string, unknown>)) {
+      const params = paramsRaw && typeof paramsRaw === 'object' ? Object.keys(paramsRaw as Record<string, unknown>) : [];
+      if (!params.length) continue;
+      out.push({
+        title: `arjun: ${params.length} hidden parameter(s) on ${url}`,
+        severity: 'info',
+        details: `Discovered parameters: ${params.join(', ')}. Hidden parameters often unlock undocumented functionality — probe each for injection/auth issues.`,
+      });
+    }
+    return out;
+  }
+  // Text mode: "Found 2 parameters: token, debug" or an indented parameter block.
+  const text = String(raw);
+  const found = text.match(/Found\s+(\d+)\s+param(?:eter)?s?\s*:?\s*(.+)/i);
+  if (found) {
+    const params = found[2].split(/[\s,]+/).filter(Boolean);
+    out.push({
+      title: `arjun: ${params.length} hidden parameter(s)`,
+      severity: 'info',
+      details: `Discovered parameters: ${params.join(', ')}. Hidden parameters often unlock undocumented functionality — probe each for injection/auth issues.`,
+    });
+    return out;
+  }
+  const line = text.split('\n').map((l) => l.trim()).find((l) => /^https?:\/\/\S+\s*[:]\s*\S+/.test(l));
+  if (line) {
+    const [url, ...rest] = line.split(':');
+    const params = rest.join(':').split(/[\s,]+/).filter(Boolean);
+    if (params.length) {
+      out.push({
+        title: `arjun: ${params.length} hidden parameter(s) on ${url.trim()}`,
+        severity: 'info',
+        details: `Discovered parameters: ${params.join(', ')}. Hidden parameters often unlock undocumented functionality.`,
+      });
+    }
+  }
+  return out;
+}
+
 const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   nuclei: parseNuclei,
   httpx: parseHttpx,
@@ -366,6 +542,11 @@ const PARSERS: Record<string, (raw: string) => ToolFinding[]> = {
   trivy: parseTrivy,
   grype: parseGrype,
   garak: parseGarak,
+  sqlmap: parseSqlmap,
+  feroxbuster: parseFeroxbuster,
+  wafw00f: parseWafw00f,
+  trufflehog: parseTrufflehog,
+  arjun: parseArjun,
 };
 
 /** Adapter ids that have a structured output parser wired here. */

@@ -169,6 +169,8 @@ Evidence and finding payloads must avoid raw secrets. Use redaction helpers in `
 
 ## LLMs, Local Agents, And Operators
 
+Operative prompt save/reset responses include an additive `capabilityDiagnostics` array on the returned operator record. Each diagnostic has a stable `code`, capability identifier, level, and safe message. Edited instruction text is never copied into a diagnostic or update event. See [Authenticated Workflow Boundaries](#authenticated-workflows) for the outcome-code contract.
+
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/llm/status` | LLM status |

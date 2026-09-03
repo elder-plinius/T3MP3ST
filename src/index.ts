@@ -215,6 +215,7 @@ import type {
   Finding,
   ScanProgressEvent,
   Task,
+  Mission,
 } from './types/index.js';
 
 // Re-export commonly used types
@@ -245,6 +246,7 @@ import { TOOL_ADAPTERS } from './arsenal/catalog.js';
 import { OpsecController, createBalancedOpsecConfig } from './opsec/index.js';
 import { CommsChannel } from './comms/index.js';
 import { AnalysisEngine } from './analysis/index.js';
+import { writeMissionReport } from './reporting/auto-report.js';
 import { LLMBackbone } from './llm/index.js';
 import { getLLMConfig } from './config/index.js';
 import { AgentLoop } from './agent/index.js';
@@ -517,11 +519,13 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
     });
 
     // Forward mission events
-    this.mission.on('mission:completed', () => {
+    this.mission.on('mission:completed', (mission) => {
+      this.writeMissionReport(mission);
       this.stop();
     });
 
-    this.mission.on('mission:aborted', () => {
+    this.mission.on('mission:aborted', ({ mission }) => {
+      this.writeMissionReport(mission);
       this.stop();
     });
 
@@ -845,6 +849,14 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   public stop(): void {
     if (!this.running) return;
 
+    // Auto-report on ANY shutdown path (completed / aborted / stalled / manual
+    // stop): a mission that ends without a completed event must not lose its
+    // findings. Dedup by mission id so completed→stop writes exactly once.
+    try {
+      const mission = this.mission.getActiveMission();
+      if (mission) this.writeMissionReport(mission);
+    } catch { /* best-effort */ }
+
     this.running = false;
     this.taskSeeded = false;
     if (this.tickInterval) {
@@ -852,6 +864,17 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
       this.tickInterval = null;
     }
     this.emit('command:stopped');
+  }
+
+  /** Write the markdown engagement report for a mission (idempotent per mission). */
+  private lastReportMissionId: string | null = null;
+  private writeMissionReport(mission: Mission): void {
+    if (this.lastReportMissionId === mission.id) return;
+    this.lastReportMissionId = mission.id;
+    try {
+      const reportsDir = process.env.T3MP3ST_REPORTS_DIR || 'reports';
+      writeMissionReport(reportsDir, mission, this.vault.getAllFindings(), this.targetEnv.getAllTargets());
+    } catch { /* best-effort */ }
   }
 
   /**

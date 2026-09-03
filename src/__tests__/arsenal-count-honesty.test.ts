@@ -44,6 +44,7 @@ describe('arsenal count honesty (advertised = real registered surface)', () => {
         `built-ins=${BUILTIN_TOOLS.length}, externals=${EXTERNAL_TOOLS.length}) — ` +
         'update the README / verify-claims headline to match',
     ).toBe(110);
+    ).toBe(120); // 73 adapters + 46 built-ins, 74 adapters (incl. browser, OSINT, idor, js, kev, binary) + 0 externals
     expect(total).toBeGreaterThanOrEqual(80); // stays consistent with verify-claims' `>= 80` gate
   });
 

@@ -3663,6 +3663,7 @@
                                     <span id="sysEventCount" style="font-size:9px; color:#555;">0</span>
                                     <button onclick="t3mpSysEventsPaused=!t3mpSysEventsPaused; this.textContent=t3mpSysEventsPaused?'▶':'⏸';" title="Pause/resume stream" style="font-size:9px; background:none; border:1px solid #333; border-radius:3px; color:#888; cursor:pointer; padding:1px 6px;">⏸</button>
                                     <button onclick="var t=document.getElementById('sysEventTerminal'); if(t)t.innerHTML='';" title="Clear" style="font-size:9px; background:none; border:1px solid #333; border-radius:3px; color:#888; cursor:pointer; padding:1px 6px;">CLR</button>
+                                    <button onclick="var t=document.getElementById('sysEventTerminal'); if(!t){return;} var txt=t.innerText.split('\n').map(function(l){return l.trim();}).filter(Boolean).join('\n'); if(!txt){return;} function fb(txt){var ta=document.createElement('textarea'); ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');}catch(e){} document.body.removeChild(ta);} var done=function(){var b=document.getElementById('sysEventCopyBtn'); if(b){var o=b.textContent; b.textContent='✓'; setTimeout(function(){b.textContent=o;},900);}}; if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done).catch(function(){fb(txt);done();});}else{fb(txt);done();}" title="Copy all events to clipboard" style="font-size:9px; background:none; border:1px solid #333; border-radius:3px; color:#888; cursor:pointer; padding:1px 6px;">COPY</button>
                                 </div>
                             </div>
                             <div id="sysEventTerminal" style="flex:1; max-height:188px; min-height:132px; overflow-y:auto; padding:7px 12px; font-size:10.5px; line-height:1.5;">
@@ -15188,6 +15189,7 @@ Be brutally honest. This is not a pep talk.`;
             row.className = 'finding-row';
             row.setAttribute('data-severity', f.severity);
             row.setAttribute('data-type', f.type);
+            row.setAttribute('data-verified', isModelAsserted ? '0' : '1');
             row.style.cssText = `display: grid; grid-template-columns: 60px 70px 1fr 140px 90px 36px; gap: 0; padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); align-items: center; font-size: 10px; transition: background 0.2s; cursor: default;`;
             row.onmouseenter = function() { this.style.background = 'rgba(' + rgb + ',0.08)'; };
             row.onmouseleave = function() { this.style.background = 'transparent'; };
@@ -26974,6 +26976,8 @@ Be specific and actionable. Format as structured JSON.`;
       +   '<div style="display:flex;align-items:center;margin-bottom:6px;"><div style="font-size:10px;color:#8aa;text-transform:uppercase;letter-spacing:1px;">System prompt</div>'
       +     '<button onclick="askAdmiralSuggest()" style="margin-left:auto;font-size:11px;font-weight:700;background:rgba(0,136,255,0.14);border:1px solid rgba(0,136,255,0.45);border-radius:7px;color:#5bb8ff;cursor:pointer;padding:5px 12px;">⚓ Ask Admiral to suggest improvements</button></div>'
       +   '<textarea id="opPromptEdit" spellcheck="false" style="width:100%;box-sizing:border-box;height:240px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#cfe;font-family:\'JetBrains Mono\',monospace;font-size:11px;line-height:1.5;padding:12px;resize:vertical;">'+esc(o.systemPrompt)+'</textarea>'
+      +   ((o.capabilityDiagnostics||[]).map(d=>'<div style="margin-top:8px;padding:9px 11px;border:1px solid rgba(255,170,0,0.4);border-radius:7px;background:rgba(255,170,0,0.08);color:#ffc266;font-size:11px;"><b>'+esc(d.code)+'</b> · '+esc(d.message)+'</div>').join(''))
+      +   '<div style="margin-top:7px;color:#71808d;font-size:10px;line-height:1.45;">Instructions influence planning but do not add tools, expand target scope, or satisfy approval gates. Callable tools are listed above.</div>'
       +   '<div id="opAdviceBox" style="margin-top:12px;"></div></div>'
       + '<div style="display:flex;gap:8px;align-items:center;padding:14px 20px;border-top:1px solid rgba(255,255,255,0.08);"><span style="font-size:10px;color:#667;">'+(o.overridden?'⚠ customized — edits apply to every spawned '+esc(o.archetype):'showing defaults')+'</span>'
       +   '<div style="margin-left:auto;display:flex;gap:8px;"><button onclick="resetOperative()" style="font-size:12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#bcd;cursor:pointer;padding:8px 16px;">↺ Reset to default</button>'
@@ -26990,14 +26994,26 @@ Be specific and actionable. Format as structured JSON.`;
     try { const d = await (await fetch(base()+'/api/operators/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archetype:SELECTED,systemPrompt:ed.systemPrompt,params:ed.params})})).json();
       if(d.error) throw new Error(d.error);
       if(d.operator){ const i=ROSTER.findIndex(x=>x.archetype===SELECTED); if(i>=0) ROSTER[i]=d.operator; }
-      renderRoster(); renderEditor(); if(window.toast) toast('💾 '+SELECTED+' updated — applies to every spawned operator','success');
+      renderRoster(); renderEditor();
+      if(window.toast){
+        const applied=(d.application&&d.application.appliedOperatorIds||[]).length;
+        const deferred=(d.application&&d.application.deferredOperatorIds||[]).length;
+        const detail=deferred ? deferred+' active deferred until next task · '+applied+' idle updated now' : applied ? applied+' idle operator(s) updated now' : 'applies to future spawns';
+        toast('💾 '+SELECTED+' updated — '+detail,'success');
+      }
     } catch(e){ if(window.toast) toast('Save failed: '+e.message,'error'); }
   };
   window.resetOperative = async function(){
     try { const d = await (await fetch(base()+'/api/operators/prompt/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archetype:SELECTED})})).json();
       if(d.error) throw new Error(d.error);
       if(d.operator){ const i=ROSTER.findIndex(x=>x.archetype===SELECTED); if(i>=0) ROSTER[i]=d.operator; }
-      ADVICE=null; renderRoster(); renderEditor(); if(window.toast) toast('↺ '+SELECTED+' reset to default','info');
+      ADVICE=null; renderRoster(); renderEditor();
+      if(window.toast){
+        const applied=(d.application&&d.application.appliedOperatorIds||[]).length;
+        const deferred=(d.application&&d.application.deferredOperatorIds||[]).length;
+        const detail=deferred ? deferred+' active deferred until next task · '+applied+' idle reset now' : applied ? applied+' idle operator(s) reset now' : 'applies to future spawns';
+        toast('↺ '+SELECTED+' reset — '+detail,'info');
+      }
     } catch(e){ if(window.toast) toast('Reset failed: '+e.message,'error'); }
   };
 
@@ -27485,5 +27501,7 @@ Be specific and actionable. Format as structured JSON.`;
     window.t3mpTheme = { apply: apply, themes: THEMES };
   })();
 </script>
+<script src="sounds.js"></script>
+<script src="findings-sort.js"></script>
 </body>
 </html>

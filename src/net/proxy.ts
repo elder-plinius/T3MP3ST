@@ -100,13 +100,35 @@ export function parseProxyUrl(raw: string): ParsedProxy | null {
   return { socks, host, port, type, hasAuth: Boolean(userId || password) };
 }
 
-// ── loopback detection (bypass list) ─────────────────────────────────────────
+// ── loopback + API-provider bypass (bypass list) ─────────────────────────────
+// LLM/API hosts whose operators block Tor exit IPs (Google 403s Tor egress;
+// Anthropic/OpenAI are similarly hostile to datacenter exits). Routing the LLM
+// backbone through the proxy would silently kill every mission call, so these
+// are always fetched direct. Configurable via T3MP3ST_PROXY_BYPASS (comma list).
 function isLoopbackHost(host: string | undefined): boolean {
   if (!host) return false;
   const h = host.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
   if (h === 'localhost' || h.endsWith('.localhost')) return true;
   if (h === '::1' || h === '0.0.0.0' || h === '::') return true;
   if (h.startsWith('127.')) return true;
+  const extra = (process.env.T3MP3ST_PROXY_BYPASS ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const builtin = [
+    'generativelanguage.googleapis.com',
+    'api.openai.com',
+    'api.anthropic.com',
+    'api.deepseek.com',
+    'api.groq.com',
+    'openrouter.ai',
+    'api.ipify.org',
+    'ip-api.com',
+    'ipwho.is',
+  ];
+  for (const hostname of [...builtin, ...extra]) {
+    if (h === hostname || h.endsWith('.' + hostname)) return true;
+  }
   return false;
 }
 
@@ -210,7 +232,34 @@ export function configureProxy(url: string | null): ProxyStatus & { error?: stri
   setGlobalDispatcher(agent);
   currentUrl = wanted;
   enabled = true;
+  installBypassFetchWrapper();
   return getProxyStatus();
+}
+
+// ── fetch-level bypass ───────────────────────────────────────────────────────
+// HTTPS through a custom-connect Agent mis-parses responses (lost headers, raw
+// gzip bodies) even on the connect-level direct path. So bypassed hosts are
+// fetched with the STOCK direct dispatcher instead of the proxied agent —
+// loopback AND API providers whose operators block Tor (Google 403s Tor egress)
+// keep working while everything else tunnels.
+let bypassWrapperInstalled = false;
+
+function installBypassFetchWrapper(): void {
+  if (bypassWrapperInstalled) return;
+  bypassWrapperInstalled = true;
+  const typedFetch = globalThis.fetch as unknown as (
+    input: Parameters<typeof undiciFetch>[0],
+    init?: Parameters<typeof undiciFetch>[1],
+  ) => ReturnType<typeof undiciFetch>;
+  globalThis.fetch = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) => {
+    try {
+      const url = typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL((input as Request).url);
+      if (isLoopbackHost(url.hostname)) {
+        return undiciFetch(input, { ...init, dispatcher: directDispatcher });
+      }
+    } catch { /* non-URL input — fall through */ }
+    return typedFetch(input, init);
+  }) as typeof globalThis.fetch;
 }
 
 export function getProxyStatus(): ProxyStatus {
