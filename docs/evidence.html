@@ -3477,6 +3477,23 @@
         @media (max-width: 640px) {
             #t3mpTourCard { width: calc(100vw - 24px); }
         }
+    
+        @keyframes vaultHighlightPulse {
+            0%, 100% {
+                box-shadow: 0 0 0 rgba(0, 255, 136, 0);
+                border-color: rgba(255, 255, 255, 0.07);
+            }
+            50% {
+                box-shadow: 0 0 25px rgba(0, 255, 136, 0.85), inset 0 0 12px rgba(0, 255, 136, 0.35);
+                border-color: #00ff88 !important;
+                background: rgba(0, 255, 136, 0.09) !important;
+            }
+        }
+        .vault-highlight-pulse {
+            animation: vaultHighlightPulse 0.9s ease-in-out 3 !important;
+            border-color: #00ff88 !important;
+        }
+
     </style>
 </head>
 <body>
@@ -5320,6 +5337,45 @@ Correlating findings across agents, identifying patterns, producing actionable i
             } catch (e) { /* server unreachable — leave what we have */ }
         }
         window.hydrateFindings = hydrateFindings;
+
+        function focusVaultFinding(target) {
+            if (!target) return;
+            const targetId = typeof target === 'object' ? (target.id || target.title) : target;
+            if (!targetId) return;
+            console.log('[T3MP3ST Vault] Focusing target finding:', targetId);
+            const targetNorm = String(targetId).toLowerCase().trim();
+            const matchIndex = missionFindings.findIndex(f =>
+                (f.id && String(f.id).toLowerCase() === targetNorm) ||
+                (f.title && String(f.title).toLowerCase() === targetNorm) ||
+                (f.title && f.title.toLowerCase().includes(targetNorm))
+            );
+            if (matchIndex === -1) {
+                console.warn('[T3MP3ST Vault] Finding not found in active mission findings:', targetId);
+                return;
+            }
+            const f = missionFindings[matchIndex];
+            const domain = vaultDomainOf(f.target);
+            window.vaultOpenGroups[domain] = true;
+            window.vaultOpenFindingsMap[matchIndex] = true;
+            renderFindings();
+            setTimeout(() => {
+                const el = document.getElementById('vault-finding-' + matchIndex);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.add('vault-highlight-pulse');
+                    setTimeout(() => el.classList.remove('vault-highlight-pulse'), 3200);
+                }
+            }, 100);
+        }
+        window.focusVaultFinding = focusVaultFinding;
+
+        window.addEventListener('message', function(ev) {
+            const m = ev.data;
+            if (m && m.type === 't3mp3st:focus_finding') {
+                focusVaultFinding(m.targetFinding || m.hash);
+            }
+        });
+
         setTimeout(function(){ try { hydrateFindings(); } catch (e) {} }, 1600);
 
         function renderArchitectures() {
@@ -6038,9 +6094,12 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
             const _crit = document.getElementById('criticalFindings');
             const _high = document.getElementById('highFindings');
             const _med = document.getElementById('mediumFindings');
+            const _credCountEl = document.getElementById('credentialCount');
             if (_crit) _crit.textContent = missionFindings.filter(f => f.severity === 'critical').length;
             if (_high) _high.textContent = missionFindings.filter(f => f.severity === 'high').length;
             if (_med) _med.textContent = missionFindings.filter(f => f.severity === 'medium').length;
+            const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
+            if (_credCountEl) _credCountEl.textContent = creds.length;
             const loot = Array.isArray(window.vaultLoot) ? window.vaultLoot : [];
             const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
             if (!missionFindings.length && !loot.length && !creds.length) {
@@ -6056,7 +6115,15 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
                 const m = String(e.title || '').match(/—\s*(https?:\/\/\S+|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b)/);
                 groupOf(m ? vaultDomainOf(m[1]) : '(unfiled loot)').unfiledLoot.push(e);
             });
-            if (creds.length) groupOf('(credentials)').creds = creds;
+            if (creds.length) {
+                creds.forEach(c => {
+                    const d = vaultDomainOf(c.domain || c.target);
+                    if (d && d !== '(unassigned)') {
+                        groupOf(d).creds.push(c);
+                    }
+                });
+                groupOf('(credentials)').creds = creds;
+            }
             const synth = new Set(['(unassigned)', '(unfiled loot)', '(credentials)']);
             const ordered = [...groups.values()].sort((a, b) => {
                 const sa = synth.has(a.domain) ? 1 : 0, sb = synth.has(b.domain) ? 1 : 0;
@@ -6074,32 +6141,150 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
                     `<span title="${attrSafe(sv)} x${n}" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${sevColors[sv] || '#888'};margin-left:4px;"></span>`
                 ).join('');
             };
-            const findingBlock = (f, fi) => {
-                const open = !!window.vaultOpenFindingsMap[fi];
-                const evArr = Array.isArray(f.evidence) ? f.evidence : (f.evidence && String(f.evidence).trim() ? [{ type: 'output', content: String(f.evidence) }] : []);
-                return `
-                <div style="border:1px solid rgba(255,255,255,0.07);border-radius:6px;margin:6px 0;background:rgba(0,0,0,0.25);overflow:hidden;">
-                    <div onclick="window.toggleVaultFinding(${fi})" style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;">
-                        <span style="font-size:9px;color:var(--text-muted);">${open ? '▾' : '▸'}</span>
-                        <span class="tag tag-${f.severity === 'critical' ? 'danger' : f.severity === 'high' ? 'warning' : 'info'}">${escapeHtml((f.severity || 'info').toUpperCase())}</span>
-                        <b style="flex:1;font-size:12.5px;overflow-wrap:anywhere;">${escapeHtml(f.title || '')}</b>
-                        <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${escapeHtml(f.timestamp || '')}</span>
-                        <button type="button" title="Open full detail in a modal" onclick="event.stopPropagation();showFindingDetail(${fi})" style="font-size:10px;padding:1px 6px;background:transparent;color:var(--text-muted);border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;">⤢</button>
+                    window.copyFindingToClipboard = function(fi) {
+            const f = missionFindings[fi];
+            if (!f) return;
+            const evArr = Array.isArray(f.evidence) ? f.evidence : (f.evidence && String(f.evidence).trim() ? [{ type: 'output', content: String(f.evidence) }] : []);
+            let md = `# [${(f.severity || 'info').toUpperCase()}] ${f.title || 'Finding'}\n\n`;
+            md += `- **Target:** ${f.target || '-'}\n`;
+            md += `- **Phase:** ${f.phase || '-'}\n`;
+            md += `- **Type:** ${f.type || '-'}\n`;
+            md += `- **Severity:** ${(f.severity || 'info').toUpperCase()}\n`;
+            if (f.provenance) md += `- **Provenance:** ${f.provenance}\n`;
+            if (f.timestamp) md += `- **Time:** ${f.timestamp}\n`;
+            if (f.command) md += `\n## Scan Command Executed\n\`\`\`bash\n${f.command}\n\`\`\`\n`;
+            if (f.detail) md += `\n## Finding Analysis & Technical Claim\n${f.detail}\n`;
+            if (evArr.length) {
+                md += `\n## Raw Scan Evidence & Tool Outputs\n`;
+                evArr.forEach((ev, i) => {
+                    md += `### Evidence ${i + 1}: ${ev.title || ev.type || 'Output'} (${ev.source || 'tool'})\n`;
+                    if (ev.command) md += `Command: \`${ev.command}\`\n\n`;
+                    md += `\`\`\`\n${ev.content || ''}\n\`\`\`\n\n`;
+                });
+            }
+            if (f.recommendation) md += `\n## Actionable Remediation\n${f.recommendation}\n`;
+            navigator.clipboard.writeText(md).then(() => {
+                if (typeof toast === 'function') toast('Finding report copied to clipboard', 'success');
+            }).catch(() => {});
+        };
+
+        window.copyAllEvidenceToClipboard = function(fi) {
+            const f = missionFindings[fi];
+            if (!f) return;
+            const evArr = Array.isArray(f.evidence) ? f.evidence : (f.evidence && String(f.evidence).trim() ? [{ type: 'output', content: String(f.evidence) }] : []);
+            const txt = evArr.map((ev, i) => `=== EVIDENCE ${i + 1} [${ev.source || 'tool'}] ${ev.title || ev.type || 'Output'} ===\n${ev.command ? '$ ' + ev.command + '\n' : ''}${ev.content || ''}`).join('\n\n');
+            navigator.clipboard.writeText(txt).then(() => {
+                if (typeof toast === 'function') toast('All evidence copied to clipboard', 'success');
+            }).catch(() => {});
+        };
+
+        const findingBlock = (f, fi) => {
+            const open = !!window.vaultOpenFindingsMap[fi];
+            const evArr = Array.isArray(f.evidence) ? f.evidence : (f.evidence && String(f.evidence).trim() ? [{ type: 'output', content: String(f.evidence) }] : []);
+            const cmd = f.command || (evArr.find(e => e && e.command)?.command) || '';
+            const isCred = (f.type === 'cred') || /credential|password|api[_-]?key|jwt|token|secret/i.test(f.title);
+            return `
+            <div id="vault-finding-${fi}" class="vault-finding-item" style="border:1px solid rgba(255,255,255,0.08);border-radius:6px;margin:7px 0;background:rgba(0,0,0,0.3);overflow:hidden;transition:border-color 0.3s, box-shadow 0.3s;">
+                <div onclick="window.toggleVaultFinding(${fi})" style="display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;background:rgba(255,255,255,0.015);user-select:none;">
+                    <span style="font-size:10px;color:var(--text-muted);width:12px;">${open ? '▾' : '▸'}</span>
+                    <span class="tag tag-${f.severity === 'critical' ? 'danger' : f.severity === 'high' ? 'warning' : f.severity === 'medium' ? 'warning' : 'info'}">${escapeHtml((f.severity || 'info').toUpperCase())}</span>
+                    ${isCred ? '<span class="tag tag-warning" style="font-weight:700;">🔑 CRED</span>' : ''}
+                    <b style="flex:1;font-size:13px;overflow-wrap:anywhere;color:#fff;">${escapeHtml(f.title || '')}</b>
+                    <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;">${escapeHtml(f.timestamp || '')}</span>
+                    <button type="button" title="Copy Complete Finding Report" onclick="event.stopPropagation();window.copyFindingToClipboard(${fi})" style="font-size:10px;padding:2px 7px;background:transparent;color:var(--text-muted);border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;">⧉ Copy</button>
+                    <button type="button" title="Open in Modal" onclick="event.stopPropagation();showFindingDetail(${fi})" style="font-size:10px;padding:2px 7px;background:transparent;color:var(--text-muted);border:1px solid rgba(255,255,255,0.15);border-radius:4px;cursor:pointer;">⤢</button>
+                </div>
+                ${open ? `
+                <div style="padding:0 14px 16px 28px;font-size:11.5px;line-height:1.55;border-top:1px solid rgba(255,255,255,0.05);background:rgba(0,0,0,0.2);">
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;padding:6px 10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:4px;">
+                        <span style="color:var(--text-muted);font-size:10.5px;">Target: <code style="color:#00ff88;font-weight:700;">${escapeHtml(f.target || '-')}</code></span>
+                        <span style="color:rgba(255,255,255,0.15);">|</span>
+                        <span style="color:var(--text-muted);font-size:10.5px;">Phase: <span style="color:#7CFFC4;">${escapeHtml(f.phase || '-')}</span></span>
+                        <span style="color:rgba(255,255,255,0.15);">|</span>
+                        <span style="color:var(--text-muted);font-size:10.5px;">Type: <span style="color:#ffd166;">${escapeHtml(f.type || '-')}</span></span>
+                        ${f.provenance ? `
+                        <span style="color:rgba(255,255,255,0.15);">|</span>
+                        <span style="color:var(--text-muted);font-size:10.5px;">Provenance: <span style="color:#06d6a0;">${escapeHtml(f.provenance)}</span></span>` : ''}
+                        ${f.id ? `
+                        <span style="color:rgba(255,255,255,0.15);">|</span>
+                        <span style="color:#666;font-size:9.5px;font-family:monospace;">ID: ${escapeHtml(String(f.id))}</span>` : ''}
                     </div>
-                    ${open ? `
-                    <div style="padding:0 10px 10px 26px;font-size:11.5px;line-height:1.5;">
-                        <div style="display:flex;flex-wrap:wrap;gap:10px;color:var(--text-muted);font-size:10.5px;margin-bottom:6px;">
-                            <span>target: <code style="color:var(--accent)">${escapeHtml(f.target || '-')}</code></span>
-                            <span>phase: ${escapeHtml(f.phase || '-')}</span>
-                            <span>type: ${escapeHtml(f.type || '-')}</span>
+
+                    ${cmd ? `
+                    <div style="margin-bottom:12px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                            <span style="font-size:9.5px;text-transform:uppercase;letter-spacing:0.8px;color:#00ff88;font-weight:700;">🖥️ Scan Command Executed</span>
+                            <button type="button" onclick="event.stopPropagation();navigator.clipboard.writeText('${escapeHtml(String(cmd)).replace(/'/g, "\\'")}')" style="font-size:9px;padding:2px 8px;background:rgba(0,255,136,0.12);border:1px solid rgba(0,255,136,0.35);color:#00ff88;border-radius:3px;cursor:pointer;">Copy Command</button>
                         </div>
-                        ${f.detail ? `<div style="color:#ddd;white-space:pre-wrap;word-break:break-word;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;border-left:2px solid ${sevColors[f.severity] || '#888'};margin-bottom:8px;">${escapeHtml(String(f.detail))}</div>` : ''}
-                        ${evArr.length ? evArr.map(ev => `
-                            <div style="margin-bottom:6px;">
-                                <div style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:#666;margin-bottom:2px;">evidence · ${escapeHtml(ev.type || 'output')}</div>
-                                <div style="color:#9fd6c0;white-space:pre-wrap;word-break:break-word;padding:7px;background:rgba(0,0,0,0.4);border-radius:4px;max-height:220px;overflow:auto;">${escapeHtml(String(ev.content || ''))}</div>
-                            </div>`).join('') : '<div style="color:#777;font-style:italic;margin-bottom:6px;">No tool-backed evidence attached — model-asserted, unverified.</div>'}
-                        ${f.recommendation ? `<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:#666;margin-bottom:2px;">recommended fix</div><div style="color:#cfe8d8;white-space:pre-wrap;word-break:break-word;padding:7px;background:rgba(0,0,0,0.3);border-radius:4px;">${escapeHtml(String(f.recommendation))}</div>` : ''}
+                        <div style="background:#050d14;border:1px solid rgba(0,255,136,0.25);border-radius:5px;padding:8px 12px;font-family:'JetBrains Mono',monospace;color:#7CFFC4;font-size:11px;overflow-x:auto;">
+                            <span style="color:#666;user-select:none;">$ </span>${escapeHtml(String(cmd))}
+                        </div>
+                    </div>` : ''}
+
+                    ${f.detail ? `
+                    <div style="margin-bottom:12px;">
+                        <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:0.8px;color:#aaa;margin-bottom:4px;font-weight:700;">📋 Finding Analysis & Technical Claim</div>
+                        <div style="color:#ddd;white-space:pre-wrap;word-break:break-word;padding:10px 14px;background:rgba(0,0,0,0.35);border-radius:5px;border-left:3px solid ${sevColors[f.severity] || '#888'};font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;">${escapeHtml(String(f.detail))}</div>
+                    </div>` : ''}
+
+                    <div style="margin-bottom:12px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+                            <span style="font-size:9.5px;text-transform:uppercase;letter-spacing:0.8px;color:#aaa;font-weight:700;">🔍 Raw Scan Evidence & Tool Outputs (${evArr.length})</span>
+                            ${evArr.length ? `<button type="button" onclick="event.stopPropagation();window.copyAllEvidenceToClipboard(${fi})" style="font-size:9px;padding:2px 8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#aaa;border-radius:3px;cursor:pointer;">Copy All Evidence</button>` : ''}
+                        </div>
+                        ${evArr.length ? evArr.map((ev, evi) => `
+                            <div style="margin-bottom:8px;border:1px solid rgba(255,255,255,0.08);border-radius:5px;background:#050c12;overflow:hidden;">
+                                <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.05);font-size:10px;">
+                                    <span style="color:#00e5ff;font-weight:600;"><span style="color:#666;">[${escapeHtml(ev.source || 'tool')}]</span> ${escapeHtml(ev.title || ev.type || 'Output')}</span>
+                                    <div style="display:flex;gap:6px;align-items:center;">
+                                        ${ev.createdAt ? `<span style="color:#555;font-size:9px;">${escapeHtml(String(ev.createdAt).slice(0, 19).replace('T', ' '))}</span>` : ''}
+                                        <button type="button" onclick="event.stopPropagation();navigator.clipboard.writeText('${escapeHtml(String(ev.content || '')).replace(/'/g, "\\'")}')" style="font-size:9px;padding:1px 6px;background:none;border:1px solid rgba(255,255,255,0.15);color:#aaa;border-radius:2px;cursor:pointer;">Copy</button>
+                                    </div>
+                                </div>
+                                ${ev.command ? `
+                                <div style="padding:5px 12px;background:rgba(0,0,0,0.5);font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#9fd6c0;border-bottom:1px solid rgba(255,255,255,0.03);">
+                                    <span style="color:#555;">$ </span>${escapeHtml(ev.command)}
+                                </div>` : ''}
+                                <div style="color:#9fd6c0;white-space:pre-wrap;word-break:break-word;padding:12px;font-family:'JetBrains Mono',monospace;font-size:10.5px;line-height:1.55;max-height:500px;overflow:auto;background:rgba(0,0,0,0.45);">${escapeHtml(String(ev.content || ''))}</div>
+                            </div>
+                        `).join('') : '<div style="color:#777;font-style:italic;padding:10px 12px;background:rgba(0,0,0,0.2);border-radius:4px;">No tool-backed evidence attached — model-asserted, unverified.</div>'}
+                    </div>
+
+                    ${f.recommendation ? `
+                    <div style="margin-bottom:6px;">
+                        <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:0.8px;color:#00ff88;font-weight:700;margin-bottom:3px;">🛡️ Actionable Remediation</div>
+                        <div style="color:#cfe8d8;white-space:pre-wrap;word-break:break-word;padding:10px 14px;background:rgba(0,255,136,0.04);border:1px solid rgba(0,255,136,0.2);border-radius:4px;font-size:11px;line-height:1.55;">${escapeHtml(String(f.recommendation))}</div>
+                    </div>` : ''}
+                </div>` : ''}
+            </div>`;
+        };
+            const credRow = (c) => {
+                const typeColors = {
+                    password: '#ffaa00',
+                    api_key: '#00e5ff',
+                    token: '#bb86fc',
+                    session: '#00e676',
+                    cookie: '#00e676',
+                    flag: '#ff0055',
+                    ssh_key: '#ff9100'
+                };
+                const color = typeColors[c.type] || '#ffaa00';
+                const secretDisplay = c.secret && c.secret !== '[redacted]' ? c.secret : (c.secretCaptured ? '[secret captured]' : '');
+                const secretToCopy = (c.secret && c.secret !== '[redacted]') ? c.secret : (c.username ? (c.username + (c.secret ? ':' + c.secret : '')) : (c.type || 'credential'));
+                return `
+                <div style="border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${color};border-radius:6px;margin:6px 0;background:rgba(20,20,26,0.85);padding:9px 12px;font-size:11.5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);">
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <span class="tag" style="background:${color}22;color:${color};border:1px solid ${color}66;font-weight:700;font-size:10px;padding:2px 6px;border-radius:4px;">🔑 ${escapeHtml((c.type || 'credential').toUpperCase())}</span>
+                        <b style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#fff;overflow-wrap:anywhere;">${escapeHtml(c.username || c.type || 'credential')}</b>
+                        ${c.privilegeLevel ? `<span class="tag" style="background:rgba(255,0,64,0.18);color:#ff4466;border:1px solid rgba(255,0,64,0.35);font-size:9.5px;padding:1px 5px;font-weight:700;">${escapeHtml(c.privilegeLevel.toUpperCase())}</span>` : ''}
+                        <span style="color:var(--text-muted);font-size:10.5px;margin-left:auto;font-family:'JetBrains Mono',monospace;">${escapeHtml(c.domain || c.target || '')}</span>
+                        <button type="button" class="btn btn-xs" onclick='event.stopPropagation();navigator.clipboard.writeText(${JSON.stringify(secretToCopy)});this.textContent="Copied!";setTimeout(()=>this.textContent="Copy Secret",1500)' style="font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;background:rgba(255,255,255,0.08);color:#eee;border:1px solid rgba(255,255,255,0.2);">Copy Secret</button>
+                    </div>
+                    ${(c.notes || c.source || secretDisplay) ? `
+                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:12px;font-size:10.5px;color:#bbb;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.35);padding:6px 9px;border-radius:4px;border:1px solid rgba(255,255,255,0.04);">
+                        ${secretDisplay ? `<span>Secret: <code style="color:${color};background:transparent;font-weight:600;">${escapeHtml(secretDisplay)}</code></span>` : ''}
+                        ${c.source ? `<span style="color:var(--text-muted);">Source: ${escapeHtml(c.source)}</span>` : ''}
+                        ${c.notes ? `<span style="color:#aaa;">Notes: ${escapeHtml(c.notes)}</span>` : ''}
                     </div>` : ''}
                 </div>`;
             };
@@ -6123,10 +6308,7 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
                         <span style="margin-left:auto;display:inline-flex;align-items:center;">${sevDots(findings)}</span>
                         <span style="font-size:10px;color:var(--text-muted);">${total}</span>
                     </div>
-                    ${open ? `<div style="padding:8px 4px 2px 10px;">${findings.map((f, k) => findingBlock(f, missionFindings.indexOf(f))).join('')}${lootArr.map(lootRow).join('')}${credsArr.map(c => `
-                        <div style="border:1px solid rgba(255,255,255,0.06);border-radius:6px;margin:5px 0;background:rgba(0,0,0,0.2);padding:7px 9px;font-size:11px;">
-                            <span class="tag tag-warning">CRED</span> <b style="overflow-wrap:anywhere;">${escapeHtml(c.username || c.type || 'credential')}</b> <span style="color:var(--text-muted);overflow-wrap:anywhere;">${escapeHtml(c.domain || c.target || '')}${c.privilegeLevel ? ' · ' + escapeHtml(c.privilegeLevel) : ''}${c.source ? ' · ' + escapeHtml(c.source) : ''}</span> ${c.secretCaptured ? '<span title="secret captured (value redacted)" style="color:#ffaa00;">key</span>' : ''}
-                        </div>`).join('')}</div>` : ''}
+                    ${open ? `<div style="padding:8px 4px 2px 10px;">${findings.map((f, k) => findingBlock(f, missionFindings.indexOf(f))).join('')}${lootArr.map(lootRow).join('')}${credsArr.map(credRow).join('')}</div>` : ''}
                 </div>`;
             }).join('');
         }

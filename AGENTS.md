@@ -2,7 +2,22 @@
 
 Operator behavior rules live in `AGENTS.override.md`. This file tracks project status and session work so nothing slips between sessions. **Mandatory Invariant:** `AGENTS.md` is updated after every completed step, task, and architectural action.
 
-## Session Log — 2026-09-03 (Jarvis) — PR #163 Review Remediation: Zero Lint Errors, Clean Doctor & Whitespace Pass
+## Session Log — 2026-09-03 (Jarvis) — Nuclei v3 Installation & Templates Setup
+
+**Request:** "nuclei is not installed. Install: go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+
+### 1) Environment Diagnosis & Resolution:
+- Attempted `go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest`.
+- System Go version is `go1.15.6 windows/amd64` (pre-dates `path@version` Go module installation syntax and lacks Go 1.21+ language features required to build Nuclei v3 from source).
+- Verified `C:\Users\Raul\go\bin` exists and is already configured in the system `$env:PATH`.
+- Downloaded official latest precompiled ProjectDiscovery release binary for Windows (`v3.11.1`) directly into `C:\Users\Raul\go\bin\nuclei.exe`.
+- Downloaded 3,628 official community vulnerability templates into `C:\Users\Raul\nuclei-templates`.
+
+### 2) Verification:
+- Executed `nuclei -version`: **Engine Version v3.11.1** active and responding.
+- Verified on PATH via `Get-Command nuclei`: located at `C:\Users\Raul\go\bin\nuclei.exe`.
+
+---
 
 **Request:** "can you check the status on the PR i did on github" followed by "can you do what it suggests without messing up the code?"
 

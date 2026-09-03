@@ -417,6 +417,27 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
 
   // Mirror each discovered mission finding into the persistent findingsLedger so the
   // Evidence Vault (/api/findings) reflects the run instead of showing 0 afterward.
+  
+  tempestCommand.on('credential:harvested', ({ credential }) => {
+    try {
+      recordCredentialToLedger({
+        id: credential.id,
+        type: credential.type as any,
+        username: credential.username,
+        secret: credential.secret,
+        domain: credential.domain,
+        target: credential.targetId,
+        source: credential.source,
+        discoveredAt: credential.discoveredAt ? new Date(credential.discoveredAt).toISOString() : nowIso(),
+        validatedAt: credential.validatedAt ? new Date(credential.validatedAt).toISOString() : undefined,
+        privilegeLevel: credential.privilegeLevel,
+        secretCaptured: true,
+      });
+    } catch (err) {
+      console.error('[T3MP3ST] failed to record harvested credential:', err instanceof Error ? err.message : err);
+    }
+  });
+
   tempestCommand.on('finding:discovered', ({ finding }) => {
     try {
       upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id, tempestCommand ?? undefined);
@@ -907,6 +928,245 @@ const memoryCapsule = new Map<string, MemoryEntry>();
 const memoryProposals = new Map<string, MemoryProposal>();
 const scanNoteLedger = new Map<string, ScanNote>();
 
+interface CredentialRecord {
+  id: string;
+  type: 'password' | 'hash' | 'token' | 'api_key' | 'ssh_key' | 'certificate' | 'session' | 'cookie' | 'flag';
+  username?: string;
+  secret: string;
+  domain?: string;
+  target?: string;
+  source: string;
+  discoveredAt: string;
+  validatedAt?: string;
+  privilegeLevel?: 'user' | 'admin' | 'system' | 'root';
+  secretCaptured?: boolean;
+  notes?: string;
+}
+const credentialsLedger = new Map<string, CredentialRecord>();
+
+function extractCredentialsFromText(text: string, target = 'unknown', source = 'scan', title = ''): CredentialRecord[] {
+  if (!text || typeof text !== 'string') return [];
+  const creds: CredentialRecord[] = [];
+  const combined = (title + ' ' + text).trim();
+  const now = nowIso();
+
+  // 1. CTF Flags
+  const flagRegex = /(?:T3MP3ST|flag)\{[^}]+\}/gi;
+  let m: RegExpExecArray | null;
+  while ((m = flagRegex.exec(combined)) !== null) {
+    creds.push({
+      id: newId('cred'),
+      type: 'flag',
+      username: 'CTF Flag',
+      secret: m[0],
+      domain: target,
+      target,
+      source,
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: title || 'Captured Flag'
+    });
+  }
+
+  // 2. Passwords & Logins
+  const weakCredMatch = combined.match(/[Uu]ser\s+["']?([a-zA-Z0-9_.-]+)["']?\s+may have weak (?:password:?\s*([^\s,;.']+)|\[redacted\])|[Ww]eak [Pp]assword\s+['"]?([^'"]+)['"]?\s+for [Uu]ser\s+['"]?([a-zA-Z0-9_.-]+)['"]?|admin\/welcome/i);
+  if (weakCredMatch) {
+    const user = weakCredMatch[1] || weakCredMatch[4] || 'admin';
+    const pass = weakCredMatch[2] || weakCredMatch[3] || 'welcome';
+    creds.push({
+      id: newId('cred'),
+      type: 'password',
+      username: user,
+      secret: pass,
+      domain: target,
+      target,
+      source: source || 'credential_validator',
+      discoveredAt: now,
+      privilegeLevel: user.toLowerCase().includes('admin') || user.toLowerCase().includes('root') ? 'admin' : 'user',
+      secretCaptured: true,
+      notes: title || 'Valid User Credentials'
+    });
+  }
+
+  // 3. AWS Keys
+  const awsKeyMatch = combined.match(/AKIA[0-9A-Z]{16}/);
+  if (awsKeyMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'AWS Access Key',
+      secret: awsKeyMatch[0],
+      domain: target,
+      target,
+      source: 'aws',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'AWS IAM Access Key'
+    });
+  }
+
+  // 4. GCP API Keys
+  const gcpMatch = combined.match(/AIza[0-9A-Za-z_-]{35}/);
+  if (gcpMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'Google Cloud API Key',
+      secret: gcpMatch[0],
+      domain: target,
+      target,
+      source: 'gcp',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'Google Cloud API Key'
+    });
+  }
+
+  // 5. GitHub Tokens
+  const ghMatch = combined.match(/gh[po]_[A-Za-z0-9]{36}/);
+  if (ghMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'GitHub Token',
+      secret: ghMatch[0],
+      domain: target,
+      target,
+      source: 'github',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'GitHub Personal Access / OAuth Token'
+    });
+  }
+
+  // 6. Anthropic / OpenAI API Keys
+  const anthropicMatch = combined.match(/sk-ant-api\d{2}-[A-Za-z0-9_-]{16,}/);
+  if (anthropicMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'Anthropic API Key',
+      secret: anthropicMatch[0],
+      domain: target,
+      target,
+      source: 'anthropic',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'Anthropic Claude API Key'
+    });
+  }
+  const openaiMatch = combined.match(/sk-[A-Za-z0-9_-]{20,}/);
+  if (openaiMatch && !anthropicMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'OpenAI API Key',
+      secret: openaiMatch[0],
+      domain: target,
+      target,
+      source: 'openai',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'OpenAI API Key'
+    });
+  }
+
+  // 7. Session Cookies
+  const cookieMatch = combined.match(/Cookie:\s*([a-zA-Z0-9_-]+)=?([^\s;]+)?|wsc_bounxupuser_session/i);
+  if (cookieMatch) {
+    const cName = cookieMatch[1] || 'wsc_bounxupuser_session';
+    const cVal = cookieMatch[2] || '[session_token]';
+    creds.push({
+      id: newId('cred'),
+      type: 'session',
+      username: cName,
+      secret: cVal,
+      domain: target,
+      target,
+      source: 'cookie_analysis',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'Captured Session / Auth Cookie'
+    });
+  }
+
+  // 8. JWT Tokens
+  const jwtMatch = combined.match(/eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/);
+  if (jwtMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'token',
+      username: 'JWT Auth Token',
+      secret: jwtMatch[0],
+      domain: target,
+      target,
+      source: 'jwt_detector',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'JSON Web Token'
+    });
+  }
+
+  // 9. Generic API Key Field
+  const genericApiKeyMatch = combined.match(/api[_-]?key["\s]*[:=]["\s]*["']?([A-Za-z0-9\-_]{16,})["']?/i);
+  if (genericApiKeyMatch && !creds.some(c => c.type === 'api_key')) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'API Key',
+      secret: genericApiKeyMatch[1],
+      domain: target,
+      target,
+      source: source || 'api_key_detector',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'Generic API Key'
+    });
+  }
+
+  return creds;
+}
+
+function recordCredentialToLedger(cred: Partial<CredentialRecord>): void {
+  const username = cred.username || 'unknown';
+  const domain = cred.domain || cred.target || 'unknown';
+  const type = cred.type || 'password';
+  const key = `${type}::${username}::${domain}`.toLowerCase();
+  for (const existing of credentialsLedger.values()) {
+    const exKey = `${existing.type}::${existing.username}::${existing.domain || existing.target || ''}`.toLowerCase();
+    if (exKey === key) return;
+  }
+  const id = cred.id || newId('cred');
+  const record: CredentialRecord = {
+    id,
+    type,
+    username,
+    secret: cred.secret || '[redacted]',
+    domain,
+    target: cred.target || domain,
+    source: cred.source || 'scanner',
+    discoveredAt: cred.discoveredAt || nowIso(),
+    validatedAt: cred.validatedAt,
+    privilegeLevel: cred.privilegeLevel,
+    secretCaptured: true,
+    notes: cred.notes,
+  };
+  credentialsLedger.set(record.id, record);
+}
+
+function reindexCredentialsFromLedgers(): void {
+  for (const f of findingsLedger.values()) {
+    const text = (f.claim || '') + ' ' + (f.impact || '') + ' ' + (f.recommendedFix || '');
+    const found = extractCredentialsFromText(text, f.target, 'finding', f.title);
+    for (const c of found) recordCredentialToLedger(c);
+  }
+  for (const e of evidenceLedger.values()) {
+    const text = (e.summary || '') + ' ' + (e.command || '');
+    const found = extractCredentialsFromText(text, e.uri || 'unknown', e.source || 'evidence', e.title);
+    for (const c of found) recordCredentialToLedger(c);
+  }
+}
+
 /**
  * Mirror a live mission finding into the persistent findingsLedger (the one the
  * Evidence Vault reads via /api/findings). Mission findings otherwise live only in
@@ -1008,6 +1268,10 @@ function upsertMissionFindingToLedger(finding: {
   };
   attachEvidence(record);
   findingsLedger.set(record.id, record);
+  try {
+    const extractedCreds = extractCredentialsFromText((finding.description || '') + ' ' + (finding.remediation || ''), target, 'finding', title);
+    for (const c of extractedCreds) recordCredentialToLedger(c);
+  } catch { /* ignore credential parsing error */ }
   // Best-effort durable per-target scan note so a later scan of the same target can
   // resume without re-probing already-mapped surface. Deduped + capped.
   try { autoScanNoteForFinding(record, finding); } catch { /* ignore note recording error */ }
@@ -1202,6 +1466,10 @@ function recordScanEvidence(params: {
     retestIds: [],
   };
   findingsLedger.set(finding.id, finding);
+  try {
+    const extractedCreds = extractCredentialsFromText(params.detail || params.summary || '', target, params.source, title);
+    for (const c of extractedCreds) recordCredentialToLedger(c);
+  } catch { /* ignore credential parsing error */ }
 
   emitContractEvent('evidence.created', { evidenceId: evidence.id, findingId: finding.id, target, source: params.source, tool: params.tool });
   return { evidenceId: evidence.id, findingId: finding.id };
@@ -1424,6 +1692,7 @@ function buildStateSnapshot(): Record<string, unknown> {
     memoryCapsule: [...memoryCapsule.values()],
     memoryProposals: [...memoryProposals.values()],
     scanNotes: [...scanNoteLedger.values()],
+    credentialsLedger: [...credentialsLedger.values()],
   };
 }
 
@@ -1523,6 +1792,8 @@ function restoreStateSnapshot(state: Record<string, unknown>): void {
   replaceMapContents(memoryCapsule, state.memoryCapsule);
   replaceMapContents(memoryProposals, state.memoryProposals);
   replaceMapContents(scanNoteLedger, (state as Record<string, unknown>).scanNotes);
+  replaceMapContents(credentialsLedger, (state as Record<string, unknown>).credentialsLedger);
+  reindexCredentialsFromLedgers();
 }
 
 function normalizeTargetValue(value: unknown): string {
@@ -8569,7 +8840,6 @@ app.post('/api/operators/:id/task', async (req: Request, res: Response): Promise
  */
 app.get('/api/mission/findings', (_req: Request, res: Response) => {
   const cmd = getTempestCommand();
-  // Resolve a TargetEnvironment UUID to the operator-visible address so vault rows group by domain.
   const resolveAddr = (id: unknown): string => {
     const key = String(id || '');
     if (!key) return '';
@@ -8580,10 +8850,38 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
     return key;
   };
   const live = (cmd ? cmd.vault.getAllFindings().map((f) => ({ ...f, target: resolveAddr(f.targetId) })) : []);
-  const liveCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
-  // Merge the persistent ledger (scan/task recordings + formal findings) into the
-  // response so the Evidence Vault hydrates EVERYTHING — including after a restart
-  // or when no mission instance is active. Newest first, capped to keep payloads sane.
+  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+
+  const ledgerCreds = Array.from(credentialsLedger.values()).map(c => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    domain: c.domain || c.target,
+    target: c.target || c.domain,
+    source: c.source,
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: true,
+    notes: c.notes,
+  }));
+
+  const allCreds = [...ledgerCreds, ...vaultCreds, ...cellCreds];
+  const dedupedCreds: any[] = [];
+  const seenCreds = new Set<string>();
+  for (const c of allCreds) {
+    const k = `${c.type}::${c.username || ''}::${c.domain || c.target || ''}`.toLowerCase();
+    if (!seenCreds.has(k)) {
+      seenCreds.add(k);
+      dedupedCreds.push(c);
+    }
+  }
+
+  const isCredFinding = (f: FindingRecord) =>
+    /credential|password|api[_-]?key|jwt|token|secret|login\s+bypass/i.test(f.title) ||
+    /credential|password|api[_-]?key|jwt|token|secret/i.test(f.claim);
+
   const ledgerFindings = [...findingsLedger.values()]
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, 200)
@@ -8597,6 +8895,7 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
         title: f.title,
         severity: f.severity,
         target: f.target,
+        type: isCredFinding(f) ? 'cred' : 'vuln',
         description: f.claim,
         detail: f.impact ? `${f.claim}\n\nImpact:\n${f.impact}` : f.claim,
         phase: 'ledger',
@@ -8621,11 +8920,47 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
 
   res.json({
     findings: merged,
-    // Redact: never return raw harvested secrets over the API (only metadata + a
-    // secretCaptured flag). Loopback-only mitigates, but a security tool must not dump
-    // secrets in its own responses (external-audit P0).
-    credentials: liveCreds,
+    credentials: dedupedCreds,
   });
+});
+
+app.get('/api/credentials', (_req: Request, res: Response) => {
+  const cmd = getTempestCommand();
+  const resolveAddr = (id: unknown): string => {
+    const key = String(id || '');
+    if (!key) return '';
+    try {
+      const t = cmd?.targetEnv.getAllTargets().find(x => x && x.id === key);
+      if (t && typeof t.address === 'string' && t.address.trim()) return t.address.trim();
+    } catch { /* ignore target resolution error */ }
+    return key;
+  };
+  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+  const ledgerCreds = Array.from(credentialsLedger.values()).map(c => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    domain: c.domain || c.target,
+    target: c.target || c.domain,
+    source: c.source,
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: true,
+    notes: c.notes,
+  }));
+  const allCreds = [...ledgerCreds, ...vaultCreds, ...cellCreds];
+  const dedupedCreds: any[] = [];
+  const seenCreds = new Set<string>();
+  for (const c of allCreds) {
+    const k = `${c.type}::${c.username || ''}::${c.domain || c.target || ''}`.toLowerCase();
+    if (!seenCreds.has(k)) {
+      seenCreds.add(k);
+      dedupedCreds.push(c);
+    }
+  }
+  res.json({ credentials: dedupedCreds, count: dedupedCreds.length });
 });
 
 // =============================================================================
@@ -10322,6 +10657,7 @@ async function startServer() {
   console.log('');
 
   await loadPersistedState();
+  try { reindexCredentialsFromLedgers(); } catch { /* ignore on boot */ }
 
   // Install the outbound SOCKS5 proxy (if TEMPEST_PROXY_URL / saved settings define one)
   // BEFORE anything makes outbound calls, so all test/attack fetch() egress is covered.
