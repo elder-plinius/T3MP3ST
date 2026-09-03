@@ -475,6 +475,39 @@
             padding: 18px;
             position: relative;
             overflow: hidden;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+        }
+
+        .stat-card.clickable {
+            cursor: pointer;
+            user-select: none;
+        }
+        .stat-card.clickable:hover {
+            transform: translateY(-3px);
+            border-color: var(--accent);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 16px rgba(0, 255, 136, 0.25);
+        }
+        .stat-card.clickable.danger:hover {
+            border-color: #ff0040;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 20px rgba(255, 0, 64, 0.35);
+        }
+        .stat-card.clickable.warning:hover {
+            border-color: #ffaa00;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 20px rgba(255, 170, 0, 0.35);
+        }
+        .stat-card.clickable.info:hover {
+            border-color: #0088ff;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 20px rgba(0, 136, 255, 0.35);
+        }
+        .cred-interactive-row {
+            cursor: pointer;
+            transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+        }
+        .cred-interactive-row:hover {
+            transform: translateY(-1px);
+            background: rgba(30, 30, 42, 0.95) !important;
+            border-color: rgba(255, 255, 255, 0.22) !important;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
         }
 
         .stat-card::before {
@@ -3616,22 +3649,22 @@
                 <!-- COMMAND CENTER DASHBOARD -->
                 <div class="page active" id="page-evidence">
                     <div class="stats-grid">
-                        <div class="stat-card danger">
+                        <div class="stat-card danger clickable" id="statCardCritical" onclick="openFindingsModal('critical')" title="Click to view all Critical findings in modal">
                             <div class="stat-icon">🚨</div>
                             <div class="stat-value" id="criticalFindings">0</div>
                             <div class="stat-label">Critical</div>
                         </div>
-                        <div class="stat-card warning">
+                        <div class="stat-card warning clickable" id="statCardHigh" onclick="openFindingsModal('high')" title="Click to view all High findings in modal">
                             <div class="stat-icon">⚠️</div>
                             <div class="stat-value" id="highFindings">0</div>
                             <div class="stat-label">High</div>
                         </div>
-                        <div class="stat-card info">
+                        <div class="stat-card info clickable" id="statCardMedium" onclick="openFindingsModal('medium')" title="Click to view all Medium findings in modal">
                             <div class="stat-icon">ℹ️</div>
                             <div class="stat-value" id="mediumFindings">0</div>
                             <div class="stat-label">Medium</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card clickable" id="statCardCredentials" onclick="openCredentialsModal()" title="Click to view all Harvested Credentials in modal">
                             <div class="stat-icon">🔑</div>
                             <div class="stat-value" id="credentialCount">0</div>
                             <div class="stat-label">Credentials</div>
@@ -3648,6 +3681,17 @@
                                 No findings yet. Start a mission to collect evidence.
                             </p>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Global Interactive Modal Overlay -->
+                <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()" style="display:none;position:fixed;inset:0;background:rgba(2,6,12,0.85);backdrop-filter:blur(6px);z-index:9999;align-items:center;justify-content:center;padding:16px;">
+                    <div class="modal" id="modalContainer" style="background:#0b101b;border:1px solid rgba(0,255,136,0.3);box-shadow:0 12px 40px rgba(0,0,0,0.85),0 0 25px rgba(0,255,136,0.15);border-radius:10px;width:95%;max-width:880px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+                        <div class="modal-header" style="padding:14px 18px;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.02);">
+                            <h3 class="modal-title" id="modalTitle" style="font-size:15px;font-weight:700;color:#fff;margin:0;display:flex;align-items:center;gap:8px;">Modal</h3>
+                            <button class="modal-close" onclick="closeModal()" style="background:none;border:none;color:#aaa;font-size:22px;cursor:pointer;padding:0 4px;line-height:1;" title="Close (Esc)">×</button>
+                        </div>
+                        <div class="modal-body" id="modalBody" style="padding:16px 18px;overflow-y:auto;flex:1;"></div>
                     </div>
                 </div>
 
@@ -6101,7 +6145,6 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
             const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
             if (_credCountEl) _credCountEl.textContent = creds.length;
             const loot = Array.isArray(window.vaultLoot) ? window.vaultLoot : [];
-            const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
             if (!missionFindings.length && !loot.length && !creds.length) {
                 g.innerHTML = '<p style="text-align:center;color:var(--text-muted);padding:30px">No findings yet</p>';
                 return;
@@ -6270,15 +6313,15 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
                 };
                 const color = typeColors[c.type] || '#ffaa00';
                 const secretDisplay = c.secret && c.secret !== '[redacted]' ? c.secret : (c.secretCaptured ? '[secret captured]' : '');
-                const secretToCopy = (c.secret && c.secret !== '[redacted]') ? c.secret : (c.username ? (c.username + (c.secret ? ':' + c.secret : '')) : (c.type || 'credential'));
+                const cidAttr = escapeHtml(String(c.id || c.username || 'cred'));
                 return `
-                <div style="border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${color};border-radius:6px;margin:6px 0;background:rgba(20,20,26,0.85);padding:9px 12px;font-size:11.5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);">
+                <div class="cred-interactive-row" onclick="window.openSingleCredentialModal('${cidAttr}')" title="Click to view full secret and credential details in modal" style="border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${color};border-radius:6px;margin:6px 0;background:rgba(20,20,26,0.85);padding:9px 12px;font-size:11.5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);">
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                         <span class="tag" style="background:${color}22;color:${color};border:1px solid ${color}66;font-weight:700;font-size:10px;padding:2px 6px;border-radius:4px;">🔑 ${escapeHtml((c.type || 'credential').toUpperCase())}</span>
                         <b style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#fff;overflow-wrap:anywhere;">${escapeHtml(c.username || c.type || 'credential')}</b>
                         ${c.privilegeLevel ? `<span class="tag" style="background:rgba(255,0,64,0.18);color:#ff4466;border:1px solid rgba(255,0,64,0.35);font-size:9.5px;padding:1px 5px;font-weight:700;">${escapeHtml(c.privilegeLevel.toUpperCase())}</span>` : ''}
                         <span style="color:var(--text-muted);font-size:10.5px;margin-left:auto;font-family:'JetBrains Mono',monospace;">${escapeHtml(c.domain || c.target || '')}</span>
-                        <button type="button" class="btn btn-xs" onclick='event.stopPropagation();navigator.clipboard.writeText(${JSON.stringify(secretToCopy)});this.textContent="Copied!";setTimeout(()=>this.textContent="Copy Secret",1500)' style="font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;background:rgba(255,255,255,0.08);color:#eee;border:1px solid rgba(255,255,255,0.2);">Copy Secret</button>
+                        <button type="button" class="btn btn-xs" onclick="event.stopPropagation();window.openSingleCredentialModal('${cidAttr}')" style="font-size:10px;padding:2px 9px;border-radius:4px;cursor:pointer;background:rgba(0,229,255,0.12);color:#00e5ff;border:1px solid rgba(0,229,255,0.35);font-weight:600;" title="View secret in modal">👁️ View Secret</button>
                     </div>
                     ${(c.notes || c.source || secretDisplay) ? `
                     <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:12px;font-size:10.5px;color:#bbb;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.35);padding:6px 9px;border-radius:4px;border:1px solid rgba(255,255,255,0.04);">
@@ -6321,6 +6364,441 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
         window.toggleVaultFinding = function (fi) {
             window.vaultOpenFindingsMap[fi] = !window.vaultOpenFindingsMap[fi];
             renderFindings();
+        };
+
+        function openModal(title, content, maxWidth) {
+            const overlay = document.getElementById('modalOverlay');
+            const titleEl = document.getElementById('modalTitle');
+            const bodyEl = document.getElementById('modalBody');
+            const container = document.getElementById('modalContainer');
+            if (!overlay || !titleEl || !bodyEl) return;
+            titleEl.innerHTML = title;
+            bodyEl.innerHTML = content;
+            if (container) {
+                container.style.maxWidth = maxWidth || '880px';
+            }
+            overlay.style.display = 'flex';
+        }
+
+        function closeModal() {
+            const overlay = document.getElementById('modalOverlay');
+            if (overlay) overlay.style.display = 'none';
+        }
+
+        window.openModal = openModal;
+        window.closeModal = closeModal;
+
+        // Escape key to close modal
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        let _credModalFilterType = 'all';
+        let _credModalSearchQuery = '';
+
+        async function openCredentialsModal(targetId) {
+            if (!window.vaultCreds || !window.vaultCreds.length) {
+                try {
+                    const base = (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API.baseUrl) || '';
+                    const r = await (await fetch(base + '/api/credentials')).json();
+                    window.vaultCreds = r.credentials || [];
+                    const cc = document.getElementById('credentialCount');
+                    if (cc) cc.textContent = window.vaultCreds.length;
+                } catch (e) {}
+            }
+            _credModalFilterType = 'all';
+            _credModalSearchQuery = '';
+            renderCredentialsModal(targetId);
+        }
+        window.openCredentialsModal = openCredentialsModal;
+
+        function renderCredentialsModal(targetId) {
+            const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
+            const typeColors = {
+                password: '#ffaa00',
+                api_key: '#00e5ff',
+                token: '#bb86fc',
+                session: '#00e676',
+                cookie: '#00e676',
+                flag: '#ff0055',
+                ssh_key: '#ff9100'
+            };
+
+            const q = (_credModalSearchQuery || '').toLowerCase().trim();
+            const filtered = creds.filter(function (c) {
+                if (_credModalFilterType !== 'all') {
+                    const ct = String(c.type || '').toLowerCase();
+                    if (_credModalFilterType === 'password' && ct !== 'password') return false;
+                    if (_credModalFilterType === 'api_key' && ct !== 'api_key' && !ct.includes('key')) return false;
+                    if (_credModalFilterType === 'session' && ct !== 'session' && ct !== 'cookie') return false;
+                    if (_credModalFilterType === 'flag' && ct !== 'flag') return false;
+                    if (_credModalFilterType === 'token' && ct !== 'token') return false;
+                }
+                if (!q) return true;
+                return String(c.username || '').toLowerCase().includes(q) ||
+                       String(c.domain || c.target || '').toLowerCase().includes(q) ||
+                       String(c.type || '').toLowerCase().includes(q) ||
+                       String(c.secret || '').toLowerCase().includes(q) ||
+                       String(c.notes || '').toLowerCase().includes(q) ||
+                       String(c.source || '').toLowerCase().includes(q);
+            });
+
+            const countAll = creds.length;
+            const countPwd = creds.filter(function (c) { return (c.type || '').toLowerCase() === 'password'; }).length;
+            const countApiKey = creds.filter(function (c) { const t = (c.type || '').toLowerCase(); return t === 'api_key' || t.includes('key'); }).length;
+            const countSess = creds.filter(function (c) { return ['session', 'cookie'].includes((c.type || '').toLowerCase()); }).length;
+            const countFlags = creds.filter(function (c) { return (c.type || '').toLowerCase() === 'flag'; }).length;
+            const countTokens = creds.filter(function (c) { return (c.type || '').toLowerCase() === 'token'; }).length;
+
+            const content = `
+                <div style="display:flex;flex-direction:column;gap:14px;">
+                    <!-- Filter Toolbar -->
+                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:rgba(255,255,255,0.03);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
+                        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:240px;">
+                            <span style="color:#666;font-size:13px;">🔍</span>
+                            <input type="text" id="credSearchInput" placeholder="Filter credentials by domain, username, secret, type..." value="${escapeHtml(_credModalSearchQuery)}"
+                                oninput="window.onCredSearchInput(this.value)"
+                                style="width:100%;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.15);border-radius:5px;padding:6px 10px;color:#fff;font-size:12px;font-family:'JetBrains Mono',monospace;outline:none;" />
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="window.copyAllCredentialsToClipboard()" title="Copy all visible credentials to clipboard" style="font-size:11px;padding:5px 10px;">📋 Copy All</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="window.exportCredentialsJson()" title="Download credentials JSON file" style="font-size:11px;padding:5px 10px;">💾 Export JSON</button>
+                        </div>
+                    </div>
+
+                    <!-- Category Pills -->
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                        <button type="button" onclick="window.onCredTypeSelect('all')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_credModalFilterType==='all'?'#00ff88':'rgba(255,255,255,0.1)'};background:${_credModalFilterType==='all'?'rgba(0,255,136,0.15)':'rgba(255,255,255,0.03)'};color:${_credModalFilterType==='all'?'#00ff88':'#888'};">ALL (${countAll})</button>
+                        <button type="button" onclick="window.onCredTypeSelect('password')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_credModalFilterType==='password'?'#ffaa00':'rgba(255,255,255,0.1)'};background:${_credModalFilterType==='password'?'rgba(255,170,0,0.15)':'rgba(255,255,255,0.03)'};color:${_credModalFilterType==='password'?'#ffaa00':'#888'};">PASSWORDS (${countPwd})</button>
+                        <button type="button" onclick="window.onCredTypeSelect('api_key')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_credModalFilterType==='api_key'?'#00e5ff':'rgba(255,255,255,0.1)'};background:${_credModalFilterType==='api_key'?'rgba(0,229,255,0.15)':'rgba(255,255,255,0.03)'};color:${_credModalFilterType==='api_key'?'#00e5ff':'#888'};">API KEYS (${countApiKey})</button>
+                        <button type="button" onclick="window.onCredTypeSelect('session')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_credModalFilterType==='session'?'#00e676':'rgba(255,255,255,0.1)'};background:${_credModalFilterType==='session'?'rgba(0,230,118,0.15)':'rgba(255,255,255,0.03)'};color:${_credModalFilterType==='session'?'#00e676':'#888'};">SESSIONS (${countSess})</button>
+                        <button type="button" onclick="window.onCredTypeSelect('flag')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_credModalFilterType==='flag'?'#ff0055':'rgba(255,255,255,0.1)'};background:${_credModalFilterType==='flag'?'rgba(255,0,85,0.15)':'rgba(255,255,255,0.03)'};color:${_credModalFilterType==='flag'?'#ff0055':'#888'};">FLAGS (${countFlags})</button>
+                        <button type="button" onclick="window.onCredTypeSelect('token')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_credModalFilterType==='token'?'#bb86fc':'rgba(255,255,255,0.1)'};background:${_credModalFilterType==='token'?'rgba(187,134,252,0.15)':'rgba(255,255,255,0.03)'};color:${_credModalFilterType==='token'?'#bb86fc':'#888'};">TOKENS (${countTokens})</button>
+                    </div>
+
+                    <!-- Credential Cards List -->
+                    <div style="display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow-y:auto;padding-right:4px;">
+                        ${filtered.length === 0 ? `
+                            <div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px;background:rgba(0,0,0,0.25);border-radius:8px;border:1px dashed rgba(255,255,255,0.08);">
+                                No credentials match the selected filter.
+                            </div>
+                        ` : filtered.map(function (c, i) {
+                            const color = typeColors[c.type] || '#ffaa00';
+                            const cidStr = String(c.id || ('cred_' + i));
+                            const isMatch = targetId && (cidStr === String(targetId) || String(i) === String(targetId) || (c.username && String(c.username).toLowerCase() === String(targetId).toLowerCase()));
+                            const secretVal = c.secret && c.secret !== '[redacted]' ? c.secret : (c.secretCaptured ? '[secret captured]' : '');
+                            const secretToCopy = (c.secret && c.secret !== '[redacted]') ? c.secret : (c.username ? (c.username + (c.secret ? ':' + c.secret : '')) : (c.type || 'credential'));
+                            const secretMaskId = 'modal-cred-sec-' + i;
+                            return `
+                                <div id="modal-cred-card-${i}" style="border:1px solid ${isMatch ? color : 'rgba(255,255,255,0.1)'};border-left:4px solid ${color};border-radius:8px;background:${isMatch ? 'rgba(35,35,48,0.95)' : 'rgba(18,22,32,0.9)'};padding:12px 16px;box-shadow:${isMatch ? '0 0 18px ' + color + '44' : '0 3px 12px rgba(0,0,0,0.4)'};transition:all 0.2s;">
+                                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+                                        <span class="tag" style="background:${color}22;color:${color};border:1px solid ${color}66;font-weight:700;font-size:10.5px;padding:2px 8px;border-radius:4px;">🔑 ${(c.type || 'CREDENTIAL').toUpperCase()}</span>
+                                        <span style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:#fff;">${escapeHtml(c.username || c.type || 'credential')}</span>
+                                        ${c.privilegeLevel ? `<span class="tag" style="background:rgba(255,0,64,0.18);color:#ff4466;border:1px solid rgba(255,0,64,0.35);font-size:9.5px;padding:1px 6px;font-weight:700;">${escapeHtml(c.privilegeLevel.toUpperCase())}</span>` : ''}
+                                        <span style="margin-left:auto;color:var(--accent);font-size:11px;font-family:'JetBrains Mono',monospace;background:rgba(0,255,136,0.06);padding:2px 8px;border-radius:4px;border:1px solid rgba(0,255,136,0.2);">${escapeHtml(c.domain || c.target || '-')}</span>
+                                    </div>
+
+                                    <!-- Secret Box -->
+                                    <div style="display:flex;align-items:center;gap:8px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.08);border-radius:5px;padding:8px 12px;margin-bottom:8px;">
+                                        <span style="color:#777;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">SECRET:</span>
+                                        <code id="${secretMaskId}" data-secret="${escapeHtml(secretVal)}" data-masked="false" style="color:${color};font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;flex:1;">${escapeHtml(secretVal || '(empty)')}</code>
+                                        <button type="button" onclick="window.toggleSecretMask('${secretMaskId}')" style="font-size:10px;padding:2px 8px;border-radius:3px;background:none;border:1px solid rgba(255,255,255,0.15);color:#aaa;cursor:pointer;">Mask</button>
+                                        <button type="button" class="btn btn-xs" onclick='event.stopPropagation();navigator.clipboard.writeText(${JSON.stringify(secretToCopy)});this.textContent="Copied!";setTimeout(()=>this.textContent="Copy",1400)' style="font-size:10px;padding:2px 8px;border-radius:3px;cursor:pointer;background:rgba(255,255,255,0.08);color:#eee;border:1px solid rgba(255,255,255,0.2);">Copy</button>
+                                    </div>
+
+                                    <!-- Meta / Discovery Context -->
+                                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:10.5px;color:#888;">
+                                        <div style="display:flex;align-items:center;gap:12px;">
+                                            ${c.source ? `<span>Source: <span style="color:#00e5ff;">${escapeHtml(c.source)}</span></span>` : ''}
+                                            ${c.discoveredAt ? `<span>Captured: <span style="color:#aaa;">${escapeHtml(String(c.discoveredAt).slice(0,19).replace('T',' '))}</span></span>` : ''}
+                                        </div>
+                                        ${c.notes ? `<div style="color:#aaa;font-style:italic;">Notes: ${escapeHtml(c.notes)}</div>` : ''}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+
+            openModal(`🔑 Harvested Credentials & Keys Vault (${creds.length})`, content, '920px');
+
+            if (targetId) {
+                setTimeout(function () {
+                    const el = document.getElementById('modal-cred-card-' + targetId) || document.querySelector(`[id*="${targetId}"]`);
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 120);
+            }
+        }
+
+        async function openSingleCredentialModal(credIdOrIdentifier) {
+            if (!window.vaultCreds || !window.vaultCreds.length) {
+                try {
+                    const base = (typeof T3MP3ST_API !== 'undefined' && T3MP3ST_API.baseUrl) || '';
+                    const r = await (await fetch(base + '/api/credentials')).json();
+                    window.vaultCreds = r.credentials || [];
+                    const cc = document.getElementById('credentialCount');
+                    if (cc) cc.textContent = window.vaultCreds.length;
+                } catch (e) {}
+            }
+            const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
+            const c = creds.find(function (x, idx) {
+                return String(x.id) === String(credIdOrIdentifier) ||
+                       String('cred_' + idx) === String(credIdOrIdentifier) ||
+                       String(idx) === String(credIdOrIdentifier) ||
+                       (x.username && String(x.username) === String(credIdOrIdentifier));
+            }) || creds[0];
+
+            if (!c) {
+                if (typeof toast === 'function') toast('Credential record not found', 'error');
+                return;
+            }
+
+            const typeColors = {
+                password: '#ffaa00',
+                api_key: '#00e5ff',
+                token: '#bb86fc',
+                session: '#00e676',
+                cookie: '#00e676',
+                flag: '#ff0055',
+                ssh_key: '#ff9100'
+            };
+            const color = typeColors[c.type] || '#ffaa00';
+            const secretVal = (c.secret && c.secret !== '[redacted]') ? c.secret : (c.secretCaptured ? '[secret captured]' : (c.username || ''));
+            const secretToCopy = (c.secret && c.secret !== '[redacted]') ? c.secret : (c.username ? (c.username + (c.secret ? ':' + c.secret : '')) : (c.type || 'credential'));
+
+            const content = `
+                <div style="display:flex;flex-direction:column;gap:16px;font-family:'Segoe UI',sans-serif;">
+                    <!-- Top Badge Bar -->
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.08);">
+                        <span class="tag" style="background:${color}22;color:${color};border:1px solid ${color}66;font-weight:700;font-size:11px;padding:3px 10px;border-radius:4px;letter-spacing:0.5px;">🔑 ${(c.type || 'CREDENTIAL').toUpperCase()}</span>
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:#fff;">${escapeHtml(c.username || c.type || 'credential')}</span>
+                        ${c.privilegeLevel ? `<span class="tag" style="background:rgba(255,0,64,0.18);color:#ff4466;border:1px solid rgba(255,0,64,0.35);font-size:10px;padding:2px 8px;font-weight:700;">${escapeHtml(c.privilegeLevel.toUpperCase())}</span>` : ''}
+                        <span style="margin-left:auto;color:var(--accent);font-size:11.5px;font-family:'JetBrains Mono',monospace;background:rgba(0,255,136,0.08);padding:3px 10px;border-radius:4px;border:1px solid rgba(0,255,136,0.25);">🎯 ${escapeHtml(c.domain || c.target || '-')}</span>
+                    </div>
+
+                    <!-- Secret Hero Box -->
+                    <div>
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:${color};font-weight:700;">RAW SECRET / KEY VALUE</span>
+                            <div style="display:flex;gap:6px;">
+                                <button type="button" onclick="window.toggleSingleSecretMask()" id="singleMaskToggleBtn" style="font-size:10.5px;padding:3px 9px;border-radius:4px;background:none;border:1px solid rgba(255,255,255,0.2);color:#aaa;cursor:pointer;">Mask Value</button>
+                                <button type="button" class="btn btn-xs" onclick='navigator.clipboard.writeText(${JSON.stringify(secretToCopy)});this.textContent="Copied!";setTimeout(()=>this.textContent="Copy Secret",1500)' style="font-size:10.5px;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(0,255,136,0.15);color:#00ff88;border:1px solid rgba(0,255,136,0.4);font-weight:600;">Copy Secret</button>
+                            </div>
+                        </div>
+                        <div style="position:relative;background:#050c14;border:1px solid ${color}66;border-radius:6px;padding:12px 14px;box-shadow:inset 0 2px 10px rgba(0,0,0,0.6), 0 0 16px ${color}18;">
+                            <pre id="singleSecretDisplay" data-secret="${escapeHtml(secretVal)}" data-masked="false" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:13px;color:${color};white-space:pre-wrap;word-break:break-all;line-height:1.6;user-select:all;">${escapeHtml(secretVal || '(empty)')}</pre>
+                        </div>
+                    </div>
+
+                    <!-- Detailed Metadata Table -->
+                    <div style="background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:12px 14px;display:grid;grid-template-columns:120px 1fr;gap:8px 12px;font-size:11.5px;font-family:'JetBrains Mono',monospace;">
+                        <div style="color:#666;">Identifier</div>
+                        <div style="color:#fff;font-weight:600;">${escapeHtml(c.username || '-')}</div>
+
+                        <div style="color:#666;">Domain / Target</div>
+                        <div style="color:#7CFFC4;">${escapeHtml(c.domain || c.target || '-')}</div>
+
+                        <div style="color:#666;">Type</div>
+                        <div style="color:${color};font-weight:600;">${escapeHtml((c.type || '-').toUpperCase())}</div>
+
+                        <div style="color:#666;">Privilege Level</div>
+                        <div style="color:#fff;">${escapeHtml(c.privilegeLevel || 'Standard User')}</div>
+
+                        <div style="color:#666;">Source Tool</div>
+                        <div style="color:#00e5ff;">${escapeHtml(c.source || 'scanner / ledger')}</div>
+
+                        ${c.discoveredAt ? `
+                        <div style="color:#666;">Captured At</div>
+                        <div style="color:#aaa;">${escapeHtml(String(c.discoveredAt).slice(0, 19).replace('T', ' '))}</div>` : ''}
+
+                        ${c.notes ? `
+                        <div style="color:#666;">Extraction Notes</div>
+                        <div style="color:#ddd;line-height:1.5;">${escapeHtml(c.notes)}</div>` : ''}
+                    </div>
+
+                    <!-- Footer Actions -->
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);">
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="openCredentialsModal()" style="font-size:11px;padding:6px 12px;cursor:pointer;">📂 View All ${creds.length} Credentials</button>
+                        <div style="display:flex;gap:8px;">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick='navigator.clipboard.writeText(${JSON.stringify(JSON.stringify(c, null, 2))});this.textContent="Copied JSON!";setTimeout(()=>this.textContent="Copy JSON",1500)' style="font-size:11px;padding:6px 12px;">Copy JSON</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="closeModal()" style="font-size:11px;padding:6px 14px;">Done</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            openModal(`🔐 Captured Secret: ${escapeHtml(c.username || c.type || 'Credential')}`, content, '680px');
+        }
+        window.openSingleCredentialModal = openSingleCredentialModal;
+
+        window.toggleSingleSecretMask = function () {
+            const el = document.getElementById('singleSecretDisplay');
+            const btn = document.getElementById('singleMaskToggleBtn');
+            if (!el || !btn) return;
+            const isMasked = el.getAttribute('data-masked') === 'true';
+            const real = el.getAttribute('data-secret') || '';
+            if (isMasked) {
+                el.textContent = real;
+                el.setAttribute('data-masked', 'false');
+                btn.textContent = 'Mask Value';
+            } else {
+                el.textContent = '••••••••••••••••••••••••••••••••';
+                el.setAttribute('data-masked', 'true');
+                btn.textContent = 'Reveal Value';
+            }
+        };
+
+        window.onCredSearchInput = function (val) {
+            _credModalSearchQuery = val;
+            renderCredentialsModal();
+            const input = document.getElementById('credSearchInput');
+            if (input) { input.focus(); input.setSelectionRange(val.length, val.length); }
+        };
+
+        window.onCredTypeSelect = function (type) {
+            _credModalFilterType = type;
+            renderCredentialsModal();
+        };
+
+        window.toggleSecretMask = function (id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const isMasked = el.getAttribute('data-masked') === 'true';
+            const real = el.getAttribute('data-secret') || '';
+            if (isMasked) {
+                el.textContent = real;
+                el.setAttribute('data-masked', 'false');
+            } else {
+                el.textContent = '••••••••••••••••';
+                el.setAttribute('data-masked', 'true');
+            }
+        };
+
+        window.copyAllCredentialsToClipboard = function () {
+            const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
+            if (!creds.length) return;
+            let md = `# Harvested Credentials Ledger (${creds.length})\n\n`;
+            md += `| Type | Username / Identifier | Target Domain | Secret / Key | Privilege | Source |\n`;
+            md += `| --- | --- | --- | --- | --- | --- |\n`;
+            creds.forEach(function (c) {
+                const s = c.secret && c.secret !== '[redacted]' ? c.secret : '[captured]';
+                md += `| ${(c.type || 'cred').toUpperCase()} | ${c.username || '-'} | ${c.domain || c.target || '-'} | \`${s}\` | ${c.privilegeLevel || '-'} | ${c.source || '-'} |\n`;
+            });
+            navigator.clipboard.writeText(md).then(function () {
+                if (typeof toast === 'function') toast('All ' + creds.length + ' credentials copied as Markdown table', 'success');
+            }).catch(function () {});
+        };
+
+        window.exportCredentialsJson = function () {
+            const creds = Array.isArray(window.vaultCreds) ? window.vaultCreds : [];
+            const data = JSON.stringify(creds, null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `t3mp3st-credentials-${Date.now()}.json`;
+            a.click();
+            if (typeof toast === 'function') toast('Exported credentials JSON', 'success');
+        };
+
+        let _findingModalSeverity = 'all';
+        let _findingModalSearch = '';
+
+        function openFindingsModal(severity) {
+            _findingModalSeverity = (severity || 'all').toLowerCase();
+            _findingModalSearch = '';
+            renderFindingsModal();
+        }
+        window.openFindingsModal = openFindingsModal;
+
+        function renderFindingsModal() {
+            const findings = Array.isArray(missionFindings) ? missionFindings : [];
+            const sevColors = { critical: '#ff0040', high: '#ff4444', medium: '#ffaa00', low: '#0088ff', info: '#888' };
+            const q = (_findingModalSearch || '').toLowerCase().trim();
+
+            const filtered = findings.filter(function (f) {
+                if (_findingModalSeverity !== 'all') {
+                    if (String(f.severity || '').toLowerCase() !== _findingModalSeverity) return false;
+                }
+                if (!q) return true;
+                return String(f.title || '').toLowerCase().includes(q) ||
+                       String(f.target || '').toLowerCase().includes(q) ||
+                       String(f.phase || '').toLowerCase().includes(q) ||
+                       String(f.detail || '').toLowerCase().includes(q) ||
+                       String(f.id || '').toLowerCase().includes(q);
+            });
+
+            const critCount = findings.filter(function (f) { return f.severity === 'critical'; }).length;
+            const highCount = findings.filter(function (f) { return f.severity === 'high'; }).length;
+            const medCount = findings.filter(function (f) { return f.severity === 'medium'; }).length;
+
+            const content = `
+                <div style="display:flex;flex-direction:column;gap:14px;">
+                    <!-- Filter Toolbar -->
+                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:rgba(255,255,255,0.03);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
+                        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:240px;">
+                            <span style="color:#666;font-size:13px;">🔍</span>
+                            <input type="text" id="findingModalSearchInput" placeholder="Filter findings by title, target, phase, vulnerability..." value="${escapeHtml(_findingModalSearch)}"
+                                oninput="window.onFindingSearchInput(this.value)"
+                                style="width:100%;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.15);border-radius:5px;padding:6px 10px;color:#fff;font-size:12px;font-family:'JetBrains Mono',monospace;outline:none;" />
+                        </div>
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="exportFindings()" style="font-size:11px;padding:5px 10px;">💾 Export JSON</button>
+                    </div>
+
+                    <!-- Severity Tabs -->
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                        <button type="button" onclick="window.onFindingSevSelect('all')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_findingModalSeverity==='all'?'#00ff88':'rgba(255,255,255,0.1)'};background:${_findingModalSeverity==='all'?'rgba(0,255,136,0.15)':'rgba(255,255,255,0.03)'};color:${_findingModalSeverity==='all'?'#00ff88':'#888'};">ALL (${findings.length})</button>
+                        <button type="button" onclick="window.onFindingSevSelect('critical')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_findingModalSeverity==='critical'?'#ff0040':'rgba(255,255,255,0.1)'};background:${_findingModalSeverity==='critical'?'rgba(255,0,64,0.15)':'rgba(255,255,255,0.03)'};color:${_findingModalSeverity==='critical'?'#ff0040':'#888'};">🚨 CRITICAL (${critCount})</button>
+                        <button type="button" onclick="window.onFindingSevSelect('high')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_findingModalSeverity==='high'?'#ff4444':'rgba(255,255,255,0.1)'};background:${_findingModalSeverity==='high'?'rgba(255,68,68,0.15)':'rgba(255,255,255,0.03)'};color:${_findingModalSeverity==='high'?'#ff4444':'#888'};">⚠️ HIGH (${highCount})</button>
+                        <button type="button" onclick="window.onFindingSevSelect('medium')" style="padding:4px 10px;border-radius:14px;font-size:10.5px;font-weight:600;cursor:pointer;border:1px solid ${_findingModalSeverity==='medium'?'#ffaa00':'rgba(255,255,255,0.1)'};background:${_findingModalSeverity==='medium'?'rgba(255,170,0,0.15)':'rgba(255,255,255,0.03)'};color:${_findingModalSeverity==='medium'?'#ffaa00':'#888'};">ℹ️ MEDIUM (${medCount})</button>
+                    </div>
+
+                    <!-- Findings List -->
+                    <div style="display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow-y:auto;padding-right:4px;">
+                        ${filtered.length === 0 ? `
+                            <div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px;background:rgba(0,0,0,0.25);border-radius:8px;border:1px dashed rgba(255,255,255,0.08);">
+                                No findings match the selected severity or filter.
+                            </div>
+                        ` : filtered.map(function (f, fi) {
+                            const realIdx = missionFindings.indexOf(f);
+                            const color = sevColors[f.severity] || '#888';
+                            return `
+                                <div style="border:1px solid rgba(255,255,255,0.1);border-left:4px solid ${color};border-radius:8px;background:rgba(18,22,32,0.9);padding:12px 16px;box-shadow:0 3px 12px rgba(0,0,0,0.4);">
+                                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+                                        <span class="tag" style="background:${color}22;color:${color};border:1px solid ${color}66;font-weight:700;font-size:10px;padding:2px 7px;border-radius:4px;">${(f.severity || 'info').toUpperCase()}</span>
+                                        <span style="font-weight:700;font-size:13px;color:#fff;">${escapeHtml(f.title || 'Finding')}</span>
+                                        <span style="margin-left:auto;color:var(--accent);font-size:11px;font-family:'JetBrains Mono',monospace;">${escapeHtml(f.target || '-')}</span>
+                                    </div>
+                                    ${f.detail ? `
+                                        <div style="font-size:11px;color:#bbb;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.35);padding:8px 12px;border-radius:4px;margin-bottom:8px;font-family:'JetBrains Mono',monospace;">${escapeHtml(String(f.detail).slice(0, 300))}${String(f.detail).length > 300 ? '...' : ''}</div>
+                                    ` : ''}
+                                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                                        <span style="color:#666;font-size:10px;">Phase: <span style="color:#aaa;">${escapeHtml(f.phase || '-')}</span> | Type: <span style="color:#aaa;">${escapeHtml(f.type || '-')}</span></span>
+                                        <div style="display:flex;gap:6px;">
+                                            <button type="button" class="btn btn-xs btn-secondary" onclick="closeModal();window.focusVaultFinding(missionFindings[${realIdx}])" style="font-size:10px;padding:3px 8px;border-radius:3px;cursor:pointer;background:rgba(0,255,136,0.12);color:#00ff88;border:1px solid rgba(0,255,136,0.35);">🔐 View in Vault</button>
+                                            <button type="button" class="btn btn-xs btn-secondary" onclick="window.copyFindingToClipboard(${realIdx})" style="font-size:10px;padding:3px 8px;border-radius:3px;cursor:pointer;">📋 Copy Report</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+
+            openModal(`🛡️ Findings & Vulnerabilities (${filtered.length})`, content, '920px');
+        }
+
+        window.onFindingSearchInput = function (val) {
+            _findingModalSearch = val;
+            renderFindingsModal();
+            const input = document.getElementById('findingModalSearchInput');
+            if (input) { input.focus(); input.setSelectionRange(val.length, val.length); }
+        };
+
+        window.onFindingSevSelect = function (sev) {
+            _findingModalSeverity = sev;
+            renderFindingsModal();
         };
 
         // Full finding detail in-UI (previously only in export): opens a modal with every field,

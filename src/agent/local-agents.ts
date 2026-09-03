@@ -12,7 +12,7 @@
 //     stdout (the model's reply to OUR prompt — not secrets). Everything is local + user-initiated.
 // =============================================================================
 
-import { execFile, execFileSync, spawn } from 'child_process';
+import { exec, execFile, execFileSync, spawn } from 'child_process';
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, tmpdir, userInfo } from 'os';
 import { dirname, join } from 'path';
@@ -520,7 +520,16 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
       });
     };
     try {
-      execFile(exe, spec.versionArgs, { timeout: 8000, shell: needsShell(exe) }, (err, stdout) => {
+      const probeVersion = (onDone: (err: Error | null, stdout: string) => void) => {
+        if (!needsShell(exe)) {
+          execFile(exe, spec.versionArgs, { timeout: 8000 }, onDone);
+          return;
+        }
+        // .cmd/.bat shims: args-array + shell:true on execFile is DEP0190 on Node 24 — same
+        // pre-quoted single-string form as spawnAgent above.
+        exec([exe, ...spec.versionArgs].map(quoteWindowsArg).join(' '), { timeout: 8000 }, onDone);
+      };
+      probeVersion((err, stdout) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           resolve({ ...base, installed: false, authed: false, ready: false });
           return;

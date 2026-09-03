@@ -3585,6 +3585,7 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       { name: 'target', type: 'string', description: 'Target URL', required: true },
       { name: 'severity', type: 'string', description: 'Severity filter: info,low,medium,high,critical', required: false, default: 'medium,high,critical' },
       { name: 'tags', type: 'string', description: 'Template tags (e.g., "cve,sqli,xss")', required: false },
+      { name: 'templates', type: 'string', description: 'Template path, file, or category (e.g., "cves", "technologies", "exposures")', required: false },
     ],
     handler: async (context) => {
       if (!(await isToolAvailable('nuclei'))) {
@@ -3593,9 +3594,13 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const target = context.parameters.target as string;
       const severity = context.parameters.severity as string || 'medium,high,critical';
       const tags = context.parameters.tags as string | undefined;
+      const templates = (context.parameters.templates as string | undefined) ||
+        (context.parameters.template as string | undefined) ||
+        (context.parameters.t as string | undefined);
 
       const args = ['-target', target, '-severity', severity, '-silent', '-jsonl'];
       if (tags) args.push('-tags', tags);
+      if (templates) args.push('-t', templates);
 
       const result = await runSubprocess('nuclei', args, { timeout: 300000 });
 

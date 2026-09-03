@@ -178,8 +178,10 @@ const ARG_TEMPLATES: Record<string, ArgTemplate> = {
     build: (target, params) => {
       const severity = str(params.severity) ?? 'medium,high,critical';
       const tags = str(params.tags);
+      const templates = str(params.templates) ?? str(params.template) ?? str(params.t);
       const args = ['-target', target, '-severity', severity, '-silent', '-jsonl'];
       if (tags) args.push('-tags', tags);
+      if (templates) args.push('-t', templates);
       return args;
     },
   },

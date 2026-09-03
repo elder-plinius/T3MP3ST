@@ -113,6 +113,18 @@ describe('UI Chrome Persistence across all pages (API status & Egress IP Banner)
     describe(`docs/${page}`, () => {
       const pageHtml = readFileSync(new URL(`../../docs/${page}`, import.meta.url), 'utf8');
 
+      it('every classic inline <script> compiles without a SyntaxError', () => {
+        const failures: string[] = [];
+        inlineScripts(pageHtml).forEach((src, i) => {
+          try {
+            new vm.Script(src, { filename: `docs/${page}#inline-${i}` });
+          } catch (e) {
+            failures.push(`inline #${i}: ${(e as Error).message}`);
+          }
+        });
+        expect(failures, failures.join('\n')).toEqual([]);
+      });
+
       it('includes API status indicator (apiDot and apiText)', () => {
         expect(pageHtml).toContain('id="apiDot"');
         expect(pageHtml).toContain('id="apiText"');

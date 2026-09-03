@@ -944,60 +944,152 @@ interface CredentialRecord {
 }
 const credentialsLedger = new Map<string, CredentialRecord>();
 
+function cleanTargetDomain(rawTarget: string, textContext = ''): string {
+  let t = (rawTarget || '').trim();
+  t = t.replace(/^https?:\/\//i, '').split('/')[0].trim();
+
+  const isInvalid = !t ||
+    t === 'unknown' ||
+    t === 'none' ||
+    t === 'undefined' ||
+    t === 'null' ||
+    t === 'document.cookie' ||
+    t.includes('document.') ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t);
+
+  if (!isInvalid && (t.includes('.') || t.includes(':') || t.startsWith('localhost'))) {
+    return t;
+  }
+
+  const urlMatch = textContext.match(/https?:\/\/([a-zA-Z0-9_.-]+(?::\d+)?)/i);
+  if (urlMatch && !urlMatch[1].toLowerCase().includes('document.cookie')) {
+    return urlMatch[1];
+  }
+
+  const hostMatch = textContext.match(/\b([a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?::\d+)?)\b/);
+  if (hostMatch && !['document.cookie', 'example.com'].includes(hostMatch[1].toLowerCase())) {
+    return hostMatch[1];
+  }
+
+  const ipMatch = textContext.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d+)?\b/);
+  if (ipMatch) {
+    return ipMatch[0];
+  }
+
+  try {
+    const cmd = getTempestCommand();
+    const envTargets = cmd?.targetEnv?.getAllTargets?.();
+    if (envTargets && envTargets.length > 0) {
+      const addr = envTargets[0]?.address;
+      if (typeof addr === 'string' && addr.trim() && !addr.includes('unknown')) {
+        return addr.replace(/^https?:\/\//i, '').split('/')[0].trim();
+      }
+    }
+  } catch { /* ignore */ }
+
+  return 'target-system';
+}
+
 function extractCredentialsFromText(text: string, target = 'unknown', source = 'scan', title = ''): CredentialRecord[] {
   if (!text || typeof text !== 'string') return [];
   const creds: CredentialRecord[] = [];
   const combined = (title + ' ' + text).trim();
+  const domain = cleanTargetDomain(target, combined);
   const now = nowIso();
 
-  // 1. CTF Flags
-  const flagRegex = /(?:T3MP3ST|flag)\{[^}]+\}/gi;
+  // 1. CTF Flags: T3MP3ST{...}, FLAG{...}, ctf{...}
+  const flagRegex = /\b((?:T3MP3ST|FLAG|flag|CTF|ctf)\{[a-zA-Z0-9_-]+\})\b/gi;
   let m: RegExpExecArray | null;
   while ((m = flagRegex.exec(combined)) !== null) {
+    const flagVal = m[1];
     creds.push({
       id: newId('cred'),
       type: 'flag',
-      username: 'CTF Flag',
-      secret: m[0],
-      domain: target,
-      target,
-      source,
+      username: flagVal,
+      secret: flagVal,
+      domain,
+      target: domain,
+      source: source || 'ctf_flag_detector',
       discoveredAt: now,
       secretCaptured: true,
-      notes: title || 'Captured Flag'
+      notes: title ? `${title} (Captured CTF Flag)` : 'Captured CTF Flag'
     });
   }
 
   // 2. Passwords & Logins
-  const weakCredMatch = combined.match(/[Uu]ser\s+["']?([a-zA-Z0-9_.-]+)["']?\s+may have weak (?:password:?\s*([^\s,;.']+)|\[redacted\])|[Ww]eak [Pp]assword\s+['"]?([^'"]+)['"]?\s+for [Uu]ser\s+['"]?([a-zA-Z0-9_.-]+)['"]?|admin\/welcome/i);
+  const isBannedUser = (u: string) => ['cookie', 'document', 'session', 'token', 'header', 'script', 'function', 'object', 'undefined', 'null', 'true', 'false', 'admin/welcome'].includes(u.toLowerCase());
+  const isBannedPass = (p: string) => ['[redacted]', '[session_token]', 'password', 'none', 'null', 'undefined', 'true', 'false'].includes(p.toLowerCase());
+
+  const weakCredMatch = combined.match(/[Uu]ser\s+["']?([a-zA-Z0-9_.-]{3,30})["']?\s+may have weak (?:password:?\s*([^\s,;.']+)|\[redacted\])|[Ww]eak [Pp]assword\s+['"]?([^'"]{3,40})['"]?\s+for [Uu]ser\s+['"]?([a-zA-Z0-9_.-]{3,30})['"]?/i);
+  const slashMatch = combined.match(/\b(admin|root|user|guest|operator)\/([a-zA-Z0-9!@#$%^&*()_+=~`-]{3,30})\b/i);
+  const comboMatch = combined.match(/\b([a-zA-Z0-9_.@-]{3,30}):([a-zA-Z0-9!@#$%^&*()_+=~`-]{4,40})\b/);
+
   if (weakCredMatch) {
-    const user = weakCredMatch[1] || weakCredMatch[4] || 'admin';
-    const pass = weakCredMatch[2] || weakCredMatch[3] || 'welcome';
-    creds.push({
-      id: newId('cred'),
-      type: 'password',
-      username: user,
-      secret: pass,
-      domain: target,
-      target,
-      source: source || 'credential_validator',
-      discoveredAt: now,
-      privilegeLevel: user.toLowerCase().includes('admin') || user.toLowerCase().includes('root') ? 'admin' : 'user',
-      secretCaptured: true,
-      notes: title || 'Valid User Credentials'
-    });
+    const u = (weakCredMatch[1] || weakCredMatch[4] || '').trim();
+    const p = (weakCredMatch[2] || weakCredMatch[3] || 'welcome').trim();
+    if (u && p && !isBannedUser(u) && !isBannedPass(p)) {
+      creds.push({
+        id: newId('cred'),
+        type: 'password',
+        username: u,
+        secret: p,
+        domain,
+        target: domain,
+        source: source || 'credential_validator',
+        discoveredAt: now,
+        privilegeLevel: u.toLowerCase().includes('admin') || u.toLowerCase().includes('root') ? 'admin' : 'user',
+        secretCaptured: true,
+        notes: title || 'Potential Valid Credentials Found'
+      });
+    }
+  } else if (slashMatch) {
+    const u = slashMatch[1].trim();
+    const p = slashMatch[2].trim();
+    if (u && p && !isBannedUser(u) && !isBannedPass(p)) {
+      creds.push({
+        id: newId('cred'),
+        type: 'password',
+        username: u,
+        secret: p,
+        domain,
+        target: domain,
+        source: source || 'credential_validator',
+        discoveredAt: now,
+        privilegeLevel: u.toLowerCase().includes('admin') || u.toLowerCase().includes('root') ? 'admin' : 'user',
+        secretCaptured: true,
+        notes: title || 'Potential Valid Credentials Found'
+      });
+    }
+  } else if (comboMatch) {
+    const u = comboMatch[1].trim();
+    const p = comboMatch[2].trim();
+    if (!/^\d+$/.test(p) && !isBannedUser(u) && !isBannedPass(p) && ['admin', 'root', 'user', 'guest', 'test', 'demo', 'postgres', 'mysql'].includes(u.toLowerCase())) {
+      creds.push({
+        id: newId('cred'),
+        type: 'password',
+        username: u,
+        secret: p,
+        domain,
+        target: domain,
+        source: source || 'credential_validator',
+        discoveredAt: now,
+        privilegeLevel: u.toLowerCase().includes('admin') || u.toLowerCase().includes('root') ? 'admin' : 'user',
+        secretCaptured: true,
+        notes: title || 'Potential Valid Credentials Found'
+      });
+    }
   }
 
-  // 3. AWS Keys
-  const awsKeyMatch = combined.match(/AKIA[0-9A-Z]{16}/);
+  // 3. AWS IAM Keys
+  const awsKeyMatch = combined.match(/\b(AKIA[0-9A-Z]{16})\b/);
   if (awsKeyMatch) {
     creds.push({
       id: newId('cred'),
       type: 'api_key',
-      username: 'AWS Access Key',
-      secret: awsKeyMatch[0],
-      domain: target,
-      target,
+      username: 'AWS IAM Access Key',
+      secret: awsKeyMatch[1],
+      domain,
+      target: domain,
       source: 'aws',
       discoveredAt: now,
       secretCaptured: true,
@@ -1006,15 +1098,15 @@ function extractCredentialsFromText(text: string, target = 'unknown', source = '
   }
 
   // 4. GCP API Keys
-  const gcpMatch = combined.match(/AIza[0-9A-Za-z_-]{35}/);
+  const gcpMatch = combined.match(/\b(AIza[0-9A-Za-z_-]{35})\b/);
   if (gcpMatch) {
     creds.push({
       id: newId('cred'),
       type: 'api_key',
       username: 'Google Cloud API Key',
-      secret: gcpMatch[0],
-      domain: target,
-      target,
+      secret: gcpMatch[1],
+      domain,
+      target: domain,
       source: 'gcp',
       discoveredAt: now,
       secretCaptured: true,
@@ -1023,15 +1115,15 @@ function extractCredentialsFromText(text: string, target = 'unknown', source = '
   }
 
   // 5. GitHub Tokens
-  const ghMatch = combined.match(/gh[po]_[A-Za-z0-9]{36}/);
+  const ghMatch = combined.match(/\b(gh[pousr]_[A-Za-z0-9]{36,})\b/);
   if (ghMatch) {
     creds.push({
       id: newId('cred'),
       type: 'api_key',
-      username: 'GitHub Token',
-      secret: ghMatch[0],
-      domain: target,
-      target,
+      username: 'GitHub Personal Token',
+      secret: ghMatch[1],
+      domain,
+      target: domain,
       source: 'github',
       discoveredAt: now,
       secretCaptured: true,
@@ -1040,30 +1132,30 @@ function extractCredentialsFromText(text: string, target = 'unknown', source = '
   }
 
   // 6. Anthropic / OpenAI API Keys
-  const anthropicMatch = combined.match(/sk-ant-api\d{2}-[A-Za-z0-9_-]{16,}/);
+  const anthropicMatch = combined.match(/\b(sk-ant-api\d{2}-[A-Za-z0-9_-]{16,})\b/);
   if (anthropicMatch) {
     creds.push({
       id: newId('cred'),
       type: 'api_key',
-      username: 'Anthropic API Key',
-      secret: anthropicMatch[0],
-      domain: target,
-      target,
+      username: 'Anthropic Claude API Key',
+      secret: anthropicMatch[1],
+      domain,
+      target: domain,
       source: 'anthropic',
       discoveredAt: now,
       secretCaptured: true,
       notes: 'Anthropic Claude API Key'
     });
   }
-  const openaiMatch = combined.match(/sk-[A-Za-z0-9_-]{20,}/);
+  const openaiMatch = combined.match(/\b(sk-[A-Za-z0-9_-]{24,})\b/);
   if (openaiMatch && !anthropicMatch) {
     creds.push({
       id: newId('cred'),
       type: 'api_key',
       username: 'OpenAI API Key',
-      secret: openaiMatch[0],
-      domain: target,
-      target,
+      secret: openaiMatch[1],
+      domain,
+      target: domain,
       source: 'openai',
       discoveredAt: now,
       secretCaptured: true,
@@ -1071,69 +1163,97 @@ function extractCredentialsFromText(text: string, target = 'unknown', source = '
     });
   }
 
-  // 7. Session Cookies
-  const cookieMatch = combined.match(/Cookie:\s*([a-zA-Z0-9_-]+)=?([^\s;]+)?|wsc_bounxupuser_session/i);
+  // 7. REAL Session / Auth Cookies with genuine tokens (>= 8 chars, not placeholder)
+  const cookieMatch = combined.match(/(?:Set-Cookie|Cookie):\s*([a-zA-Z0-9_-]{3,40})=([a-zA-Z0-9%_-]{8,128})/i) ||
+                      combined.match(/\b(wsc_bounxupuser_session|PHPSESSID|connect\.sid|JSESSIONID)=([a-zA-Z0-9%_-]{8,128})\b/i);
   if (cookieMatch) {
-    const cName = cookieMatch[1] || 'wsc_bounxupuser_session';
-    const cVal = cookieMatch[2] || '[session_token]';
-    creds.push({
-      id: newId('cred'),
-      type: 'session',
-      username: cName,
-      secret: cVal,
-      domain: target,
-      target,
-      source: 'cookie_analysis',
-      discoveredAt: now,
-      secretCaptured: true,
-      notes: 'Captured Session / Auth Cookie'
-    });
+    const cName = cookieMatch[1];
+    const cVal = cookieMatch[2];
+    if (cVal && cVal !== '[session_token]' && cVal.length >= 8 && !cVal.includes('undefined')) {
+      creds.push({
+        id: newId('cred'),
+        type: 'session',
+        username: `Cookie: ${cName}`,
+        secret: cVal,
+        domain,
+        target: domain,
+        source: 'cookie_analysis',
+        discoveredAt: now,
+        secretCaptured: true,
+        notes: `Captured Auth Cookie (${cName})`
+      });
+    }
   }
 
   // 8. JWT Tokens
-  const jwtMatch = combined.match(/eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/=]*/);
+  const jwtMatch = combined.match(/\b(eyJ[A-Za-z0-9-_]{10,}\.eyJ[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_.+/=]{10,})\b/);
   if (jwtMatch) {
     creds.push({
       id: newId('cred'),
       type: 'token',
-      username: 'JWT Auth Token',
-      secret: jwtMatch[0],
-      domain: target,
-      target,
+      username: 'JWT Bearer Token',
+      secret: jwtMatch[1],
+      domain,
+      target: domain,
       source: 'jwt_detector',
       discoveredAt: now,
       secretCaptured: true,
-      notes: 'JSON Web Token'
+      notes: 'JSON Web Token (Bearer Auth)'
     });
   }
 
   // 9. Generic API Key Field
-  const genericApiKeyMatch = combined.match(/api[_-]?key["\s]*[:=]["\s]*["']?([A-Za-z0-9\-_]{16,})["']?/i);
+  const genericApiKeyMatch = combined.match(/(?:api[_-]?key|access[_-]?token|auth[_-]?token)["'\s]*[:=]["'\s]*([A-Za-z0-9\-_]{16,64})["']?/i);
   if (genericApiKeyMatch && !creds.some(c => c.type === 'api_key')) {
-    creds.push({
-      id: newId('cred'),
-      type: 'api_key',
-      username: 'API Key',
-      secret: genericApiKeyMatch[1],
-      domain: target,
-      target,
-      source: source || 'api_key_detector',
-      discoveredAt: now,
-      secretCaptured: true,
-      notes: 'Generic API Key'
-    });
+    const keyVal = genericApiKeyMatch[1];
+    if (keyVal && !['[redacted]', 'true', 'false', 'undefined', 'null'].includes(keyVal.toLowerCase())) {
+      creds.push({
+        id: newId('cred'),
+        type: 'api_key',
+        username: 'API Key',
+        secret: keyVal,
+        domain,
+        target: domain,
+        source: source || 'api_key_detector',
+        discoveredAt: now,
+        secretCaptured: true,
+        notes: 'API Key / Access Token'
+      });
+    }
   }
 
   return creds;
 }
 
+function cleanNonsenseCredentials(): void {
+  for (const [id, c] of credentialsLedger.entries()) {
+    const d = (c.domain || c.target || '').toLowerCase();
+    const u = (c.username || '').toLowerCase();
+    const s = (c.secret || '').toLowerCase();
+    const isGarbageDomain = d === 'document.cookie' || d === 'unknown' || /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(d);
+    const isGarbageSecret = !s || s === '[redacted]' || s === '[session_token]' || s === 'undefined' || s === 'null';
+    const isGarbageSession = c.type === 'session' && (u === 'session' || u === 'phpsessid' || s.length < 8);
+    const isGarbageFlag = c.type === 'flag' && !s.includes('{');
+    if (isGarbageDomain || isGarbageSecret || isGarbageSession || isGarbageFlag) {
+      credentialsLedger.delete(id);
+    }
+  }
+}
+
 function recordCredentialToLedger(cred: Partial<CredentialRecord>): void {
-  const username = cred.username || 'unknown';
-  const domain = cred.domain || cred.target || 'unknown';
+  const secret = (cred.secret || '').trim();
+  if (!secret || secret === '[redacted]' || secret === '[session_token]' || secret === 'undefined') {
+    return;
+  }
+  const username = (cred.username || 'credential').trim();
+  const domain = (cred.domain || cred.target || 'target-system').trim();
+  if (domain === 'document.cookie' || domain === 'unknown' || /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(domain)) {
+    return;
+  }
   const type = cred.type || 'password';
-  const key = `${type}::${username}::${domain}`.toLowerCase();
+  const key = `${type}::${username}::${secret}::${domain}`.toLowerCase();
   for (const existing of credentialsLedger.values()) {
-    const exKey = `${existing.type}::${existing.username}::${existing.domain || existing.target || ''}`.toLowerCase();
+    const exKey = `${existing.type}::${existing.username}::${existing.secret}::${existing.domain || existing.target || ''}`.toLowerCase();
     if (exKey === key) return;
   }
   const id = cred.id || newId('cred');
@@ -1141,7 +1261,7 @@ function recordCredentialToLedger(cred: Partial<CredentialRecord>): void {
     id,
     type,
     username,
-    secret: cred.secret || '[redacted]',
+    secret,
     domain,
     target: cred.target || domain,
     source: cred.source || 'scanner',
@@ -1155,6 +1275,7 @@ function recordCredentialToLedger(cred: Partial<CredentialRecord>): void {
 }
 
 function reindexCredentialsFromLedgers(): void {
+  cleanNonsenseCredentials();
   for (const f of findingsLedger.values()) {
     const text = (f.claim || '') + ' ' + (f.impact || '') + ' ' + (f.recommendedFix || '');
     const found = extractCredentialsFromText(text, f.target, 'finding', f.title);
@@ -1165,6 +1286,7 @@ function reindexCredentialsFromLedgers(): void {
     const found = extractCredentialsFromText(text, e.uri || 'unknown', e.source || 'evidence', e.title);
     for (const c of found) recordCredentialToLedger(c);
   }
+  cleanNonsenseCredentials();
 }
 
 /**
@@ -1697,7 +1819,8 @@ function buildStateSnapshot(): Record<string, unknown> {
 }
 
 async function persistState(reason = 'state.updated'): Promise<void> {
-  const snapshot = redactSecrets(buildStateSnapshot()) as Record<string, unknown>;
+  const rawSnapshot = buildStateSnapshot();
+  const snapshot = redactSecrets(rawSnapshot) as Record<string, unknown>;
   // Supabase (database memory/storage): the same redacted snapshot is upserted as a
   // single 'latest' row — best-effort, never blocks the request path.
   await persistSupabaseState(snapshot, reason).catch(error => {
@@ -1707,7 +1830,8 @@ async function persistState(reason = 'state.updated'): Promise<void> {
   const file = stateFilePath();
   if (!file) return;
   await mkdir(stateRoot(), { recursive: true });
-  await writeFile(file, JSON.stringify({ ...snapshot, reason }, null, 2));
+  const localSnapshot = { ...snapshot, credentialsLedger: rawSnapshot.credentialsLedger, reason };
+  await writeFile(file, JSON.stringify(localSnapshot, null, 2));
 }
 
 // Debounced full-snapshot writer. persistState re-serializes the ENTIRE (growing) snapshot,
@@ -8850,20 +8974,47 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
     return key;
   };
   const live = (cmd ? cmd.vault.getAllFindings().map((f) => ({ ...f, target: resolveAddr(f.targetId) })) : []);
-  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
-  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'vault',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
+  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'cell',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
 
   const ledgerCreds = Array.from(credentialsLedger.values()).map(c => ({
     id: c.id,
     type: c.type,
     username: c.username,
+    secret: c.secret,
     domain: c.domain || c.target,
     target: c.target || c.domain,
     source: c.source,
     discoveredAt: c.discoveredAt,
     validatedAt: c.validatedAt,
     privilegeLevel: c.privilegeLevel,
-    secretCaptured: true,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
     notes: c.notes,
   }));
 
@@ -8871,7 +9022,7 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
   const dedupedCreds: any[] = [];
   const seenCreds = new Set<string>();
   for (const c of allCreds) {
-    const k = `${c.type}::${c.username || ''}::${c.domain || c.target || ''}`.toLowerCase();
+    const k = `${c.type}::${c.username || ''}::${c.secret || ''}::${c.domain || c.target || ''}`.toLowerCase();
     if (!seenCreds.has(k)) {
       seenCreds.add(k);
       dedupedCreds.push(c);
@@ -8935,26 +9086,53 @@ app.get('/api/credentials', (_req: Request, res: Response) => {
     } catch { /* ignore target resolution error */ }
     return key;
   };
-  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
-  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({ ...redactCredential(c), target: resolveAddr(c.targetId) })) : [];
+  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'vault',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
+  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'cell',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
   const ledgerCreds = Array.from(credentialsLedger.values()).map(c => ({
     id: c.id,
     type: c.type,
     username: c.username,
+    secret: c.secret,
     domain: c.domain || c.target,
     target: c.target || c.domain,
     source: c.source,
     discoveredAt: c.discoveredAt,
     validatedAt: c.validatedAt,
     privilegeLevel: c.privilegeLevel,
-    secretCaptured: true,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
     notes: c.notes,
   }));
   const allCreds = [...ledgerCreds, ...vaultCreds, ...cellCreds];
   const dedupedCreds: any[] = [];
   const seenCreds = new Set<string>();
   for (const c of allCreds) {
-    const k = `${c.type}::${c.username || ''}::${c.domain || c.target || ''}`.toLowerCase();
+    const k = `${c.type}::${c.username || ''}::${c.secret || ''}::${c.domain || c.target || ''}`.toLowerCase();
     if (!seenCreds.has(k)) {
       seenCreds.add(k);
       dedupedCreds.push(c);
