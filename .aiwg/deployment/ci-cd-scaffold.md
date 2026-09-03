@@ -66,14 +66,20 @@ N/A for a transactional application database. Local configuration migrations are
 
 ## 10. Verification and Validation
 
-The current pipeline runs dependency installation, lint, typecheck, tests, coverage, doctor, claim verification, anti-fitting, provenance, prompt audit, and smoke checks. Release verification additionally confirms the actual packaged artifact starts, the local health route responds, interface documentation matches behavior, and sensitive/ignored corpora are absent.
+The pipeline intentionally has two gates. Pull requests run dependency
+installation, lint, typecheck, the deterministic test suite, doctor, and a 50%
+changed-executable-line coverage floor. Release tags rerun the complete
+per-file coverage contract plus claim verification, anti-fitting, provenance,
+prompt, smoke, build, dependency-audit, and package-manifest checks. The tested
+tag is archived once as a ZIP, checksum-verified, and bound to a retained
+Sigstore provenance bundle.
 
 Proposed additions:
 
 1. SDLC artifact/citation/traceability conformance.
 2. Cross-document maturity consistency.
 3. Network-adapter scope/approval/credential/timeout inventory completeness.
-4. Release artifact checksums/signatures and SBOM according to an approved supply-chain threat model.
+4. CycloneDX SBOM generation bound to the source ZIP.
 
 ## 11. Rollback and Contingency
 

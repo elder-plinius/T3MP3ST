@@ -53,12 +53,10 @@ least 50% coverage; documentation-only and metadata-only changes may mark this
 not applicable with a reason. Trust-boundary, scope, evidence, provider,
 installation, and release changes also need the focused checks for that risk.
 
-Before opening a PR:
+Before opening a PR, run the same correctness gate used by CI:
 
 ```bash
-npm run typecheck
-npm test
-npm run doctor
+npm run test:pr
 ```
 
 For changes that affect claims, run modes, agent/tool execution, target scope,
@@ -84,9 +82,11 @@ unrelated provider/config churn, benchmark fixture removals, provenance doc
 removals, or safety-test removals. If the branch has drifted, recreate it from
 current `main` and reapply only the intended change.
 
-Maintainers run `npm run test:release`, `npm audit --audit-level=high`, and the
-package dry run against the exact release commit before publishing. A green PR
-gate is necessary for review and merge, but it is not release certification.
+Maintainers run `npm run test:release` and `npm audit --audit-level=high` against
+the exact release tag before publishing. The tag workflow creates one
+deterministic source ZIP, verifies it, records SHA-256 checksums, and retains a
+Sigstore provenance bundle. A green PR gate is necessary for review and merge,
+but it is not release certification.
 
 Do not include secrets, private tracker content, unlicensed corpora, or
 uncoordinated vulnerability details. Use the disclosure channel in

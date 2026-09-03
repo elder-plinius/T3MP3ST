@@ -78,12 +78,14 @@ degrade gracefully — they never fail the core run.
   ```
 - Tag the release only after Sections 1–2 are green.
 - Push the `v*` tag and wait for the tag workflow. It reruns
-  `npm run test:release`, the high-severity dependency audit, and the package
-  dry run against the exact tag, then retains the tested `.tgz`, its manifest,
-  and `SHA256SUMS` as workflow artifacts.
-- Inspect `pack-result.json`: only the allowlisted runtime, scripts, tools,
-  documentation, examples, and package metadata may ship. Workspace notes,
-  tests, AIWG/provider deployment internals, secrets, and local artifacts are
-  release blockers.
-- Publish the retained, checksum-matched package artifact. Do not rebuild a
-  different archive from another checkout after certification.
+  `npm run test:release`, the high-severity dependency audit, and package dry
+  run against the exact tag. It then creates one deterministic
+  `T3MP3ST-<sha>.zip` directly from that tested Git object.
+- The workflow extracts that ZIP into a clean temporary directory, performs a
+  locked install and build, and invokes the packaged CLI help path before the
+  archive can be retained.
+- Verify `release-evidence/source-zip-check.txt`, `SHA256SUMS`, and the retained
+  Sigstore provenance bundle. Workspace notes, secrets, ignored files, and
+  local artifacts cannot enter a `git archive` snapshot.
+- Publish the retained, checksum-matched ZIP. Do not rebuild a different
+  archive from another checkout after certification.

@@ -6732,9 +6732,22 @@ app.post('/api/operators/prompt', (req: Request, res: Response): void => {
     return;
   }
   setOperatorOverride(archetype as OperatorArchetype, override);
-  broadcastEvent('operator:prompt_updated', { archetype, hasPrompt: override.systemPrompt !== undefined, hasParams: !!override.params });
+  const application = getTempestCommand()?.cell.refreshOperatorProfiles(archetype as OperatorArchetype) || {
+    policy: 'idle-now-active-next-task' as const,
+    revision: listOperatorPrompts().find(o => o.archetype === archetype)?.revision || 0,
+    appliedOperatorIds: [],
+    deferredOperatorIds: [],
+    futureSpawns: true as const,
+  };
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
-  res.json({ ok: true, archetype, operator: updated });
+  broadcastEvent('operator:prompt_updated', {
+    archetype,
+    hasPrompt: override.systemPrompt !== undefined,
+    hasParams: !!override.params,
+    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
+    application,
+  });
+  res.json({ ok: true, archetype, operator: updated, application });
 });
 
 app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
@@ -6744,9 +6757,21 @@ app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
     return;
   }
   resetOperatorOverride(archetype as OperatorArchetype);
-  broadcastEvent('operator:prompt_updated', { archetype, reset: true });
+  const application = getTempestCommand()?.cell.refreshOperatorProfiles(archetype as OperatorArchetype) || {
+    policy: 'idle-now-active-next-task' as const,
+    revision: listOperatorPrompts().find(o => o.archetype === archetype)?.revision || 0,
+    appliedOperatorIds: [],
+    deferredOperatorIds: [],
+    futureSpawns: true as const,
+  };
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
-  res.json({ ok: true, archetype, operator: updated });
+  broadcastEvent('operator:prompt_updated', {
+    archetype,
+    reset: true,
+    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
+    application,
+  });
+  res.json({ ok: true, archetype, operator: updated, application });
 });
 
 app.post('/api/operators/spawn', (req: Request, res: Response): void => {
