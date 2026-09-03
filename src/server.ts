@@ -7687,6 +7687,17 @@ import {
   scaffoldAttackGraph, validateAttackGraph, attackGraphReconPrompt, familyPhases,
   ATTACK_GRAPH_SCHEMA, type AttackGraph,
 } from './recon/attack-graph.js';
+import { handleCorrelationApi } from './threat-intel/correlation.js';
+
+/**
+ * POST /api/recon/correlate-cves — correlate observed technology names with an
+ * already-ingested KEV snapshot and optional EPSS snapshot. This endpoint does
+ * not fetch remote data and returns candidates, never verified findings.
+ */
+app.post('/api/recon/correlate-cves', (req: Request, res: Response): void => {
+  const result = handleCorrelationApi(req.body);
+  res.status(result.status).json(result.body);
+});
 
 /**
  * POST /api/attack-graph — get an attack graph for a target.
