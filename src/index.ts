@@ -1645,4 +1645,5 @@ export default createTempest;
 export * from './threat-intel/feed.js';
 export * from './threat-intel/correlation.js';
 export * from './llm/tool-call-boundary.js';
+export * from './evidence/retest.js';
 export * from './llm/context-compression.js';
