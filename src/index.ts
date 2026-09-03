@@ -1648,4 +1648,6 @@ export * from './llm/tool-call-boundary.js';
 export * from './evidence/retest.js';
 export * from './deception/honeytokens.js';
 export * from './integrations/alerts.js';
+export * from './persistence/supabase.js';
+export * from './persistence/migrations.js';
 export * from './llm/context-compression.js';
