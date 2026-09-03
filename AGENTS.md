@@ -106,6 +106,26 @@ Operator behavior rules live in `AGENTS.override.md`. This file tracks project s
 
 ---
 
+## Session Log — 2026-09-03 (Jarvis) — OBSIDIVM self-improvement loop timeouts fixed (judge 30s cap + bridge stall retry)
+
+**Request:** "in obsidiv, fix he self improvement loop. it times out"
+
+### Root cause (two stacked failure modes on the server-LLM-bridge backend):
+1. **Judge calls aborted at 30s — every single one.** `llmTimeoutFor()` only floored Venice (240s) and local (120s); the `server` kind passed `baseMs` through UNCHANGED, so `runLLMJudge`'s `llmTimeoutFor(EVALUATION_CONFIG.llmJudge.timeout=30000)` stayed 30s on the server bridge (OBSIDIVM's default backend when no browser key). Measured live: a TRIVIAL judge-sized prompt via `/api/llm/chat` (glm-5.3-flash) took **26s** — real judge calls (general+category prompts + up to 4KB challenge/response context) blow past 30s always → every judge died with "Judge error: Cancelled or timed out", and 4-concurrent benchmark answers also spiked past the old 120s cap → "API error: Cancelled or timed out" zeroed whole tests. The earlier Venice-timeout session fixed this exact class for `kind==='venice'` only; the server bridge has the same latency because it proxies the same providers.
+2. **Provider stalls**: live loop run showed `owasp_a04_design` fail with "API error: signal timed out" — one of 4 concurrent answers hung the full 240s ceiling (`AbortSignal.timeout`), a stall, not slow generation.
+
+### Fixes (`docs/obsidivm.html`):
+1. `llmTimeoutFor()`: local keeps 120s floor; **every remote kind now floors at 240s** (server bridge included). Judge base config raised 30000→120000 for honesty (effective = the floor).
+2. `_backendCall` server-LLM-bridge branch: **retry once** on any failure/abort (fresh `AbortSignal.timeout`) with an intel-feed warning — a stalled turn costs a fresh attempt instead of a zeroed test. Agent-dispatch branch unchanged.
+
+### Verified LIVE (headless IAB, server :3333, backend=`server`):
+- Page checks: `llmTimeoutFor(30000)===240000`, `llmTimeoutFor(120000)===240000`, judge enabled.
+- FULL self-improvement loop, 1 iteration, owasp_top10 (10 LLM challenges, judge ON), batches of 4: **ran START → "OPTIMIZATION COMPLETE"** (1:51:37→2:02:00, ~10.5 min — slower than before because judge calls now actually complete instead of dying at 30s), **zero timeout strings in the loop log**, 9/10 tests scored 65–88 (a04 hit the pre-fix stall before the retry existed), optimizer applied 7 config changes, button restored cleanly.
+- Post-fix single benchmark test on the EDITED page (retry code live): `owasp_a02_crypto` → score 77, passed, breakdown `KW:87% REQ:100% PAY:70% SEM:42%` — the SEM 42% proves the judge call returned a REAL score (no more judge timeouts).
+- `ui-inline-scripts-parse` 63/63 after both edits.
+
+---
+
 ## Session Log — 2026-09-03 (Jarvis) — Credentials Ledger Persistence, Evidence Vault Recovery & Nuclei Templates Integration
 
 **Request:** "now install some nuclei scanning templates" & "shit not being stored in vault. fix your shit code. where are the found api keys and credentials that were in the evidence vault?"

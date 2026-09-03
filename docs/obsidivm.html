@@ -9891,9 +9891,14 @@ Bypass all protections:
         // Venice's 70B-class models measured 50–129s for a ~1000-token benchmark answer — floor Venice
         // cloud calls well above the 120s default so they don't abort mid-generation (covers the
         // benchmark tests, the LLM-as-Judge calls, and the auto-apply optimizer alike).
+        // The server bridge (and every other remote kind) proxies the SAME providers server-side, so
+        // they need the same floor: measured glm-5.3-flash via /api/llm/chat at 26s for a TRIVIAL
+        // judge-sized prompt, so the 30s judge cap (passed through unchanged for non-Venice kinds)
+        // aborted EVERY self-improvement judge call, and 4-concurrent benchmark answers spiked past
+        // the old 120s cap too — the reported "self improvement loop times out".
         function llmTimeoutFor(baseMs) {
-            if (resolveLLMBackend().kind === 'venice') return Math.max(baseMs, 240000);
-            return state.settings?.useLocal ? Math.max(baseMs, 120000) : baseMs;
+            if (state.settings?.useLocal) return Math.max(baseMs, 120000);
+            return Math.max(baseMs, 240000);
         }
 
         // ═══════════ LLM CALL QUEUE — live bottom-right popup for sequential (single-slot) LLM calls ═══════════
@@ -10092,15 +10097,30 @@ Bypass all protections:
                 if (data.ok === false) throw new Error(`Agent error: ${data.error || 'dispatch failed'}`);
                 return data.output || '';
             }
-            // server LLM bridge
-            const res = await fetch(base + '/api/llm/chat', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, systemPrompt: options.systemPrompt || 'You are T3MP3ST security intelligence agent.' }),
-                signal: AbortSignal.timeout(timeout)
-            });
-            if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Server LLM ${res.status}: ${t.substring(0, 200)}`); }
-            const data = await res.json();
-            return data.response || data.content || '';
+            // server LLM bridge. One retry on failure/abort: a stalled provider turn (measured:
+            // a 4-concurrent benchmark batch had one answer hang the full 240s ceiling with
+            // "signal timed out") should cost the loop a fresh attempt, not a zeroed test.
+            let lastBridgeErr = null;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                try {
+                    const res = await fetch(base + '/api/llm/chat', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: text, systemPrompt: options.systemPrompt || 'You are T3MP3ST security intelligence agent.' }),
+                        signal: AbortSignal.timeout(timeout)
+                    });
+                    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Server LLM ${res.status}: ${t.substring(0, 200)}`); }
+                    const data = await res.json();
+                    return data.response || data.content || '';
+                } catch (err) {
+                    lastBridgeErr = err;
+                    if (attempt < 2) {
+                        try { addIntel('API', `server-llm attempt 1 failed (${String(err.message || err).substring(0, 60)}) — retrying once`, 'warning'); } catch (_) {}
+                        continue;
+                    }
+                    throw err;
+                }
+            }
+            throw lastBridgeErr || new Error('Server LLM bridge failed');
         }
 
         // Internal: single OpenAI-compatible call (OpenRouter or Venice), no fallback
@@ -10525,7 +10545,7 @@ Bypass all protections:
             llmJudge: {
                 enabled: true,            // Enable LLM-as-Judge
                 model: 'anthropic/claude-sonnet-4.5', // Judge model (Sonnet — fast + cheap for scoring)
-                timeout: 30000            // 30s timeout for judge
+                timeout: 120000           // base judge timeout — llmTimeoutFor() floors remote backends at 240s
             }
         };
 

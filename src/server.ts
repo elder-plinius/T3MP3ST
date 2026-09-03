@@ -38,7 +38,6 @@ import type { OperatorArchetype, LLMProvider, FallbackEntry } from './types/inde
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveRepoSourceForAnalysis, RepoCloneError, RepoPathError } from './recon/whitebox.js';
 import { initGrammars } from './recon/ts-grammars.js';
-import { redactCredential } from './evidence/index.js';
 import { SploitusClient } from './tools/sploitus.js';
 import { RapidResponseEngine, RAPID_RESPONSE_CATALOG } from './tools/rapid-response.js';
 import { TripwireManager, type TripwireTriggerEvent } from './tools/tripwires.js';
