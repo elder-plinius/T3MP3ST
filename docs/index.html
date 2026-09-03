@@ -7,6 +7,7 @@
     <title>T3MP3ST - Command & Control Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="cve-vault.css" rel="stylesheet">
+    <script src="app-shell.js"></script>
     <script>
         // Apply the saved theme before first paint (no flash of default theme).
         try { var _t3mpTheme = localStorage.getItem('t3mp3st_theme'); if (_t3mpTheme && _t3mpTheme !== 'storm') document.documentElement.setAttribute('data-theme', _t3mpTheme); } catch (e) {}
@@ -3493,7 +3494,7 @@
                 <div class="nav-item" data-page="evidence">
                     <span class="icon">🔐</span> Evidence Vault
                 </div>
-                <div class="nav-item" data-page="cve-vault">
+                <div class="nav-item" data-page="cve-vault" data-shell-module="true">
                     <span class="icon">🛡️</span> CVE Vault
                 </div>
 
@@ -6053,6 +6054,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                     <div class="card" id="cveVaultApp" aria-labelledby="cveVaultTitle" aria-busy="false">
                         <div class="card-header"><h2 class="card-title" id="cveVaultTitle">CVE Vault</h2></div>
                         <p>Search CISA KEV with optional FIRST EPSS context. Matches are candidates, not proof that an observed version is vulnerable.</p>
+                        <p class="cve-vault-readiness" data-shell-readiness data-state="checking" role="status" aria-live="polite">Checking server readiness…</p>
                         <form class="cve-vault-controls">
                             <label>Vendor or product <input data-vault-query required maxlength="200" autocomplete="off" placeholder="e.g. Apache HTTP Server"></label>
                             <label>Filter <select data-vault-filter><option value="all">All</option><option value="epss">Has EPSS</option><option value="fresh">Current feeds</option><option value="stale">Stale feeds</option></select></label>
@@ -6162,7 +6164,9 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                         text.style.color = '#ffaa00';
                         text.textContent = 'Standalone Mode';
                     }
-                    return { status: 'standalone', message: 'Direct LLM mode — no API server needed' };
+                    const standalone = { status: 'standalone', message: 'Direct LLM mode — no API server needed' };
+                    window.T3MP3STShell.updateReadiness(standalone);
+                    return standalone;
                 }
 
                 try {
@@ -6200,6 +6204,7 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                         }
                     }
 
+                    window.T3MP3STShell.updateReadiness(data);
                     return data;
                 } catch (e) {
                     this.connected = false;
@@ -6218,7 +6223,9 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                             text.style.color = '#ffaa00';
                             text.textContent = 'Standalone Mode';
                         }
-                        return { status: 'standalone', message: 'Direct LLM mode — configure API URL in Settings to connect' };
+                        const standalone = { status: 'standalone', message: 'Direct LLM mode — configure API URL in Settings to connect' };
+                        window.T3MP3STShell.updateReadiness(standalone);
+                        return standalone;
                     }
 
                     // Update UI indicator
@@ -6230,7 +6237,9 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
                         text.textContent = 'Offline';
                     }
 
-                    return { status: 'offline', error: e.message };
+                    const offline = { status: 'offline', error: e.message };
+                    window.T3MP3STShell.updateReadiness(offline);
+                    return offline;
                 }
             },
 
@@ -7682,21 +7691,9 @@ Correlating findings across agents, identifying patterns, producing actionable i
         }, 4000);
 
         // Navigation
-        function navigateTo(page) {
-            document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === page));
-            document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
-            const titles = { warroom: 'War Room', 'live-scan': 'Live Scan', receipts: 'Scope Receipts', operators: 'Operatives', evidence: 'Evidence Vault', 'cve-vault': 'CVE Vault', arsenal: 'Arsenal', terminal: 'Terminal', benchmarks: 'Benchmarks', configs: 'Config Library', 'ctf-range': 'CTF Range', general: 'Op Admiral', selfimprove: 'Self-Improvement', settings: 'Settings', about: 'About' };
-            document.getElementById('pageTitle').textContent = titles[page] || 'War Room';
-            document.getElementById('sidebar').classList.remove('open');
-            if (page === 'live-scan') setTimeout(() => window.refreshLiveScanPage?.(), 50);
-            if (page === 'receipts') setTimeout(() => window.refreshReceiptsPage?.(), 50);
-            if (page === 'operators' && typeof window.loadOperativesRoster === 'function') setTimeout(window.loadOperativesRoster, 80);
-            if (page === 'evidence' && typeof window.hydrateFindings === 'function') setTimeout(window.hydrateFindings, 60);
-            if (page === 'selfimprove' && typeof window.renderSelfImprove === 'function') setTimeout(window.renderSelfImprove, 60);
-            if (page === 'settings' && typeof window.uacInit === 'function') setTimeout(window.uacInit, 40);
+        function navigateTo(page, options) {
+            return window.T3MP3STShell.navigate(page, options);
         }
-
-        document.querySelectorAll('.nav-item').forEach(i => i.addEventListener('click', () => navigateTo(i.dataset.page)));
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
 
@@ -22082,15 +22079,6 @@ Find and capture the flag. Show your methodology.`;
 
             toast('🗑️ CTF history cleared', 'warning');
         }
-
-        // Initialize CTF Range when navigating to the page
-        const originalNavigateTo = navigateTo;
-        navigateTo = function(page) {
-            originalNavigateTo(page);
-            if (page === 'ctf-range') {
-                initCtfRange();
-            }
-        };
 
         // ==================== SPECTRA - AI-POWERED RECONNAISSANCE ENGINE ====================
         /**
