@@ -1650,4 +1650,5 @@ export * from './deception/honeytokens.js';
 export * from './integrations/alerts.js';
 export * from './persistence/supabase.js';
 export * from './persistence/migrations.js';
+export * from './mission/recovery.js';
 export * from './llm/context-compression.js';
