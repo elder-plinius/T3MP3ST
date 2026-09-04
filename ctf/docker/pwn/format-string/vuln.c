@@ -21,6 +21,7 @@ static void handle_client(int client) {
     if (flag == NULL) flag = "T3MP3ST{f0rm4t_str1ng_wr1t3}";
 
     dprintf(client, "T3MP3ST format console\nmessage> ");
+    fflush(NULL);
     ssize_t received = read(client, input, sizeof(input) - 1);
     if (received <= 0) return;
     input[strcspn(input, "\r\n")] = '\0';
@@ -28,9 +29,12 @@ static void handle_client(int client) {
     /* Intentional vulnerability: user input is the format string. The exposed
        argument makes the write primitive stable across compiler builds. */
     dprintf(client, input, &authorized);
-    dprintf(client, "\n");
-    if (authorized == WRITE_TARGET) dprintf(client, "%s\n", flag);
-    else dprintf(client, "Access denied (%d).\n", authorized);
+    if (authorized == WRITE_TARGET) dprintf(client, "\n%s\n", flag);
+    else dprintf(client, "\nAccess denied (%d).\n", authorized);
+    /* dprintf caches in a per-fd stdio buffer; the 4919-byte space burst plus
+       verdict exceeds it, so the trailing flag can still be sitting unflushed.
+       Flush before the child closes the fd, or the flag is dropped mid-socket. */
+    fflush(NULL);
 }
 
 static int healthcheck(void) {
@@ -44,6 +48,7 @@ static int healthcheck(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--healthcheck") == 0) return healthcheck();
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) { dprintf(1, "format-string server 1.0 (issue #192)\n"); return 0; }
     signal(SIGCHLD, SIG_IGN);
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int reuse = 1;

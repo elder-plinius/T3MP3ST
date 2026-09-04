@@ -185,7 +185,7 @@
       },
       "binary": {
         "path": "/challenge/vuln",
-        "sha256_amd64": "TO_BE_RECORDED_AFTER_VERIFIED_BUILD",
+        "sha256_amd64": "b95ec16a92a92723a17e0b2d2fb54ea57e91084abea0b48a7b93c7d80c718518",
         "protections": {
           "nx": true,
           "pie": false,
@@ -195,7 +195,8 @@
       },
       "flag": {
         "format": "T3MP3ST{[a-zA-Z0-9_]+}",
-        "location": "CTF_FLAG"
+        "location": "process_env",
+        "value_env": "CTF_FLAG"
       },
       "tools_allowed": ["python3"],
       "time_limit_seconds": 600,

