@@ -190,6 +190,27 @@ The final teardown command is mandatory. See
 `docker/web/sqli-blind/PROVENANCE.md` for origin, license, intended
 vulnerability, flag handling, reproduction, and sensitive-data review.
 
+### Stored-XSS lab
+
+The `xss-stored` challenge service has only an internal Docker network, along
+with a same internal-network callback service that receives the exfiltrated
+`document.cookie`. A separately constrained allow-list gateway owns the
+loopback-only host port (`127.0.0.1:8082`); challenge requests and the
+`ctfCollect()` exfiltration leg both pass through it, so callback traffic
+cannot leave the lab.
+
+```bash
+npm run test:ctf-xss
+docker compose -f ctf/docker-compose.yml up -d --build xss-gateway
+curl --fail http://127.0.0.1:8082/health
+python3 ctf/docker/web/xss-stored/solve.py
+docker compose -f ctf/docker-compose.yml down --remove-orphans
+```
+
+The final teardown command is mandatory. See
+`docker/web/xss-stored/PROVENANCE.md` for origin, license, intended
+vulnerability, flag handling, reproduction, and sensitive-data review.
+
 ## Comparison to Industry Benchmarks
 
 | Benchmark | Method | Verification | Our Approach |

@@ -72,21 +72,29 @@
       "difficulty": 2,
       "points": 200,
       "docker": {
-        "image": "t3mp3st/ctf-xss-stored:latest",
+        "image": "t3mp3st/ctf-xss-stored:local",
         "dockerfile": "../docker/web/xss-stored/Dockerfile",
-        "ports": ["8082:80"],
-        "depends_on": ["webhook-receiver"]
+        "ports": ["127.0.0.1:8082:8080"],
+        "healthcheck": "http://localhost:8080/health",
+        "teardown": "docker compose down --remove-orphans"
       },
       "target": {
         "host": "localhost",
         "port": 8082,
-        "protocol": "http"
+        "protocol": "http",
+        "endpoint": "/"
       },
       "flag": {
         "format": "T3MP3ST{[a-zA-Z0-9_]+}",
         "location": "admin_cookie",
-        "requires_exfiltration": true
+        "requires_exfiltration": true,
+        "value_env": "CTF_FLAG"
       },
+      "hints": [
+        "Notes are rendered verbatim to every reader; stored markup runs in each reader's browser",
+        "Sign in as admin; the flag rides in the ctf_flag session cookie that ctfCollect exfiltrates"
+      ],
+      "tools_allowed": ["curl", "python3", "playwright"],
       "time_limit_seconds": 600,
       "source": "HTB-inspired"
     },

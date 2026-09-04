@@ -99,20 +99,94 @@ services:
       context: ./docker/web/xss-stored
       dockerfile: Dockerfile
     container_name: ctf_xss_stored
-    ports:
-      - "8082:80"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
     environment:
-      - CTF_FLAG=T3MP3ST{st0r3d_xss_c00k13_th3ft}
-      - WEBHOOK_URL=http://webhook-receiver:9999
+      - CTF_FLAG=T3MP3ST{st0r3d_xss_c00kie_th3ft}
+      - CALLBACK_BASE=
+      - CALLBACK_PATH=/cb
     depends_on:
-      - webhook-receiver
-    restart: unless-stopped
+      xss-callback:
+        condition: service_healthy
     networks:
-      - ctf-network
+      - xss-callback-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     labels:
       - "ctf.category=web_exploitation"
       - "ctf.difficulty=2"
       - "ctf.points=200"
+
+  xss-gateway:
+    build:
+      context: ./docker/web/xss-stored
+      dockerfile: Dockerfile
+    entrypoint: ["python", "proxy.py"]
+    depends_on:
+      xss-stored:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8082:8080"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.5
+    environment:
+      - UPSTREAM=http://xss-stored:8080
+      - CALLBACK=http://xss-callback:9999
+    networks:
+      - xss-callback-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  xss-callback:
+    build:
+      context: ./docker/web/xss-stored
+      dockerfile: Dockerfile
+    entrypoint: ["python", "-u", "callback.py"]
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 16
+    mem_limit: 128m
+    cpus: 0.5
+    environment:
+      - CALLBACK_PORT=9999
+      - CALLBACK_LOG=/tmp/xss-callback.log
+    networks:
+      - xss-callback-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://localhost:9999/health', timeout=2); r.read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   ssrf-metadata:
     build:
@@ -369,3 +443,7 @@ networks:
 
   sqli-blind-edge:
     driver: bridge
+
+  xss-callback-internal:
+    driver: bridge
+    internal: true
