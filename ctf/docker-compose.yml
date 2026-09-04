@@ -306,17 +306,34 @@ services:
       - "ctf.points=100"
 
   format-string:
+    image: t3mp3st/ctf-format-string:local
     build:
       context: ./docker/pwn/format-string
       dockerfile: Dockerfile
     container_name: ctf_format_string
     ports:
-      - "9002:9002"
+      - "127.0.0.1:9002:9002"
     environment:
-      - CTF_FLAG=T3MP3ST{f0rm4t_str1ng_g0t_wr1t3}
-    restart: unless-stopped
+      - CTF_FLAG=T3MP3ST{f0rm4t_str1ng_wr1t3}
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    user: "65532:65532"
     networks:
-      - ctf-network
+      - format-string-internal
+    healthcheck:
+      test: ["CMD", "/challenge/vuln", "--healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     labels:
       - "ctf.category=binary_exploitation"
       - "ctf.difficulty=2"
@@ -451,6 +468,10 @@ services:
 # ============================================================
 
 networks:
+  format-string-internal:
+    driver: bridge
+    internal: true
+
   ctf-network:
     driver: bridge
     name: ctf-network

@@ -233,6 +233,23 @@ The final teardown command is mandatory. See
 `docker/web/ssrf-metadata/PROVENANCE.md` for origin, license, intended
 vulnerability, flag handling, reproduction, and sensitive-data review.
 
+### Native format-string lab
+
+The `pwn_format_string` challenge builds committed C source with a
+digest-pinned GCC image and runs the resulting native binary as a non-root user
+on an internal network. Only TCP port `127.0.0.1:9002` is published.
+
+```bash
+npm run test:ctf-format-string
+npm run test:ctf-format-string:docker
+docker compose -f ctf/docker-compose.yml down --remove-orphans
+```
+
+The deterministic solution uses the intended `%n` format-string write and
+prints the synthetic flag. See `docker/pwn/format-string/PROVENANCE.md` for the
+compiler identity, build command, binary hash, protections, origin, license,
+and sensitive-data review.
+
 ## Comparison to Industry Benchmarks
 
 | Benchmark | Method | Verification | Our Approach |

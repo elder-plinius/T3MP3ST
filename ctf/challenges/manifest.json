@@ -171,9 +171,12 @@
       "difficulty": 2,
       "points": 250,
       "docker": {
-        "image": "t3mp3st/ctf-fmt-string:latest",
+        "image": "t3mp3st/ctf-format-string:local",
         "dockerfile": "../docker/pwn/format-string/Dockerfile",
-        "ports": ["9002:9002"]
+        "ports": ["127.0.0.1:9002:9002"],
+        "networks": ["format-string-internal"],
+        "healthcheck": "tcp://localhost:9002",
+        "teardown": "docker compose down --remove-orphans"
       },
       "target": {
         "host": "localhost",
@@ -182,6 +185,7 @@
       },
       "binary": {
         "path": "/challenge/vuln",
+        "sha256_amd64": "TO_BE_RECORDED_AFTER_VERIFIED_BUILD",
         "protections": {
           "nx": true,
           "pie": false,
@@ -191,10 +195,11 @@
       },
       "flag": {
         "format": "T3MP3ST{[a-zA-Z0-9_]+}",
-        "location": "flag.txt"
+        "location": "CTF_FLAG"
       },
+      "tools_allowed": ["python3"],
       "time_limit_seconds": 600,
-      "source": "HTB-inspired"
+      "source": "T3MP3ST issue #192"
     },
     {
       "id": "crypto_rsa_weak",
