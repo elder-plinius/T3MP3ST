@@ -22,7 +22,7 @@ import { createHash, randomUUID } from 'crypto';
 import { config, AVAILABLE_MODELS } from './config/index.js';
 import { loadSupabaseState, persistSupabaseState, bufferSupabaseEvent, flushSupabaseEvents } from './storage/supabase.js';
 import { resolveModels } from './config/provider-models.js';
-import { initProxyFromConfig, configureProxy, getProxyStatus, checkIp, invalidateIpCache } from './net/proxy.js';
+import { initProxyFromConfig, configureProxy, getProxyStatus, checkIp, invalidateIpCache, proxySubprocessEnv } from './net/proxy.js';
 import { redactString, redactLedgerText, redactSecrets } from './redact.js';
 import { LLMBackbone } from './llm/index.js';
 import { TempestCommand, isToolAvailable, findBinaryLocations } from './index.js';
@@ -607,7 +607,9 @@ async function executeCommand(command: string, timeout = 30000): Promise<ToolRes
     return { success: false, output: '', error: parsed.error, duration: 0 };
   }
   try {
-    const { stdout, stderr } = await execFileAsync(parsed.bin, parsed.args, { timeout, maxBuffer: 1024 * 1024 * 10 });
+    // Proxy env injection: without it subprocess CLIs (curl/nmap/dig/…) egress from the operator's
+    // real IP even while the SOCKS proxy is on — the undici dispatcher only covers Node's fetch.
+    const { stdout, stderr } = await execFileAsync(parsed.bin, parsed.args, { timeout, maxBuffer: 1024 * 1024 * 10, env: { ...process.env, ...proxySubprocessEnv() } });
     return { success: true, output: stdout || stderr, duration: Date.now() - startTime };
   } catch (error: any) {
     return { success: false, output: error.stdout || '', error: error.message, duration: Date.now() - startTime };

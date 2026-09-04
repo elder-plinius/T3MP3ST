@@ -106,6 +106,28 @@ Operator behavior rules live in `AGENTS.override.md`. This file tracks project s
 
 ---
 
+## Session Log — 2026-09-03 (Jarvis) — REAL IP LEAK closed: subprocess tools now honor the SOCKS proxy
+
+**Request:** "my public ip still being displayed. check socks proxy"
+
+### Diagnosis (measured live, server :3333):
+- The badge + server-side egress were CORRECT: proxy `socks5://***@127.0.0.1:1080` enabled, exit `31.59.20.176` (UAE/IPXO), `leak:false`, stable across repeated checks. The badge only ever renders the EXIT ip (direct IP appears only in tooltips/LEAK states).
+- **The real leak: `/api/tools/execute` curl to ifconfig.co returned the operator's REAL residential IP** (Brooklyn IPv6, AS6128 CABLE-NET-1, city+zip). Cause: the SOCKS proxy only rewires undici's global dispatcher **inside the Node process** — subprocess CLIs (curl/nmap/dig/nuclei/sqlmap/…) run on the OS network stack and never see it. Their outputs (with the real IP inside) land in scan results/evidence.
+
+### Fix — `proxySubprocessEnv()` (`src/net/proxy.ts`) + wiring:
+- New export: when the proxy is on, builds `socks5h://` env vars (`ALL_PROXY`/`all_proxy`/`HTTP_PROXY`/`HTTPS_PROXY` + lowercase, `NO_PROXY=localhost,127.0.0.1,::1`) so subprocesses tunnel through the same proxy. socks5h = remote DNS — **verified live that `socks5://` (local DNS) FAILS** with SOCKS reply 3 (local resolver answers with IPv6 the tunnel upstream can't reach), while `socks5h` exits correctly. Same scheme on ALL vars: curl prefers per-scheme env over ALL_PROXY, so a mixed scheme sent curl down the broken path.
+- Wired into `executeCommand()` (`src/server.ts` — covers `/api/tools/execute`, `/api/tools/recon` nmap/dig, and every command the agents run) and `runSubprocess()` (`src/arsenal/index.ts` — all external arsenal tools). WSL branch intentionally NOT injected (WSL2 can't reach Windows-host 127.0.0.1:1080 on Win10 — would break every WSL tool with conn-refused; proxychains4 in Kali is the follow-up).
+
+### Verified live:
+- curl tool → ifconfig.co: **now exits `31.59.20.176` (UAE)** — was the Brooklyn home IP before the fix.
+- Loopback bypass: curl to `http://localhost:8080/` (CTF container) still direct via NO_PROXY → HTTP 200.
+- `/api/net/ip` still `leak:false`; proxy suites (`proxy-local-bypass`, `proxy-warning-static`) pass; build emitted (4 pre-existing `Credential.notes` type errors in HEAD are the concurrent session's, type-level only).
+
+### Coverage notes / follow-ups:
+- Go CLIs (nuclei/httpx/subfinder) honor HTTPS_PROXY incl. socks5h via golang.org/x/net httpproxy. Tools with NO proxy-env support (raw-socket scanners, nmap deep scans) still need TUN-mode system proxy (client-side) or proxychains4 (WSL). nmap's `-x`-class flags are already blocked by DANGEROUS_EXTERNAL_FLAGS so tools can't override the env.
+
+---
+
 ## Session Log — 2026-09-03 (Jarvis) — OBSIDIVM self-improvement loop timeouts fixed (judge 30s cap + bridge stall retry)
 
 **Request:** "in obsidiv, fix he self improvement loop. it times out"

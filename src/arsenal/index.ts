@@ -28,6 +28,7 @@ import type {
 } from '../types/index.js';
 import { ToolError, ToolErrorCategory } from '../types/index.js';
 import { validateToolArgs, buildJsonSchema, assertSchemaDepth } from '../validation/index.js';
+import { proxySubprocessEnv } from '../net/proxy.js';
 
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -3485,15 +3486,21 @@ export async function runSubprocess(
   if (process.platform === 'win32') {
     const loc = await findBinaryLocation(command);
     if (loc.inWsl && loc.distro) {
+      // NOTE: proxy env is intentionally NOT injected here — WSL2 cannot reach a Windows-host
+      // SOCKS client on 127.0.0.1:1080 (no mirrored networking on Win10), so the vars would only
+      // break every WSL tool with connection-refused. WSL-side coverage is a proxychains4 follow-up.
       execCmd = 'wsl.exe';
       execArgs = ['-d', loc.distro, '-e', command, ...args];
     }
   }
 
   try {
+    // Proxy env injection (host binaries): without it subprocess CLIs egress from the operator's
+    // real IP even while the SOCKS proxy is on — the undici dispatcher only covers Node's fetch.
     const { stdout, stderr } = await execFileAsync(execCmd, execArgs, {
       timeout,
       maxBuffer: maxOutput,
+      env: { ...process.env, ...proxySubprocessEnv() },
     });
     return { stdout, stderr, exitCode: 0 };
   } catch (error: unknown) {

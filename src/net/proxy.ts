@@ -228,6 +228,35 @@ export function getProxyStatus(): ProxyStatus {
 }
 
 /**
+ * Env vars that make SUBPROCESS tools (curl, wget, git, httpie, python-requests, …) honor the
+ * SOCKS proxy. The undici global dispatcher only covers Node's own `fetch` — arsenal CLIs run on
+ * the OS network stack and otherwise leak the operator's real IP to targets (verified live:
+ * `/api/tools/execute` curl egressed from the real residential IP while `/api/net/ip` showed the
+ * proxy exit). `socks5h` keeps DNS inside the tunnel; loopback is exempt so lab targets and the
+ * proxy client itself stay direct. Empty object when the proxy is off.
+ */
+export function proxySubprocessEnv(): Record<string, string> {
+  if (!enabled || !currentUrl) return {};
+  let socks5h: string;
+  try {
+    const u = new URL(currentUrl);
+    u.protocol = 'socks5h:'; // remote DNS — verified live: local-resolved IPs (IPv6) get SOCKS reply 3 from the tunnel upstream
+    socks5h = u.toString();
+  } catch {
+    return {};
+  }
+  const noProxy = 'localhost,127.0.0.1,::1';
+  // Same scheme on every var: curl prefers the per-scheme env over ALL_PROXY, so a scheme
+  // mismatch would send curl down the local-DNS path that breaks above.
+  return {
+    ALL_PROXY: socks5h, all_proxy: socks5h,
+    HTTP_PROXY: socks5h, http_proxy: socks5h,
+    HTTPS_PROXY: socks5h, https_proxy: socks5h,
+    NO_PROXY: noProxy, no_proxy: noProxy,
+  };
+}
+
+/**
  * Read the persisted/env proxy config (TEMPEST_PROXY_URL or saved settings) and
  * install it. Safe to call at startup; a bad/missing URL just leaves us direct.
  * Returns the effective status so the boot log can report it.
