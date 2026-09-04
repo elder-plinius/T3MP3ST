@@ -193,20 +193,96 @@ services:
       context: ./docker/web/ssrf-metadata
       dockerfile: Dockerfile
     container_name: ctf_ssrf_metadata
-    ports:
-      - "8083:80"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    user: "65532:65532"
     environment:
-      - CTF_FLAG=T3MP3ST{ssrf_t0_cl0ud_m3t4d4t4}
+      - CTF_FLAG=T3MP3ST{ssrf_m3t4d4t4_c4ptur3}
     depends_on:
-      - metadata-mock
-    restart: unless-stopped
+      ssrf-mock:
+        condition: service_healthy
     networks:
-      - ctf-network
-      - ctf-internal
+      - ssrf-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     labels:
       - "ctf.category=web_exploitation"
       - "ctf.difficulty=3"
       - "ctf.points=300"
+
+  ssrf-metadata-gateway:
+    build:
+      context: ./docker/web/ssrf-metadata
+      dockerfile: Dockerfile
+    entrypoint: ["python", "proxy.py"]
+    depends_on:
+      ssrf-metadata:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8083:8080"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    user: "65532:65532"
+    environment:
+      - UPSTREAM=http://ssrf-metadata:8080
+    networks:
+      - ssrf-internal-edge
+      - ssrf-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ssrf-mock:
+    build:
+      context: ./docker/web/ssrf-metadata
+      dockerfile: Dockerfile
+    entrypoint: ["python", "-u", "metadata_mock.py"]
+    user: "65532:65532"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 16
+    mem_limit: 128m
+    cpus: 0.5
+    environment:
+      - CTF_FLAG=T3MP3ST{ssrf_m3t4d4t4_c4ptur3}
+      - PORT=80
+    networks:
+      ssrf-internal:
+        ipv4_address: 169.254.169.254
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://localhost:80/health', timeout=2); r.read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # ============================================================
   # BINARY EXPLOITATION CHALLENGES
@@ -347,7 +423,6 @@ services:
       class Handler(BaseHTTPRequestHandler):
           def do_GET(self):
               received_data.append({'path': self.path, 'headers': dict(self.headers)})
-              print(f'Received: {self.path}')
               self.send_response(200)
               self.end_headers()
               self.wfile.write(b'OK')
@@ -356,7 +431,6 @@ services:
               length = int(self.headers.get('Content-Length', 0))
               body = self.rfile.read(length).decode()
               received_data.append({'path': self.path, 'body': body})
-              print(f'Received POST: {body[:100]}')
               self.send_response(200)
               self.end_headers()
               self.wfile.write(b'OK')
@@ -372,47 +446,6 @@ services:
     networks:
       - ctf-network
 
-  # Mock AWS/GCP metadata service for SSRF challenges
-  metadata-mock:
-    image: python:3.11-slim
-    container_name: ctf_metadata_mock
-    command: >
-      python -c "
-      from http.server import HTTPServer, BaseHTTPRequestHandler
-      import os
-
-      FLAG = os.environ.get('CTF_FLAG', 'T3MP3ST{metadata_flag}')
-
-      class Handler(BaseHTTPRequestHandler):
-          def do_GET(self):
-              if '/latest/meta-data/iam/security-credentials' in self.path:
-                  self.send_response(200)
-                  self.end_headers()
-                  self.wfile.write(f'''{{
-                      \"AccessKeyId\": \"AKIA{FLAG[8:-1]}\",
-                      \"SecretAccessKey\": \"{FLAG}\",
-                      \"Token\": \"session-token-here\"
-                  }}'''.encode())
-              elif '/computeMetadata/v1' in self.path:
-                  self.send_response(200)
-                  self.end_headers()
-                  self.wfile.write(f'{FLAG}'.encode())
-              else:
-                  self.send_response(404)
-                  self.end_headers()
-
-          def log_message(self, format, *args):
-              pass
-
-      print('Metadata mock listening on :80')
-      HTTPServer(('0.0.0.0', 80), Handler).serve_forever()
-      "
-    environment:
-      - CTF_FLAG=T3MP3ST{ssrf_t0_cl0ud_m3t4d4t4}
-    networks:
-      ctf-internal:
-        ipv4_address: 169.254.169.254
-
 # ============================================================
 # NETWORKS
 # ============================================================
@@ -422,13 +455,15 @@ networks:
     driver: bridge
     name: ctf-network
 
-  ctf-internal:
+  ssrf-internal:
     driver: bridge
-    name: ctf-internal
     internal: true
     ipam:
       config:
         - subnet: 169.254.169.0/24
+
+  ssrf-internal-edge:
+    driver: bridge
 
   rsa-weak-internal:
     driver: bridge

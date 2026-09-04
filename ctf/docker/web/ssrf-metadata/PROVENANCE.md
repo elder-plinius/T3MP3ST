@@ -1,0 +1,11 @@
+# SSRF-to-metadata challenge provenance
+
+- Origin: implemented for T3MP3ST issue #191 after decomposition of proposal #163.
+- License: AGPL-3.0-or-later, matching the repository.
+- Intended vulnerability: the `/fetch` handler dereferences the caller-supplied URL server-side with no host allow-list. From the internal-only challenge network that lets the mock metadata service at 169.254.169.254:80 be read via the IAM security-credentials path (where the flag rides as the AccessKeyId) while every external link-local or production endpoint is egress-denied.
+- Flag handling: `T3MP3ST{ssrf_m3t4d4t4_c4ptur3}` is a committed synthetic lab constant served by the mock on an isolated `internal: true` network with no host port; a correct SSRF retrieval through `/fetch` returns it, and the solver asserts equivalence plus the external egress-deny.
+- Reproduction: `python3 ctf/docker/web/ssrf-metadata/solve.py` must print the flag.
+- Rollback: delete `docker/web/ssrf-metadata/`, the `ssrf-metadata`, `ssrf-metadata-gateway`, and `ssrf-mock` compose services (the `ssrf-internal` plus `ssrf-internal-edge` networks), the `web_ssrf_metadata` manifest entry, and `scripts/test-ctf-ssrf.mjs`; the lab leaves no host state, volumes, or external network.
+- Sensitive-data review: the AccessKeyId, secret, session token, and flag are visibly synthetic committed constants (AKIA + `ssrf_m3t4d4t4_c4ptur3` upper-cased). No acquired data, production secret, key, credential, or user identifier is present; no host credential or production-data mount exists, and the 169.254.169.254 the lab uses is the mock on its own `internal: true` bridge, not a real cloud endpoint.
+- Container trust: the Dockerfile pins the same official Python multi-platform OCI index digest as the sibling labs. There are no package-manager or third-party runtime dependencies (stdlib only), so there are no external packages to hash-lock. The challenge service has only an internal network; a separately constrained allow-list gateway owns the loopback host port, and the metadata mock is reachable only from the same internal bridge. The compose file carries all resource limits, `read_only`, `cap_drop: ALL`, `no-new-privileges`, and a non-root (65532) runtime.
+- Verification date: 2026-09-03.

@@ -66,6 +66,7 @@
     "test:ctf-rsa": "node scripts/test-ctf-rsa-weak.mjs",
     "test:ctf-sqli-blind": "node scripts/test-ctf-sqli-blind.mjs",
     "test:ctf-xss": "node scripts/test-ctf-xss-stored.mjs",
+    "test:ctf-ssrf": "node scripts/test-ctf-ssrf.mjs",
     "tools:check": "bash scripts/check-tools-image.sh",
     "tools:build": "bash tools/build.sh",
     "test:tools-dockerfile": "node scripts/test-tools-dockerfile.mjs",
