@@ -400,29 +400,6 @@ services:
       retries: 10
 
   # ============================================================
-  # FORENSICS CHALLENGES
-  # ============================================================
-
-  memory-forensics:
-    build:
-      context: ./docker/forensics/memory-dump
-      dockerfile: Dockerfile
-    container_name: ctf_memory_forensics
-    ports:
-      - "9201:80"
-    volumes:
-      - ./challenges/artifacts:/data:ro
-    environment:
-      - CTF_FLAG=T3MP3ST{v0l4t1l1ty_m3m0ry_dump}
-    restart: unless-stopped
-    networks:
-      - ctf-network
-    labels:
-      - "ctf.category=forensics"
-      - "ctf.difficulty=2"
-      - "ctf.points=200"
-
-  # ============================================================
   # INFRASTRUCTURE SERVICES
   # ============================================================
 

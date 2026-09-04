@@ -239,27 +239,26 @@
       "category": "forensics",
       "difficulty": 2,
       "points": 200,
-      "docker": {
-        "image": "t3mp3st/ctf-mem-forensics:latest",
-        "dockerfile": "../docker/forensics/memory-dump/Dockerfile",
-        "ports": ["9201:80"],
-        "volumes": ["/challenges/memdump.raw:/data/memdump.raw:ro"]
-      },
-      "target": {
-        "host": "localhost",
-        "port": 9201,
-        "protocol": "http"
+      "delivery": {
+        "mode": "offline_artifact",
+        "network": "none",
+        "teardown": "temporary fixture removed by smoke test"
       },
       "artifacts": {
-        "memory_dump": "/data/memdump.raw",
-        "profile": "Win10x64_19041"
+        "memory_dump": "./artifacts/memory-forensics/memdump.raw",
+        "generator": "./artifacts/memory-forensics/generate.py",
+        "solution": "./artifacts/memory-forensics/solve.py",
+        "profile": "T3MP3ST-SYNTH-MEM-v1",
+        "sha256": "848ecc439d705d06866408fbd9b99760a6f3554c4ade75431de566a2821624b7",
+        "size_bytes": 32768
       },
       "flag": {
         "format": "T3MP3ST{[a-zA-Z0-9_]+}",
-        "location": "lsass_credentials"
+        "location": "synthetic_process_environment"
       },
+      "tools_allowed": ["python3"],
       "time_limit_seconds": 900,
-      "source": "Cybench-inspired"
+      "source": "T3MP3ST issue #194"
     }
   ],
   "infrastructure": {

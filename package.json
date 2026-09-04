@@ -69,6 +69,7 @@
     "test:ctf-ssrf": "node scripts/test-ctf-ssrf.mjs",
     "test:ctf-format-string": "node scripts/test-ctf-format-string.mjs",
     "test:ctf-format-string:docker": "node scripts/test-ctf-format-string.mjs --docker",
+    "test:ctf-memory": "node scripts/test-ctf-memory-forensics.mjs",
     "tools:check": "bash scripts/check-tools-image.sh",
     "tools:build": "bash tools/build.sh",
     "test:tools-dockerfile": "node scripts/test-tools-dockerfile.mjs",

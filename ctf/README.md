@@ -250,6 +250,26 @@ prints the synthetic flag. See `docker/pwn/format-string/PROVENANCE.md` for the
 compiler identity, build command, binary hash, protections, origin, license,
 and sensitive-data review.
 
+### Synthetic memory-forensics fixture
+
+The `forensics_memory_dump` challenge is a compact offline artifact rather than
+a captured operating-system image or network service. Its committed Python
+generator produces the same 32768-byte fixture on every run from fixed offsets,
+specified encodings, and SHA-256-derived noise. All embedded process, user,
+password, and flag values are visibly synthetic.
+
+```bash
+npm run test:ctf-memory
+python3 ctf/challenges/artifacts/memory-forensics/solve.py
+```
+
+The smoke test verifies the committed hash and size, regenerates the fixture in
+a temporary directory, compares it byte-for-byte, runs the deterministic
+solution, and removes the temporary copy. No container, port, external tool, or
+host mount is used. See
+`challenges/artifacts/memory-forensics/PROVENANCE.md` for the format, generator
+and tool versions, reproduction command, license, and sensitive-data review.
+
 ## Comparison to Industry Benchmarks
 
 | Benchmark | Method | Verification | Our Approach |
