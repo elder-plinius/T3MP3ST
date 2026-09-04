@@ -466,7 +466,7 @@ export const TOOL_ADAPTERS: ToolAdapter[] = [
     evidenceKinds: ['dependency_vulnerability'],
     outputFormats: ['json'],
     installHint: 'brew install osv-scanner',
-    commandHint: 'osv-scanner --format json --recursive .',
+    commandHint: 'osv-scanner scan source --format json --recursive .',
     parserStatus: 'planned',
     notes: 'Uses OSV vulnerability data; note network dependency in evidence.',
   },

@@ -297,7 +297,7 @@ describe('former KNOWN_DEBT adapters run real invocations (feroxbuster / osv-sca
   it('osv-scanner scans a source tree recursively with JSON output', async () => {
     const deps = makeDeps();
     await mint('osv-scanner', deps).handler(ctx({ path: 'src' }));
-    expect(deps.spawns[0]).toEqual(['--format', 'json', '--recursive', 'src']);
+    expect(deps.spawns[0]).toEqual(['scan', 'source', '--format', 'json', '--recursive', 'src']);
   });
 
   it('osv-scanner degrades gracefully without a target (networked adapter, no spawn)', async () => {
@@ -334,6 +334,22 @@ describe('former KNOWN_DEBT adapters run real invocations (feroxbuster / osv-sca
     expect(result.success).toBe(false);
     expect(deps.spawns.length).toBe(0);
   });
+
+  it.each([
+    ['yara rules', 'yara', { file: 'a.bin', rules: '--help' }],
+    ['yara remote rules', 'yara', { file: 'a.bin', rules: 'https://example.test/rules.yar' }],
+    ['hashcat mode', 'hashcat', { file: 'hashes.txt', mode: '--help', wordlist: 'wl.txt' }],
+    ['hashcat wordlist', 'hashcat', { file: 'hashes.txt', mode: '0', wordlist: '--stdout' }],
+    ['hashcat remote wordlist', 'hashcat', { file: 'hashes.txt', mode: '0', wordlist: 'https://example.test/wl.txt' }],
+    ['apktool traversal output', 'apktool', { file: 'app.apk', output: '../outside' }],
+    ['apktool absolute output', 'apktool', { file: 'app.apk', output: '/tmp/outside' }],
+    ['apktool option output', 'apktool', { file: 'app.apk', output: '--help' }],
+  ] as const)('%s is rejected before spawn', async (_label, id, parameters) => {
+    const deps = makeDeps();
+    const result = await mint(id, deps).handler(ctx(parameters));
+    expect(result.success).toBe(false);
+    expect(deps.spawns).toHaveLength(0);
+  });
 });
 
 describe('reverse / mobile / smart-contract analysers run a real invocation (not `<binary> <file>`)', () => {
@@ -348,7 +364,7 @@ describe('reverse / mobile / smart-contract analysers run a real invocation (not
     ['exiftool', { file: 'a.out' }, ['-json', 'a.out']],
     ['mythril', { file: 'Vault.sol' }, ['analyze', 'Vault.sol', '-o', 'json']],
     ['apkleaks', { file: 'app.apk' }, ['-f', 'app.apk']],
-    ['apktool', { file: 'app.apk' }, ['d', '-f', 'app.apk', '-o', 'apk-out']],
+    ['apktool', { file: 'app.apk' }, ['d', 'app.apk', '-o', 'apk-out']],
     ['slither', { path: 'contracts' }, ['contracts', '--json', '-']],
     ['mobsfscan', { path: 'app-src' }, ['--json', 'app-src']],
   ];
