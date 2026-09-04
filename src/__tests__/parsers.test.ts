@@ -92,6 +92,38 @@ describe('parseToolOutput — field mapping per scanner', () => {
     expect(users?.details).toContain('admin');
     expect(users?.details).toContain('editor');
   });
+
+  it('wpscan: redacts target-derived secrets from every emitted field', () => {
+    const secret = 'wpscan-secret-value';
+    const f = parseToolOutput('wpscan', JSON.stringify({
+      interesting_findings: [{
+        to_s: `Authenticated endpoint https://operator:${secret}@target.test/?token=${secret}`,
+        url: `https://operator:${secret}@target.test/?token=${secret}`,
+        found_by: `token=${secret}`,
+      }],
+      users: { [`token=${secret}`]: {} },
+    }));
+    const serialized = JSON.stringify(f);
+    expect(f).toHaveLength(2);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain('operator:');
+    expect(serialized).toContain('[redacted]');
+  });
+
+  it('wpscan: normalizes valid CVEs and discards malformed references', () => {
+    const f = parseToolOutput('wpscan', JSON.stringify({
+      plugins: {
+        example: {
+          vulnerabilities: [{
+            title: 'Mixed reference quality',
+            references: { cve: ['2020-11516', 'cve-2021-44228', 'not-a-cve', '2024-12'] },
+          }],
+        },
+      },
+    }));
+    expect(f).toHaveLength(1);
+    expect(f[0].cve).toEqual(['CVE-2020-11516', 'CVE-2021-44228']);
+  });
 });
 
 describe('parseToolOutput — honesty contract (never fabricate, never throw)', () => {

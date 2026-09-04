@@ -547,15 +547,18 @@ function parseWpscan(raw: string): ToolFinding[] {
     if (!Array.isArray(vulns)) return;
     for (const item of vulns) {
       const v = asObj(item);
-      const title = String(v.title ?? '');
+      const title = redactString(String(v.title ?? ''));
       if (!title) continue;
       const refs = asObj(v.references);
       const f: ToolFinding = {
-        title: `${component}: ${title}`,
+        title: redactString(`${component}: ${title}`),
         severity,
-        details: truncate(asStrArray(refs.url).join(' ') || title),
+        details: truncate(redactString(asStrArray(refs.url).join(' ') || title)),
       };
-      const cves = asStrArray(refs.cve).map((c) => (/^CVE-/i.test(c) ? c : `CVE-${c}`));
+      const cves = asStrArray(refs.cve)
+        .map((c) => c.trim().toUpperCase())
+        .map((c) => (c.startsWith('CVE-') ? c : `CVE-${c}`))
+        .filter((c) => /^CVE-\d{4}-\d{4,}$/.test(c));
       if (cves.length) f.cve = cves;
       const fixed = String(v.fixed_in ?? '');
       if (fixed) f.remediation = `update ${component} to ${fixed}`;
@@ -575,14 +578,14 @@ function parseWpscan(raw: string): ToolFinding[] {
   if (Array.isArray(interesting)) {
     for (const item of interesting) {
       const o = asObj(item);
-      const label = String(o.to_s ?? o.url ?? '');
+      const label = redactString(String(o.to_s ?? o.url ?? ''));
       if (!label) continue;
       out.push({
         title: `wpscan: ${truncate(label, 80)}`,
         severity: 'info',
         details: [
           o.url && `url: ${redactString(String(o.url))}`,
-          o.found_by && `found_by: ${String(o.found_by)}`,
+          o.found_by && `found_by: ${redactString(String(o.found_by))}`,
           o.confidence !== undefined && `confidence: ${String(o.confidence)}`,
         ].filter(Boolean).join(' | '),
       });
@@ -593,7 +596,7 @@ function parseWpscan(raw: string): ToolFinding[] {
     out.push({
       title: `wpscan: ${users.length} user(s) enumerated`,
       severity: 'info',
-      details: `Usernames: ${users.join(', ')} — valid account names for password-policy review, not proof of compromise.`,
+      details: `Usernames: ${redactString(users.join(', '))} — valid account names for password-policy review, not proof of compromise.`,
     });
   }
   return out;
