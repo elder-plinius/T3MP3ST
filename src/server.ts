@@ -22,6 +22,7 @@ import { initProxyFromConfig, configureProxy, getProxyStatus, checkIp, invalidat
 import { redactString, redactLedgerText, redactSecrets } from './redact.js';
 import { LLMBackbone } from './llm/index.js';
 import { TempestCommand } from './index.js';
+import { resolveMissionLaunchConfig, resolveMissionStatus } from './mission/http-lifecycle.js';
 import { OpGeneral } from './general/index.js';
 import type { Directive } from './general/index.js';
 import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelection } from './agent/local-agents.js';
@@ -6406,15 +6407,12 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
   // SECURITY NOTE: apiKey is read from the request body (Authorization header is
   // preferred). Kept body-accepted for the same-origin UI; only reachable from
   // the local operator (loopback bind + origin guard). Header move is out of scope.
-  let missionLLMConfig: ReturnType<typeof resolveGeneralLLMConfig>;
-  try {
-    missionLLMConfig = baseUrl === undefined
-      ? resolveGeneralLLMConfig(provider, model, apiKey)
-      : resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
-  } catch {
-    res.status(400).json({ error: 'LLM backend not configured — configure a provider or connect a supported local agent' });
+  const launchConfig = resolveMissionLaunchConfig({ provider, model, apiKey, baseUrl }, resolveGeneralLLMConfig);
+  if (!launchConfig.ok) {
+    res.status(400).json({ error: launchConfig.error });
     return;
   }
+  const missionLLMConfig = launchConfig.config;
   const effectiveKey = missionLLMConfig.apiKey;
   if (providerNeedsApiKey(missionLLMConfig.provider) && !effectiveKey) {
     res.status(400).json({ error: 'API key required — pass apiKey, configure one on the server, or connect a supported local agent' });
@@ -6677,9 +6675,7 @@ app.get('/api/mission/status', (req: Request, res: Response) => {
   const status = cmd.getStatus();
   // A completed mission is no longer active. Resolve the caller's run explicitly so
   // terminal status cannot be confused with another mission or an external stop.
-  const mission = typeof req.query.missionId === 'string'
-    ? cmd.mission.getMission(req.query.missionId)
-    : cmd.mission.getActiveMission();
+  const mission = resolveMissionStatus(cmd.mission, req.query.missionId);
   const findings = cmd.vault.getAllFindings();
   const allOperators = cmd.cell.getAllOperators().map(op => op.getSummary());
 
