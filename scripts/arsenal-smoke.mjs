@@ -653,7 +653,7 @@ async function smokeToolsAndRuntime(context) {
   const approvedCommand = commandApproval.data.id
     ? await post('/api/tools/execute', { command: 'file package.json', target: 'local-host', approvalId: commandApproval.data.id })
     : { ok: false, data: {} };
-  record('Approved local command executes', approvedCommand.ok && approvedCommand.data.success === true && /JSON data/.test(approvedCommand.data.output || ''), (approvedCommand.data.output || approvedCommand.data.error || '').trim().slice(0, 120));
+  record('Approved local command executes', approvedCommand.ok && approvedCommand.data.success === true && /JSON (?:text )?data/.test(approvedCommand.data.output || ''), (approvedCommand.data.output || approvedCommand.data.error || '').trim().slice(0, 120));
 
   const invalidRecon = await post('/api/tools/recon', { target: '127.0.0.1;whoami', scan_type: 'quick' });
   record('Recon rejects unsupported target characters', invalidRecon.status === 400 && /unsupported/.test(invalidRecon.data.error || ''), summarizeError(invalidRecon));
@@ -682,7 +682,7 @@ async function smokeMissionAndGeneralControl() {
     targets: [{ host: '127.0.0.1' }],
     operators: ['recon', 'analyst'],
   });
-  record('Mission start requires configured key or supplied key', startNoKey.status === 400 && /API key required/.test(startNoKey.data.error || ''), summarizeError(startNoKey));
+  record('Mission start requires configured backend', startNoKey.status === 400 && /API key required|LLM backend not configured/.test(startNoKey.data.error || ''), summarizeError(startNoKey));
 
   const operators = await get('/api/operators/list');
   record('Operator list endpoint responds', operators.ok && Array.isArray(operators.data.operators), `${countItems(operators.data.operators)} operators`);

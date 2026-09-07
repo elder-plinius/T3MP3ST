@@ -70,8 +70,8 @@ jobs:
       - run: npm ci
       - name: Run release-grade test and evidence gates
         run: npm run test:release
-      - name: Reject high-severity dependency vulnerabilities
-        run: npm audit --audit-level=high
+      - name: Reject dependency vulnerabilities
+        run: npm audit --audit-level=low
       - name: Build deterministic source ZIP from tested tag
         run: |
           mkdir -p release release-evidence

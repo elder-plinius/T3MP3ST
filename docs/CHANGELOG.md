@@ -1,5 +1,19 @@
 # T3MP3ST Changelog
 
+## Unreleased — Source release readiness
+
+- Release certification now includes deterministic contract suites, a required
+  isolated local-server smoke run, and the documentation build. Dependency
+  certification rejects vulnerabilities at every severity.
+- Releases publish only the tested source ZIP and identify its commit and digest;
+  no package or binary publication is part of this checkpoint.
+- Mission controls wait for backend acknowledgements, retain recoverable stalled
+  states, and distinguish unavailable status from completion. Stop prevents new
+  scheduling; requests or tools already in flight may finish.
+- Unconfigured mission starts return an error instead of hanging. Explicit
+  configuration directories allow isolated verification without loading operator
+  settings. Compatible dependency updates remove the audit findings.
+
 ## 2026-05-28 — Cognitive v3 + Integrity Hardening
 
 A focused self-improvement pass on the Cybench harness, motivated by

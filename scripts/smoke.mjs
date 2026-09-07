@@ -13,6 +13,7 @@
 // it before a user does.
 //
 //   node scripts/smoke.mjs           # core + server probes (fast, deterministic)
+//   node scripts/smoke.mjs --require-server # fail if server probes cannot run
 //   node scripts/smoke.mjs --live    # also run the LLM intake probe (Admiral)
 //
 // Exit 0 = green · 1 = a trap is unguarded (real bug) · tiers auto-skip when a
@@ -29,8 +30,9 @@ import { lintDisclosure } from './lint-disclosure.mjs';
 import { honestyCheck, cvss31 } from './disclosure-gen.mjs';
 
 const PORT = process.env.T3MP3ST_PORT || 3333;
-const BASE = `http://localhost:${PORT}`;
+const BASE = (process.env.T3MP3ST_API_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const LIVE = process.argv.includes('--live');
+const REQUIRE_SERVER = process.argv.includes('--require-server');
 
 // tiny assert that throws with a clear message
 function expect(cond, msg) { if (!cond) throw new Error(msg); }
@@ -196,6 +198,9 @@ async function serverUp() {
 const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[1m', x: '\x1b[0m', t: '\x1b[36m' };
 async function main() {
   const up = await serverUp();
+  if (REQUIRE_SERVER && !up) {
+    throw new Error(`Required smoke server is unavailable at ${BASE}`);
+  }
   console.log(`\n${C.b}${C.t}████ t3mp3st · SOFT SMOKE TEST ████${C.x}`);
   console.log(`${C.d}the hardest single probe per category — if your agent would faceplant in a real workflow, this catches it.${C.x}`);
   console.log(`${C.d}server ${up ? C.g + 'UP' : C.y + 'DOWN'}${C.d} @ ${BASE}  ·  live LLM probe ${LIVE ? C.g + 'ON' : C.y + 'OFF (pass --live)'}${C.x}\n`);

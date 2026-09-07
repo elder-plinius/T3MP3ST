@@ -6638,73 +6638,76 @@ tempest.operators.<span class="function">spawn</span>(<span class="string">'scan
              * Stop the active mission
              */
             async stopMission() {
-                return T3MP3ST_API.post('/api/mission/stop', {});
+                return this.missionRequest('/api/mission/stop', 'POST');
             },
 
             /**
              * Pause the active mission
              */
             async pauseMission() {
-                return T3MP3ST_API.post('/api/mission/pause', {});
+                return this.missionRequest('/api/mission/pause', 'POST');
             },
 
             /**
              * Resume the active mission
              */
             async resumeMission() {
-                return T3MP3ST_API.post('/api/mission/resume', {});
+                return this.missionRequest('/api/mission/resume', 'POST');
             },
 
             /**
              * Get mission status from backend
              */
-            async getStatus() {
+            async missionRequest(endpoint, method = 'GET') {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 15000);
                 try {
-                    const res = await fetch(`${T3MP3ST_API.baseUrl}/api/mission/status`);
+                    const res = await fetch(`${T3MP3ST_API.baseUrl}${endpoint}`, {
+                        method, signal: controller.signal,
+                        ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: '{}' } : {})
+                    });
+                    if (!res.ok) throw new Error(`Mission request HTTP ${res.status}`);
                     return await res.json();
-                } catch {
-                    return { active: false };
+                } finally {
+                    clearTimeout(timer);
                 }
             },
 
-            /**
-             * Poll for mission status until complete
-             */
-            async pollUntilComplete(onUpdate, intervalMs = 3000) {
-                return new Promise((resolve) => {
-                    const poll = async () => {
-                        const status = await this.getStatus();
-                        if (onUpdate) onUpdate(status);
+            async getStatus(missionId) {
+                const query = missionId ? `?missionId=${encodeURIComponent(missionId)}` : '';
+                const status = await this.missionRequest(`/api/mission/status${query}`);
+                if (typeof status.active !== 'boolean') throw new Error('Invalid mission status');
+                return status;
+            },
 
-                        if (!status.active) {
-                            resolve(status);
-                            return;
+            // Stalls remain live and resumable. A failed status request is unknown, never completion.
+            async pollUntilComplete(onUpdate, intervalMs = 3000, run = missionLifecycle) {
+                while (missionRunning && missionLifecycle === run) {
+                    try {
+                        const status = await this.getStatus(run.missionId);
+                        if (!missionRunning || missionLifecycle !== run) return null;
+                        // A stop response and a status response can arrive in either order.
+                        if (!run.pending) {
+                            if (onUpdate) onUpdate(status);
+                            if (!status.active) return status;
+                            if (status.mission?.currentPhase) {
+                                const phaseMap = {
+                                    reconnaissance: 'recon', weaponization: 'scanning',
+                                    delivery: 'exploitation', exploitation: 'exploitation',
+                                    installation: 'post_exploitation', command_and_control: 'post_exploitation',
+                                    actions_on_objectives: 'exfiltration'
+                                };
+                                updateKillChain?.(phaseMap[status.mission.currentPhase] || status.mission.currentPhase, status.mission.progress || 50);
+                            }
                         }
-
-                        if (status.paused && status.stallReason) {
-                            resolve(status);
-                            return;
+                    } catch (err) {
+                        if (missionRunning && missionLifecycle === run && !run.pending && onUpdate) {
+                            onUpdate({ statusError: err.message || 'Status unavailable' });
                         }
-
-                        // Update kill chain from mission phase
-                        if (status.mission?.currentPhase) {
-                            const phaseMap = {
-                                'reconnaissance': 'recon',
-                                'weaponization': 'scanning',
-                                'delivery': 'exploitation',
-                                'exploitation': 'exploitation',
-                                'installation': 'post_exploitation',
-                                'command_and_control': 'post_exploitation',
-                                'actions_on_objectives': 'exfiltration'
-                            };
-                            const uiPhase = phaseMap[status.mission.currentPhase] || status.mission.currentPhase;
-                            updateKillChain?.(uiPhase, status.mission.progress || 50);
-                        }
-
-                        setTimeout(poll, intervalMs);
-                    };
-                    poll();
-                });
+                    }
+                    await new Promise(resolve => setTimeout(resolve, intervalMs));
+                }
+                return null;
             }
         };
 
@@ -8246,6 +8249,7 @@ o.id === 'coordinator' ? `1. MISSION_STATUS: Progress assessment
         // ========== MISSION CONTROL SYSTEM ==========
         // Unified mission state — single source of truth
         let missionRunning = false;
+        let missionLifecycle = { backend: false, starting: false, pending: null };
         let missionStartTime = null;
         let missionTimer = null;
 
@@ -13974,6 +13978,9 @@ Be specific and actionable.`;
 
             // Run full pipeline with handoffs - NOW WITH QUALITY GATING
             async runPipeline(target, options = {}) {
+                const cancelled = () => options.isCancelled?.() === true;
+                const stopped = () => ({ pipeline: [], cancelled: true });
+                if (cancelled()) return stopped();
                 MissionContext.reset();
                 MissionContext.targets.push(target);
 
@@ -13985,6 +13992,7 @@ Be specific and actionable.`;
                 let qualityMetrics = { approved: 0, revised: 0, rejected: 0, escalated: 0 };
 
                 for (let phaseIndex = 0; phaseIndex < this.phases.length; phaseIndex++) {
+                    if (cancelled()) return stopped();
                     const phase = this.phases[phaseIndex];
                     MissionContext.currentPhase = phase;
                     const agents = this.phaseAgents[phase].filter(a => state.operators.includes(a));
@@ -14029,11 +14037,13 @@ Be specific and actionable.`;
                             });
                         }
 
+                        if (cancelled()) return stopped();
                         // TASTEMAKER QUALITY GATE
                         if (config.useTastemaker) {
                             const output = phaseResult.response || phaseResult.merged || phaseResult.best || '';
                             const review = await Tastemaker.review(output, context, phase);
 
+                            if (cancelled()) return stopped();
                             phaseResult.qualityReview = review;
 
                             if (review.decision === 'APPROVE') {
@@ -14077,6 +14087,7 @@ Be specific and actionable.`;
                     // Extract findings and update context (now quality-assured)
                     await this.updateContextFromResponse(phase, phaseResult, config);
 
+                    if (cancelled()) return stopped();
                     const phaseResponse = phaseResult.response || phaseResult.merged || phaseResult.best || '';
                     results.push({
                         phase,
@@ -14109,6 +14120,7 @@ Be specific and actionable.`;
                         (phaseIndex + 1) % config.strategicReviewInterval === 0 &&
                         phaseIndex < this.phases.length - 1) {
                         const strategicReview = await Tastemaker.strategicReview(MissionContext);
+                        if (cancelled()) return stopped();
                         results.push({
                             phase: `${phase}_strategic_review`,
                             review: strategicReview,
@@ -14126,11 +14138,13 @@ Be specific and actionable.`;
 
                         if (fallback && config.allowFallbacks) {
                             const adaptiveStrategy = await ContingencyPlanner.generateAdaptiveStrategy(context);
+                            if (cancelled()) return stopped();
                             results.push({ phase: `${phase}_fallback`, strategy: adaptiveStrategy });
                         }
                     }
 
                     } catch (phaseErr) {
+                        if (cancelled()) return stopped();
                         // Phase failed — log it and continue to next phase
                         console.error(`[T3MP3ST] Phase ${phase} failed:`, phaseErr);
                         results.push({ phase, error: true, reason: phaseErr.message });
@@ -18219,6 +18233,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     if (ac) ac.style.display = 'block';
 
                     missionRunning = true;
+                    missionLifecycle = { backend: false, starting: false, pending: null };
                     const missionName = `${plan.codename} — ${plan.summary?.substring(0, 60) || 'Admiral Op'}`;
                     addIntel('ADMIRAL', `Operation LIVE — targeting ${plan.targets.length} targets (standalone)`, 'success');
                     toast(`Operation ${plan.codename} is LIVE`, 'success');
@@ -18251,6 +18266,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
                     // Switch to war room to watch the action
                     missionRunning = true;
+                    missionLifecycle = { backend: true, starting: false, pending: null };
                 }
             } catch (err) {
                 // Network failure fallback for execute
@@ -18259,6 +18275,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     const plan = generalPlanData;
                     const primaryTarget = plan.targets[0].address;
                     missionRunning = true;
+                    missionLifecycle = { backend: false, starting: false, pending: null };
                     try {
                         await _runClientSidePipeline(primaryTarget, `${plan.codename} — Standalone`);
                         return;
@@ -18395,6 +18412,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     // Launch the existing client-side pipeline
                     const missionName = `${plan.codename} — ${plan.summary?.substring(0, 60) || directive.substring(0, 60)}`;
                     missionRunning = true;
+                    missionLifecycle = { backend: false, starting: false, pending: null };
                     addIntel('ADMIRAL', `Operation ${plan.codename} is LIVE in full auto mode (standalone)`, 'success');
                     toast(`${plan.codename} — FULL AUTO ENGAGED`, 'success');
 
@@ -18407,6 +18425,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     addIntel('ADMIRAL', `Operation ${plan.codename} is LIVE in full auto mode`, 'success');
                     toast(`${plan.codename} — FULL AUTO ENGAGED`, 'success');
                     missionRunning = true;
+                    missionLifecycle = { backend: true, starting: false, pending: null };
                 }
             } catch (err) {
                 addIntel('ADMIRAL', `Full auto failed: ${err.message}`, 'danger');
@@ -18925,6 +18944,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
             // Set mission state
             missionRunning = true;
+            missionLifecycle = { backend: false, starting: false, pending: null };
             missionStartTime = Date.now();
 
             document.getElementById('cmdMissionName').textContent = missionName.toUpperCase();
@@ -19648,6 +19668,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             const missionName = document.getElementById('missionName')?.value || 'Operation ' + Date.now();
 
             missionRunning = true;
+            missionLifecycle = { backend: false, starting: false, pending: null };
             missionStartTime = Date.now();
 
             // Update War Room command header
@@ -19740,6 +19761,8 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                 }
 
                 try {
+                    missionLifecycle.backend = true;
+                    missionLifecycle.starting = true;
                     let result = await BackendDispatch.startMission(
                         missionName,
                         state.targets,
@@ -19789,6 +19812,8 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         throw new Error(result.error || 'Backend mission start failed');
                     }
 
+                    missionLifecycle.starting = false;
+                    missionLifecycle.missionId = result.missionId;
                     addIntel('COMMAND', `Backend mission launched: ${(result.operators || []).length} operators spawned`, 'success');
                     addMissionLog('success', `Backend: ${(result.operators || []).length} operators active`);
 
@@ -19800,14 +19825,24 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
                     // Poll for mission completion (SSE provides real-time updates, poll for completion detection)
                     const finalStatus = await BackendDispatch.pollUntilComplete((status) => {
+                        if (status.statusError) {
+                            document.getElementById('cmdMissionStatus').textContent = `Status unknown — ${status.statusError}; retrying`;
+                            return;
+                        }
+                        const pauseButton = document.getElementById('cmdPauseBtn');
+                        pauseButton.textContent = status.paused ? '▶' : '⏸';
+                        pauseButton.onclick = status.paused ? resumeMission : pauseMission;
                         if (status.paused && status.stallReason) {
                             const reason = status.stallReason;
                             document.getElementById('cmdMissionStatus').textContent = `Stalled — ${reason}`;
                             document.getElementById('cmdMissionStatus').style.color = '#ff6b6b';
-                            addMissionLog('error', reason);
-                            addIntel('ERROR', reason, 'danger');
                             return;
                         }
+                        if (status.paused) {
+                            document.getElementById('cmdMissionStatus').textContent = 'PAUSED';
+                            return;
+                        }
+                        document.getElementById('cmdMissionStatus').style.color = '#00ff88';
                         // Periodic status update
                         if (status.operators?.summary) {
                             const ops = status.operators.summary;
@@ -19824,9 +19859,10 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                         }
                     }, 3000);
 
-                    // Mission complete
-                    if (finalStatus.paused && finalStatus.stallReason) {
-                        throw new Error(finalStatus.stallReason);
+                    if (!finalStatus) return; // stopped locally; preserve the confirmed control outcome
+                    if (finalStatus.mission?.status !== 'completed') {
+                        completeMission('Backend stopped without confirmed mission completion');
+                        return;
                     }
                     const findingCount = finalStatus.findings?.length || 0;
                     completeMission(null);
@@ -19835,6 +19871,8 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     toast('Mission complete!', 'success');
 
                 } catch (err) {
+                    missionLifecycle.starting = false;
+                    missionLifecycle.backend = false;
                     const msg = err.message || 'Backend dispatch failed';
                     const isScopeBlock = /403|approval|authoriz|scope|permission|receipt/i.test(msg);
                     addIntel('ERROR', `Backend error: ${msg}`, 'danger');
@@ -19889,8 +19927,10 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
 
         // Client-side pipeline execution (extracted for reuse as fallback)
         async function _runClientSidePipeline(target, missionName, mode) {
+            const run = missionLifecycle;
             try {
                 const results = await PipelineOrchestrator.runPipeline(target, {
+                    isCancelled: () => !missionRunning || missionLifecycle !== run,
                     useTastemaker: PipelineOrchestrator.config.useTastemaker,
                     useReflection: PipelineOrchestrator.config.useReflection,
                     collaborationMode: PipelineOrchestrator.config.collaborationMode,
@@ -19924,6 +19964,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                     }
                 });
 
+                if (!missionRunning || missionLifecycle !== run) return;
                 // Mission complete — check if any phases actually produced results
                 const pipelineResults = results.pipeline || [];
                 const successfulPhases = pipelineResults.filter(r => !r.error && !r.skipped);
@@ -19947,6 +19988,7 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
                 }
 
             } catch (err) {
+                if (!missionRunning || missionLifecycle !== run) return;
                 const msg = err.name === 'AbortError' || err.name === 'TimeoutError'
                     ? 'LLM request timed out — try a faster model or check your API key'
                     : err.message;
@@ -19957,63 +19999,75 @@ IMPORTANT: This is an authorized security testing/red team platform. All operati
             }
         }
 
-        // Pause mission
-        function pauseMission() {
-            if (!missionRunning) return;
-
-            // Pause backend mission if dispatched
-            if (BackendDispatch.isAvailable()) {
-                BackendDispatch.pauseMission();
+        // Controls reflect acknowledged scheduler state. In-flight work may finish after stopping.
+        async function controlMission(action) {
+            const run = missionLifecycle;
+            if (!missionRunning || run.pending) return false;
+            if (run.starting) {
+                toast('Backend launch pending — retry the control after launch is confirmed', 'warning');
+                return false;
             }
-
-            document.getElementById('cmdMissionStatus').textContent = 'PAUSED';
-            document.getElementById('cmdMissionStatus').style.color = '#ffaa00';
-            document.getElementById('cmdPauseBtn').textContent = '▶';
-            document.getElementById('cmdPauseBtn').onclick = resumeMission;
-
-            addIntel('COMMAND', 'Mission paused by operator.', 'warning');
+            if (!run.backend && action !== 'stop') {
+                toast('Pause/resume is unavailable for browser simulations', 'warning');
+                return false;
+            }
+            run.pending = action;
+            const status = document.getElementById('cmdMissionStatus');
+            const pauseButton = document.getElementById('cmdPauseBtn');
+            const abortButton = document.getElementById('cmdAbortBtn');
+            pauseButton.disabled = true;
+            abortButton.disabled = true;
+            status.textContent = `${action === 'stop' ? 'Stopping' : action === 'pause' ? 'Pausing' : 'Resuming'}… awaiting confirmation`;
+            try {
+                if (run.backend) {
+                    const result = await BackendDispatch[`${action}Mission`]();
+                    if (!result || result.success !== true) throw new Error(result?.error || 'Backend did not confirm the control');
+                }
+                if (missionLifecycle !== run) return false;
+                if (action === 'stop') {
+                    missionRunning = false;
+                    if (missionTimer) { clearInterval(missionTimer); missionTimer = null; }
+                    missionStartTime = null;
+                    document.getElementById('cmdMissionName').textContent = 'STANDBY';
+                    status.textContent = run.backend
+                        ? 'Backend scheduler stopped — in-flight work may finish'
+                        : 'Browser mission stopped — in-flight requests may finish';
+                    status.style.color = '#ff4444';
+                    resetEngageUI();
+                } else {
+                    status.textContent = action === 'pause' ? 'PAUSED — in-flight work may finish' : 'Engaging...';
+                    status.style.color = action === 'pause' ? '#ffaa00' : '#00ff88';
+                    pauseButton.textContent = action === 'pause' ? '▶' : '⏸';
+                    pauseButton.onclick = action === 'pause' ? resumeMission : pauseMission;
+                }
+                addIntel('COMMAND', status.textContent, action === 'stop' ? 'warning' : 'info');
+                return true;
+            } catch (err) {
+                status.textContent = `${action} unconfirmed — ${err.message}; retry or check backend status`;
+                status.style.color = '#ff4444';
+                toast(status.textContent, 'error');
+                return false;
+            } finally {
+                run.pending = null;
+                pauseButton.disabled = false;
+                abortButton.disabled = false;
+            }
         }
 
-        // Resume mission
-        function resumeMission() {
-            // Resume backend mission if dispatched
-            if (BackendDispatch.isAvailable()) {
-                BackendDispatch.resumeMission();
-            }
+        async function pauseMission() { return controlMission('pause'); }
+        async function resumeMission() { return controlMission('resume'); }
 
-            document.getElementById('cmdMissionStatus').textContent = 'Engaging...';
-            document.getElementById('cmdMissionStatus').style.color = '#00ff88';
-            document.getElementById('cmdPauseBtn').textContent = '⏸';
-            document.getElementById('cmdPauseBtn').onclick = pauseMission;
-
-            addIntel('COMMAND', 'Mission resumed.', 'info');
-        }
-
-        // Abort mission
-        function abortMission(skipConfirm) {
-            // Even when nothing is actively running (e.g. an approval was just declined), the red X
-            // must still clear any leftover "ENGAGING…/LIVE probing" UI instead of being a no-op.
+        async function abortMission(skipConfirm) {
+            if (missionLifecycle.pending) return;
             if (!missionRunning) {
                 const n = document.getElementById('cmdMissionName'); if (n) n.textContent = 'STANDBY';
-                // Also clear the substatus, or the header reads STANDBY with a stale red
-                // "approval declined" line beneath it. Match the initial idle state.
                 const s = document.getElementById('cmdMissionStatus');
                 if (s) { s.textContent = 'Awaiting orders'; s.style.color = '#666'; }
                 resetEngageUI();
                 return;
             }
-            if (!skipConfirm && !confirm('Abort the current mission? All operator progress will be lost.')) return;
-            missionRunning = false;
-            if (missionTimer) { clearInterval(missionTimer); missionTimer = null; }
-
-            document.getElementById('cmdMissionName').textContent = 'STANDBY';
-            document.getElementById('cmdMissionStatus').textContent = 'Mission aborted';
-            document.getElementById('cmdMissionStatus').style.color = '#ff4444';
-            resetEngageUI();
-
-            addIntel('COMMAND', 'Mission aborted. All operators standing down.', 'danger');
-            addMissionLog('error', 'MISSION ABORTED BY OPERATOR');
-            toast('Mission aborted', 'warning');
+            if (!skipConfirm && !confirm('Stop the current mission scheduler? In-flight work may still finish.')) return;
+            return controlMission('stop');
         }
 
         // Update mission timer — updates both command header and mission log timers

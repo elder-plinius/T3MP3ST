@@ -7,7 +7,7 @@
 
 import Conf from 'conf';
 import { homedir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
@@ -722,11 +722,17 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
 class ConfigManager {
   private config: Conf<TempestSettings>;
   private envLoaded: boolean = false;
+  private configDirectory: string | undefined;
 
   constructor() {
+    this.configDirectory = process.env.T3MP3ST_CONFIG_DIR;
+    if (this.configDirectory !== undefined && !isAbsolute(this.configDirectory)) {
+      throw new Error('T3MP3ST_CONFIG_DIR must be an absolute path');
+    }
     this.config = new Conf<TempestSettings>({
       projectName: 't3mp3st',
       defaults: DEFAULT_SETTINGS,
+      ...(this.configDirectory ? { cwd: this.configDirectory } : {}),
     });
 
     const deepseek = this.config.get('deepseek');
@@ -750,7 +756,7 @@ class ConfigManager {
     // Load only T3MP3ST-owned/home env files. Do NOT read process.cwd()/.env:
     // operators often run T3MP3ST inside target repos, and importing that repo's
     // secrets would contaminate this process with unrelated credentials.
-    const envPaths = [
+    const envPaths = this.configDirectory ? [join(this.configDirectory, '.env')] : [
       join(homedir(), '.t3mp3st', '.env'),
       join(homedir(), '.env'),
     ];
