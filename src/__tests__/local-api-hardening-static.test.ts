@@ -27,7 +27,7 @@ describe('local API authorization hardening invariants', () => {
 
     expect(resolver).toContain('config.getLLMConfig()');
     expect(resolver).toContain('provider || defaultConfig.provider');
-    expect(missionRoute).toContain('resolveGeneralLLMConfig(provider, model, apiKey)');
+    expect(missionRoute).toContain('resolveMissionLaunchConfig({ provider, model, apiKey, baseUrl }, resolveGeneralLLMConfig)');
     expect(`${missionRoute}\n${generalRoutes}`).not.toMatch(/provider\s*=\s*['"]openrouter['"]/);
     expect(`${missionRoute}\n${generalRoutes}`).not.toMatch(/model\s*=\s*['"]anthropic\/claude-sonnet-4['"]/);
   });
