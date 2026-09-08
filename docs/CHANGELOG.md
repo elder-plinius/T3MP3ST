@@ -1,6 +1,6 @@
 # T3MP3ST Changelog
 
-## Unreleased — Source release readiness
+## 1.0.0 — 2026-09-08 — Certified source checkpoint
 
 - Release certification now includes deterministic contract suites, a required
   isolated local-server smoke run, and the documentation build. Dependency
