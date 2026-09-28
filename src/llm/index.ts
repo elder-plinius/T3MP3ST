@@ -9,6 +9,7 @@
  * - OpenAI (GPT models)
  * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
  * - Novita AI (OpenAI-compatible API serving open-source and frontier models)
+ * - Requesty (OpenAI-compatible LLM router serving hundreds of models)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -780,6 +781,20 @@ class NovitaAdapter extends OpenAIAdapter {
       return {
         valid: false,
         error: 'Novita AI API key is required. Set NOVITA_API_KEY. Docs: https://novita.ai/settings/key-management',
+      };
+    }
+    return { valid: true };
+  }
+}
+
+class RequestyAdapter extends OpenAIAdapter {
+  name = 'requesty';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'Requesty API key is required. Set REQUESTY_API_KEY. Get one at https://app.requesty.ai/api-keys',
       };
     }
     return { valid: true };
@@ -1698,6 +1713,8 @@ constructor(config: LLMConfig) {
         return new NanoGPTAdapter(config);
       case 'novita':
         return new NovitaAdapter(config); // Novita AI's native API is OpenAI-compatible
+      case 'requesty':
+        return new RequestyAdapter(config); // Requesty's router is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -2013,6 +2030,12 @@ export function createNanoGPTBackbone(apiKey?: string, model?: string): LLMBackb
 
 export function createNovitaBackbone(apiKey?: string, model?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('novita', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
+export function createRequestyBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('requesty', model);
   if (apiKey) llmConfig.apiKey = apiKey;
   return new LLMBackbone(llmConfig);
 }

@@ -577,7 +577,7 @@ async function openSettings(): Promise<void> {
           type: 'list',
           name: 'keyProvider',
           message: 'Which provider?',
-          choices: ['openrouter', 'venice', 'anthropic', 'openai', 'deepseek', 'huggingface'],
+          choices: ['openrouter', 'venice', 'anthropic', 'openai', 'deepseek', 'huggingface', 'requesty'],
         },
       ]);
       const { apiKey } = await inquirer.prompt([
