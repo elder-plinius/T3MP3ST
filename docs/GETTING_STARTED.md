@@ -45,6 +45,7 @@ export ANTHROPIC_API_KEY=...
 export OPENAI_API_KEY=...
 export DEEPSEEK_API_KEY=...
 export NOVITA_API_KEY=...         # third-party hosted OpenAI-compatible API
+export REQUESTY_API_KEY=...       # third-party hosted OpenAI-compatible router
 export LITELLM_BASE_URL=http://localhost:4000/v1
 export LITELLM_API_KEY=...        # only if your LiteLLM proxy requires one
 ```
@@ -54,6 +55,9 @@ request metadata needed to serve the request. For Novita, review the current
 [privacy policy](https://novita.ai/legal/privacy-policy) and
 [terms](https://novita.ai/legal/terms-of-service) before sending sensitive
 target data; T3MP3ST does not independently certify it for sensitive workloads.
+For Requesty, review the current [privacy policy](https://www.requesty.ai/privacy)
+and [terms](https://www.requesty.ai/terms); the EU endpoint is
+`https://router.eu.requesty.ai/v1`.
 
 Local/offline example with Ollama:
 
