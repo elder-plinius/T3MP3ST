@@ -75,6 +75,58 @@ describe('listProviderModels — OpenAI-compatible providers', () => {
   });
 });
 
+describe('listProviderModels: Requesty', () => {
+  it('lists managed policies first, then merges the /models catalog without duplicates', async () => {
+    const f = vi.fn(async (url: string, _init?: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => (url.endsWith('/models/managed')
+        ? { data: [{ id: 'claude-sonnet-5' }, { id: 'gpt-5-mini@eu' }] }
+        : { data: [{ id: 'openai/gpt-4o-mini' }, { id: 'claude-sonnet-5' }] }),
+    }));
+    const models = await listProviderModels('requesty', {
+      baseUrl: 'https://router.requesty.ai/v1',
+      apiKey: 'rqsty-test-key',
+      fetchImpl: f,
+    });
+
+    expect(models.map((m) => m.id)).toEqual(['claude-sonnet-5', 'gpt-5-mini@eu', 'openai/gpt-4o-mini']);
+    expect(f.mock.calls.map(([url]) => url)).toEqual([
+      'https://router.requesty.ai/v1/models/managed',
+      'https://router.requesty.ai/v1/models',
+    ]);
+    for (const [, init] of f.mock.calls) {
+      expect((init as { headers: Record<string, string>; signal?: AbortSignal }).headers.Authorization)
+        .toBe('Bearer rqsty-test-key');
+      expect((init as { signal?: AbortSignal }).signal).toBeTruthy();
+    }
+  });
+
+  it('defaults to the public Requesty router and lists keyless', async () => {
+    const f = fakeFetch({ data: [{ id: 'openai/gpt-4o-mini' }] });
+    const models = await listProviderModels('requesty', { fetchImpl: f });
+
+    expect(models.map((m) => m.id)).toEqual(['openai/gpt-4o-mini']);
+    expect(f.mock.calls[0][0]).toBe('https://router.requesty.ai/v1/models/managed');
+    expect((f.mock.calls[0][1] as { headers: Record<string, string> }).headers.Authorization).toBeUndefined();
+  });
+
+  it('keeps the catalog when the managed list fails and drops ids with control characters', async () => {
+    const f = vi.fn(async (url: string, _init?: unknown) => (url.endsWith('/models/managed')
+      ? { ok: false, status: 503, json: async () => ({}) }
+      : { ok: true, status: 200, json: async () => ({ data: [{ id: 'openai/gpt-4o-mini' }, { id: 'evil\u001b[31m' }] }) }));
+    const models = await listProviderModels('requesty', { baseUrl: 'https://router.eu.requesty.ai/v1/', fetchImpl: f });
+
+    expect(models.map((m) => m.id)).toEqual(['openai/gpt-4o-mini']);
+    expect(f.mock.calls[1][0]).toBe('https://router.eu.requesty.ai/v1/models');
+  });
+
+  it('throws when both Requesty lists fail so the route falls back to the static list', async () => {
+    const f = fakeFetch({}, false, 403);
+    await expect(listProviderModels('requesty', { apiKey: 'bad', fetchImpl: f })).rejects.toThrow(/HTTP 403/);
+  });
+});
+
 describe('listProviderModels — Anthropic wire', () => {
   it('GETs {baseUrl}/v1/models with x-api-key + anthropic-version headers', async () => {
     const f = fakeFetch({ data: [{ id: 'claude-opus-4-8' }, { id: 'claude-sonnet-4-5' }] });
