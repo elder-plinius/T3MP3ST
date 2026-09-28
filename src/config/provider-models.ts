@@ -19,12 +19,13 @@ type FetchLike = (
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const REQUESTY_BASE_URL = 'https://router.requesty.ai/v1';
 const DEFAULT_MODEL_LIST_TIMEOUT_MS = 15_000;
 
 // Pseudo-providers with no remote model list (CLI-driven or in-process).
 const NO_REMOTE_LIST = new Set(['codex', 'mock', 'local-agent']);
 const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'nanogpt', 'novita', 'local']);
-const DIRECT_REMOTE_LIST = new Set(['anthropic', 'openrouter']);
+const DIRECT_REMOTE_LIST = new Set(['anthropic', 'openrouter', 'requesty']);
 
 const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');
 
@@ -57,6 +58,48 @@ function parseModelList(body: unknown): ProviderModel[] {
   return models;
 }
 
+// Model ids are shown in the Settings panel; drop any carrying control or ANSI escape characters.
+const hasControlChars = (id: string): boolean =>
+  [...id].some((ch) => {
+    const code = ch.charCodeAt(0);
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+  });
+
+/**
+ * Requesty publishes curated managed policies (short ids such as `claude-sonnet-5`) at
+ * /models/managed and its full `vendor/model` catalog at /models. Fetch both independently
+ * (each with its own timeout) so one failing endpoint does not empty the list, managed first.
+ */
+async function listRequestyModels(
+  opts: { baseUrl?: string; apiKey?: string; timeoutMs?: number },
+  doFetch: FetchLike,
+): Promise<ProviderModel[]> {
+  const base = opts.baseUrl && opts.baseUrl.trim() ? stripTrailingSlash(opts.baseUrl) : REQUESTY_BASE_URL;
+  const headers: Record<string, string> = {};
+  if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
+  const errors: string[] = [];
+  const lists = await Promise.all(['models/managed', 'models'].map(async (path) => {
+    try {
+      const signal = timeoutSignal(opts.timeoutMs ?? DEFAULT_MODEL_LIST_TIMEOUT_MS);
+      const res = await doFetch(`${base}/${path}`, { headers, signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return parseModelList(await res.json());
+    } catch (e) {
+      errors.push(`/${path}: ${(e as Error).message}`);
+      return [];
+    }
+  }));
+  const seen = new Set<string>();
+  const models: ProviderModel[] = [];
+  for (const m of lists.flat()) {
+    if (hasControlChars(m.id) || seen.has(m.id)) continue;
+    seen.add(m.id);
+    models.push(m);
+  }
+  if (!models.length) throw new Error(`model-list request failed: ${errors.join('; ') || 'empty model list'}`);
+  return models;
+}
+
 /**
  * List a provider's available models via its own endpoint. Throws on any failure (missing baseUrl,
  * non-2xx, malformed/empty body, or a provider with no remote list) — the caller fails open.
@@ -73,6 +116,8 @@ export async function listProviderModels(
   }
   const doFetch = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
   if (!doFetch) throw new Error('no fetch implementation available');
+
+  if (provider === 'requesty') return listRequestyModels(opts, doFetch);
 
   let url: string;
   const headers: Record<string, string> = {};

@@ -76,6 +76,7 @@ Prefer to bring a key? Set one and skip the connect step:
 export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
 export XAI_API_KEY=...            # Grok Build (grok-build-0.1) — xAI's coding model, native tool-calling
 export NOVITA_API_KEY=...         # Novita AI's hosted OpenAI-compatible API
+export REQUESTY_API_KEY=...       # Requesty's hosted OpenAI-compatible router
 ```
 
 Novita AI is an opt-in third-party hosted provider. Requests send the selected
@@ -84,6 +85,13 @@ your API key authenticates those requests. Review Novita's current
 [privacy policy](https://novita.ai/legal/privacy-policy) and
 [terms](https://novita.ai/legal/terms-of-service) before using sensitive target
 data. T3MP3ST does not claim independent assurance for sensitive workloads.
+
+Requesty is also an opt-in third-party hosted router. Requests send the selected
+model id, prompts/context, generated output, and request metadata to Requesty,
+which forwards them to the model vendor behind that id. Review Requesty's current
+[privacy policy](https://www.requesty.ai/privacy) and
+[terms](https://www.requesty.ai/terms) before using sensitive target data. To keep
+Requesty's processing in the EU, set the Base URL to `https://router.eu.requesty.ai/v1`.
 
 Slow local agents can be given more room with `T3MP3ST_LOCAL_AGENT_TIMEOUT_MS`
 for each CLI call, `T3MP3ST_TASK_TIMEOUT_MS` for mission tasks, and

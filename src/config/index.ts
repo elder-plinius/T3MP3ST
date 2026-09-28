@@ -11,7 +11,7 @@ import { isAbsolute, join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'requesty' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -31,6 +31,7 @@ export interface TempestSettings {
     nanogpt?: string;
     litellm?: string;
     novita?: string;
+    requesty?: string;
     local?: string;
   };
 
@@ -102,6 +103,12 @@ export interface TempestSettings {
 
   // Novita AI — OpenAI-compatible API serving open-source and frontier models
   novita: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // Requesty: OpenAI-compatible LLM router serving hundreds of models
+  requesty: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -213,6 +220,13 @@ const DEFAULT_SETTINGS: TempestSettings = {
   novita: {
     baseUrl: 'https://api.novita.ai/openai/v1',
     defaultModel: 'zai-org/glm-5.2',
+  },
+
+  // Requesty's OpenAI-compatible router. The OpenAIAdapter appends /chat/completions.
+  // The EU endpoint is https://router.eu.requesty.ai/v1 (same key).
+  requesty: {
+    baseUrl: 'https://router.requesty.ai/v1',
+    defaultModel: 'anthropic/claude-sonnet-5',
   },
 
   codex: {
@@ -659,6 +673,26 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
     },
   ],
+  // Requesty's catalog is dynamic; these ids were verified live against
+  // router.requesty.ai/v1/models (2026-09-28) and only back the UI when listing fails.
+  requesty: [
+    {
+      id: 'anthropic/claude-sonnet-5',
+      name: 'Claude Sonnet 5 (Requesty)',
+      provider: 'Requesty',
+      contextWindow: 1000000,
+      maxOutput: 128000,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'agents', 'tools'],
+    },
+    {
+      id: 'openai/gpt-5.4',
+      name: 'GPT-5.4 (Requesty)',
+      provider: 'Requesty',
+      contextWindow: 1050000,
+      maxOutput: 128000,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'agents', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -872,6 +906,7 @@ class ConfigManager {
       huggingface: 'HF_TOKEN',
       nanogpt: 'NANOGPT_API_KEY',
       novita: 'NOVITA_API_KEY',
+      requesty: 'REQUESTY_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -942,6 +977,7 @@ class ConfigManager {
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
     if (this.hasApiKey('nanogpt')) providers.push('nanogpt');
     if (this.hasApiKey('novita')) providers.push('novita');
+    if (this.hasApiKey('requesty')) providers.push('requesty');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -1032,6 +1068,12 @@ class ConfigManager {
         apiKey = this.getApiKey('novita');
         baseUrl = this.config.get('novita').baseUrl;
         actualModel = model || this.config.get('novita').defaultModel;
+        break;
+      case 'requesty':
+        // Requesty's OpenAI-compatible router.
+        apiKey = this.getApiKey('requesty');
+        baseUrl = this.config.get('requesty').baseUrl;
+        actualModel = model || this.config.get('requesty').defaultModel;
         break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
@@ -1248,6 +1290,7 @@ class ConfigManager {
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
         nanogpt: settings.apiKeys.nanogpt ? '***REDACTED***' : undefined,
         novita: settings.apiKeys.novita ? '***REDACTED***' : undefined,
+        requesty: settings.apiKeys.requesty ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1308,6 +1351,10 @@ NANOGPT_API_KEY=
 # Novita AI API Key (OpenAI-compatible API serving open-source and frontier models)
 # Get your key at: https://novita.ai/settings/key-management
 NOVITA_API_KEY=
+
+# Requesty API Key (OpenAI-compatible router serving hundreds of models)
+# Get your key at: https://app.requesty.ai/api-keys
+REQUESTY_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).
