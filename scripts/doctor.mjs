@@ -56,12 +56,14 @@ function scriptExists(pkg, scriptName) {
 
 async function main() {
   const startedAt = new Date().toISOString();
-  const major = Number(process.versions.node.split('.')[0]);
-  check('Node runtime is supported', major >= 18, `node ${process.version}`);
 
   const packageJsonExists = await fileExists('package.json');
   check('package.json exists', packageJsonExists);
   const pkg = packageJsonExists ? JSON.parse(await readFile('package.json', 'utf8')) : {};
+  const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+  const want = String((pkg.engines && pkg.engines.node) || '>=22.19.0').replace('>=', '').split('.');
+  const nodeOk = nodeMajor > Number(want[0]) || (nodeMajor === Number(want[0]) && nodeMinor >= Number(want[1] || 0));
+  check('Node runtime is supported', nodeOk, `node ${process.version} (needs ${pkg.engines?.node || '>=22.19.0'})`);
   for (const script of ['doctor', 'server', 'typecheck', 'test', 'arsenal:smoke', 'field:drill', 'exploit:smoke', 'prompt:audit']) {
     check(`npm script: ${script}`, scriptExists(pkg, script), pkg.scripts?.[script] || 'missing');
   }
