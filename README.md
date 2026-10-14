@@ -76,6 +76,7 @@ Prefer to bring a key? Set one and skip the connect step:
 export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
 export XAI_API_KEY=...            # Grok Build (grok-build-0.1) — xAI's coding model, native tool-calling
 export NOVITA_API_KEY=...         # Novita AI's hosted OpenAI-compatible API
+export CHEAPERINFERENCE_API_KEY=... # Cheaper Inference's hosted OpenAI-compatible gateway
 ```
 
 Novita AI is an opt-in third-party hosted provider. Requests send the selected
@@ -84,6 +85,12 @@ your API key authenticates those requests. Review Novita's current
 [privacy policy](https://novita.ai/legal/privacy-policy) and
 [terms](https://novita.ai/legal/terms-of-service) before using sensitive target
 data. T3MP3ST does not claim independent assurance for sensitive workloads.
+
+Cheaper Inference is an opt-in third-party hosted gateway. Requests send the
+selected model id, prompts/context, generated output, and request metadata to
+Cheaper Inference; your API key authenticates those requests. Review the current
+[terms](https://www.cheaperinference.com/legal/terms) before using sensitive
+target data. T3MP3ST does not claim independent assurance for sensitive workloads.
 
 Slow local agents can be given more room with `T3MP3ST_LOCAL_AGENT_TIMEOUT_MS`
 for each CLI call, `T3MP3ST_TASK_TIMEOUT_MS` for mission tasks, and

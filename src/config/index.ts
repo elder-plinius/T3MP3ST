@@ -11,7 +11,7 @@ import { isAbsolute, join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'cheaperinference' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -31,6 +31,7 @@ export interface TempestSettings {
     nanogpt?: string;
     litellm?: string;
     novita?: string;
+    cheaperinference?: string;
     local?: string;
   };
 
@@ -102,6 +103,12 @@ export interface TempestSettings {
 
   // Novita AI — OpenAI-compatible API serving open-source and frontier models
   novita: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // Cheaper Inference — OpenAI-compatible LLM gateway
+  cheaperinference: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -213,6 +220,13 @@ const DEFAULT_SETTINGS: TempestSettings = {
   novita: {
     baseUrl: 'https://api.novita.ai/openai/v1',
     defaultModel: 'zai-org/glm-5.2',
+  },
+
+  // Cheaper Inference's OpenAI-compatible surface. The OpenAIAdapter appends
+  // /chat/completions and provider-models appends /models.
+  cheaperinference: {
+    baseUrl: 'https://api.cheaperinference.com/v1',
+    defaultModel: 'gpt-5.4-mini',
   },
 
   codex: {
@@ -659,6 +673,25 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
     },
   ],
+  // Model ids verified live against api.cheaperinference.com/v1/models (2026-10-14).
+  cheaperinference: [
+    {
+      id: 'gpt-5.4-mini',
+      name: 'GPT-5.4 mini (Cheaper Inference)',
+      provider: 'Cheaper Inference',
+      contextWindow: 400000,
+      maxOutput: 128000,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+    },
+    {
+      id: 'gpt-5.4',
+      name: 'GPT-5.4 (Cheaper Inference)',
+      provider: 'Cheaper Inference',
+      contextWindow: 1000000,
+      maxOutput: 128000,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -872,6 +905,7 @@ class ConfigManager {
       huggingface: 'HF_TOKEN',
       nanogpt: 'NANOGPT_API_KEY',
       novita: 'NOVITA_API_KEY',
+      cheaperinference: 'CHEAPERINFERENCE_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -942,6 +976,7 @@ class ConfigManager {
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
     if (this.hasApiKey('nanogpt')) providers.push('nanogpt');
     if (this.hasApiKey('novita')) providers.push('novita');
+    if (this.hasApiKey('cheaperinference')) providers.push('cheaperinference');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -1033,6 +1068,12 @@ class ConfigManager {
         baseUrl = this.config.get('novita').baseUrl;
         actualModel = model || this.config.get('novita').defaultModel;
         break;
+      case 'cheaperinference':
+        // Cheaper Inference's OpenAI-compatible surface.
+        apiKey = this.getApiKey('cheaperinference');
+        baseUrl = this.config.get('cheaperinference').baseUrl;
+        actualModel = model || this.config.get('cheaperinference').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -1099,7 +1140,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'cheaperinference') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1120,6 +1161,7 @@ class ConfigManager {
     add('huggingface');
     add('nanogpt');
     add('novita');
+    add('cheaperinference');
     return chain;
   }
 
@@ -1248,6 +1290,7 @@ class ConfigManager {
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
         nanogpt: settings.apiKeys.nanogpt ? '***REDACTED***' : undefined,
         novita: settings.apiKeys.novita ? '***REDACTED***' : undefined,
+        cheaperinference: settings.apiKeys.cheaperinference ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1308,6 +1351,10 @@ NANOGPT_API_KEY=
 # Novita AI API Key (OpenAI-compatible API serving open-source and frontier models)
 # Get your key at: https://novita.ai/settings/key-management
 NOVITA_API_KEY=
+
+# Cheaper Inference API Key (OpenAI-compatible LLM gateway)
+# Get your key at: https://cheaperinference.com/signup
+CHEAPERINFERENCE_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).

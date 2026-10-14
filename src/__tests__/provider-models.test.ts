@@ -73,6 +73,21 @@ describe('listProviderModels — OpenAI-compatible providers', () => {
     expect((init as { headers: Record<string, string> }).headers.Authorization)
       .toBe('Bearer sk_novita-test-key');
   });
+
+  it('uses Cheaper Inference /v1/models with Bearer authentication', async () => {
+    const f = fakeFetch({ data: [{ id: 'gpt-5.4-mini' }] });
+    const models = await listProviderModels('cheaperinference', {
+      baseUrl: 'https://api.cheaperinference.com/v1',
+      apiKey: 'ci_live_test-key',
+      fetchImpl: f,
+    });
+
+    expect(models.map((m) => m.id)).toEqual(['gpt-5.4-mini']);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://api.cheaperinference.com/v1/models');
+    expect((init as { headers: Record<string, string> }).headers.Authorization)
+      .toBe('Bearer ci_live_test-key');
+  });
 });
 
 describe('listProviderModels — Anthropic wire', () => {

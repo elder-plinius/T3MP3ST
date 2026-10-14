@@ -9,6 +9,7 @@
  * - OpenAI (GPT models)
  * - HuggingFace (open models via the OpenAI-compatible Inference Providers router)
  * - Novita AI (OpenAI-compatible API serving open-source and frontier models)
+ * - Cheaper Inference (OpenAI-compatible LLM gateway)
  * - Mock (for testing)
  * - Local (Ollama, etc.)
  */
@@ -780,6 +781,20 @@ class NovitaAdapter extends OpenAIAdapter {
       return {
         valid: false,
         error: 'Novita AI API key is required. Set NOVITA_API_KEY. Docs: https://novita.ai/settings/key-management',
+      };
+    }
+    return { valid: true };
+  }
+}
+
+class CheaperInferenceAdapter extends OpenAIAdapter {
+  name = 'cheaperinference';
+
+  validateConfig(): { valid: boolean; error?: string } {
+    if (!this.config.apiKey) {
+      return {
+        valid: false,
+        error: 'Cheaper Inference API key is required. Set CHEAPERINFERENCE_API_KEY. Docs: https://cheaperinference.com/docs',
       };
     }
     return { valid: true };
@@ -1698,6 +1713,8 @@ constructor(config: LLMConfig) {
         return new NanoGPTAdapter(config);
       case 'novita':
         return new NovitaAdapter(config); // Novita AI's native API is OpenAI-compatible
+      case 'cheaperinference':
+        return new CheaperInferenceAdapter(config); // Cheaper Inference's API is OpenAI-compatible
       case 'codex':
         return new CodexAdapter(config);
       case 'mock':
@@ -2017,6 +2034,12 @@ export function createNovitaBackbone(apiKey?: string, model?: string): LLMBackbo
   return new LLMBackbone(llmConfig);
 }
 
+export function createCheaperInferenceBackbone(apiKey?: string, model?: string): LLMBackbone {
+  const llmConfig = config.getLLMConfig('cheaperinference', model);
+  if (apiKey) llmConfig.apiKey = apiKey;
+  return new LLMBackbone(llmConfig);
+}
+
 export function createLiteLLMBackbone(apiKey?: string, model?: string, baseUrl?: string): LLMBackbone {
   const llmConfig = config.getLLMConfig('litellm', model);
   if (apiKey) llmConfig.apiKey = apiKey;
@@ -2047,7 +2070,7 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
  * Create the best available backbone based on configured API keys
  */
 export function createBestAvailableBackbone(): LLMBackbone {
-  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Novita > Local > Mock
+  // Priority: OpenRouter > Venice > LiteLLM > Anthropic > OpenAI > DeepSeek > HuggingFace > NanoGPT > Novita > Cheaper Inference > Local > Mock
   const providers = config.getConfiguredProviders();
 
   if (providers.includes('openrouter')) {
@@ -2076,6 +2099,9 @@ export function createBestAvailableBackbone(): LLMBackbone {
   }
   if (providers.includes('novita')) {
     return createNovitaBackbone();
+  }
+  if (providers.includes('cheaperinference')) {
+    return createCheaperInferenceBackbone();
   }
 
   // Default to mock if no API keys configured
