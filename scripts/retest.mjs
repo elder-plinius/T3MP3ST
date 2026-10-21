@@ -158,8 +158,8 @@ const file = join(outDir, `retest-${target.replace(/[^a-zA-Z0-9.-]/g, '_')}-${Da
 writeFileSync(file, md, 'utf8');
 
 console.log(md);
-console.log(`\nОтчёт сохранён: ${file}`);
+console.log(`\nReport saved: ${file}`);
 const open = verdicts.filter((v) => v.status === 'still_vulnerable').length;
 const fixed = verdicts.filter((v) => v.status === 'fixed').length;
 const unverifiable = verdicts.filter((v) => v.status === 'unverifiable').length;
-console.log(`Итого: still_vulnerable=${open}, fixed=${fixed}, unverifiable=${unverifiable}`);
+console.log(`Total: still_vulnerable=${open}, fixed=${fixed}, unverifiable=${unverifiable}`);
