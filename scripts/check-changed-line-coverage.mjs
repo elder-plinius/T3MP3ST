@@ -55,7 +55,9 @@ if (process.argv.includes('--self-test')) {
   const base = process.argv[2] || process.env.COVERAGE_BASE;
   const minimum = Number(process.argv[3] || process.env.PR_CHANGED_LINE_COVERAGE || 50);
   if (!base) throw new Error('base revision required as argv[2] or COVERAGE_BASE');
-  const diff = execFileSync('git', ['diff', '--unified=0', '--no-ext-diff', `${base}...HEAD`, '--', 'src'], { encoding: 'utf8' });
+  // A PR-sized diff over src/ can exceed the 1 MiB default and die with ENOBUFS
+  // before any coverage math runs — size the buffer for the biggest branch.
+  const diff = execFileSync('git', ['diff', '--unified=0', '--no-ext-diff', `${base}...HEAD`, '--', 'src'], { encoding: 'utf8', maxBuffer: 1 << 26 });
   const coverage = JSON.parse(readFileSync('coverage-pr/coverage-final.json', 'utf8'));
   const result = assessChangedCoverage(coverage, changedLines(diff));
   console.log(`Changed executable lines: ${result.covered}/${result.coverable} (${result.percent.toFixed(1)}%; required ${minimum}%)`);

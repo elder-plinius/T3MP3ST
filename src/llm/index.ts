@@ -14,13 +14,13 @@
  */
 
 import { EventEmitter } from 'eventemitter3';
-import { spawn } from 'child_process';
+
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { LLMConfig, LLMMessage, LLMResponse, LLMProvider, LLMToolDefinition, LLMToolCall, FallbackEntry } from '../types/index.js';
 import { config } from '../config/index.js';
-import { localAgentChat } from '../agent/local-agents.js';
+import { localAgentChat, resolveBin, spawnAgent } from '../agent/local-agents.js';
 import { fetchBypassingProxy } from '../net/proxy.js';
 import { enforceToolCallBoundary } from './tool-call-boundary.js';
 
@@ -64,6 +64,17 @@ export interface ChatOptions {
   tools?: LLMToolDefinition[];
   /** External cancellation — honored by adapters whose backend supports mid-flight abort (currently LocalAdapter). */
   signal?: AbortSignal;
+  /**
+   * Ollama-native only, opt-in: ask a reasoning model to answer directly instead of
+   * spending its token budget on a <think> block. gemma4/qwen3-class models burn the
+   * ENTIRE num_predict budget thinking and then return an empty message — measured on
+   * this box: a 400-token budget produced completionTokens=400 and zero-length content,
+   * which reads downstream as "the model failed". Callers that need a short factual
+   * answer (a summary, a classification, a fixed-format reply) set this; reasoning-
+   * dependent callers leave it unset. Ignored on the OpenAI-compatible wire, and
+   * automatically retried without the field on servers that reject an unknown `think` key.
+   */
+  noThink?: boolean;
 }
 
 /**
@@ -298,6 +309,10 @@ class OpenRouterAdapter implements LLMProviderAdapter {
     }));
   }
 
+  // Hook for provider-specific request-body extras. Base implementation is a no-op;
+  // Venice overrides it for thinking-model plumbing.
+  protected applyProviderRequestExtras(_body: Record<string, unknown>): void {}
+
   async chat(messages: LLMMessage[], options?: ChatOptions): Promise<LLMResponse> {
     const validation = this.validateConfig();
     if (!validation.valid) {
@@ -319,11 +334,15 @@ class OpenRouterAdapter implements LLMProviderAdapter {
       top_p: options?.topP,
       stop: options?.stopSequences,
     };
+    this.applyProviderRequestExtras(requestBody);
 
     const tools = this.formatTools(options?.tools);
     if (tools) requestBody.tools = tools;
 
-    const response = await fetch(url, {
+    // Provider API calls are NOT attack traffic — the outbound SOCKS proxy is for
+    // test/attack egress (see directFetch). Routing provider calls through it made
+    // every cloud LLM die whenever the configured proxy was unreachable.
+    const response = await fetchBypassingProxy(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -332,7 +351,7 @@ class OpenRouterAdapter implements LLMProviderAdapter {
         'X-Title': siteName,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: AbortSignal.timeout(this.config.timeout || 300000),
     });
 
     if (!response.ok) {
@@ -405,7 +424,7 @@ class OpenRouterAdapter implements LLMProviderAdapter {
     // is aborted (after config.timeout, default 60s of no data).
     const controller = new AbortController();
     const idleMs = this.config.timeout || 60000;
-    const response = await fetch(url, {
+    const response = await fetchBypassingProxy(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -479,6 +498,17 @@ class VeniceAdapter extends OpenRouterAdapter {
       };
     }
     return { valid: true };
+  }
+
+  protected applyProviderRequestExtras(body: Record<string, unknown>): void {
+    // Qwen 3.8 and other Venice thinking models stream the answer into
+    // reasoning_content and leave content empty unless thinking is disabled —
+    // T3MP3ST reads message.content only (measured 2026-09-01: with thinking on,
+    // a 1000-token budget returned content:"" and 5.5s with the flag vs 8.9s empty).
+    body.venice_parameters = {
+      ...((body.venice_parameters as Record<string, unknown> | undefined) || {}),
+      disable_thinking: true,
+    };
   }
 }
 
@@ -582,7 +612,8 @@ class AnthropicAdapter implements LLMProviderAdapter {
       }));
     }
 
-    const response = await fetch(url, {
+    // Provider API calls are not attack traffic — bypass the SOCKS egress (see OpenRouterAdapter).
+    const response = await fetchBypassingProxy(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -590,7 +621,7 @@ class AnthropicAdapter implements LLMProviderAdapter {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: AbortSignal.timeout(this.config.timeout || 300000),
     });
 
     if (!response.ok) {
@@ -709,14 +740,15 @@ class OpenAIAdapter implements LLMProviderAdapter {
       }));
     }
 
-    const response = await fetch(url, {
+    // Provider API calls are not attack traffic — bypass the SOCKS egress (see OpenRouterAdapter).
+    const response = await fetchBypassingProxy(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(this.config.timeout || 60000),
+      signal: AbortSignal.timeout(this.config.timeout || 300000),
     });
 
     if (!response.ok) {
@@ -1043,6 +1075,22 @@ class LocalAdapter implements LLMProviderAdapter {
       ? { model: this.config.model, messages: wireMessages, max_tokens: maxTokens, temperature, stream: false }
       : { model: this.config.model, messages: wireMessages, stream: false, options: { num_predict: maxTokens, temperature } };
 
+    // Ollama NATIVE wire only: ask the server to KEEP THE MODEL LOADED after the call.
+    // Ollama's default keep_alive is ~5 minutes — after that it unloads, and the next
+    // call pays the full cold load again (measured: 70s load for a 10GB model, i.e. the
+    // "LLM timing out on test" complaint was load time, not inference). 30m keeps
+    // back-to-back tests/missions warm; override with T3MP3ST_LOCAL_KEEP_ALIVE (e.g. '2h',
+    // or a negative/-1 to pin forever, 0 to restore unload-immediately). OpenAI-wire
+    // servers (llama.cpp/LM Studio) manage their own model residency — no field for it.
+    if (!openaiWire) {
+      const keepAlive = (process.env.T3MP3ST_LOCAL_KEEP_ALIVE || '30m').trim();
+      if (keepAlive) requestBody.keep_alive = keepAlive;
+      // Opt-in: suppress the <think> block on reasoning models. Without it a
+      // gemma4-class model can spend the whole num_predict budget thinking and
+      // return an empty message (measured: completionTokens == maxTokens, content "").
+      if (options?.noThink) requestBody.think = false;
+    }
+
     if (tryNative && options?.tools) {
       requestBody.tools = openaiWire
         ? this.formatOpenAITools(options.tools)
@@ -1054,7 +1102,8 @@ class LocalAdapter implements LLMProviderAdapter {
     // actually stops generation on the local server, instead of leaving it to grind through
     // the full response on a single-slot backend like llama.cpp while nothing is listening.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.timeout || 120000);
+    const requestTimeoutMs = this.config.timeout || 120000;
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     const externalSignal = options?.signal;
     const onExternalAbort = () => controller.abort();
     if (externalSignal) {
@@ -1082,6 +1131,19 @@ class LocalAdapter implements LLMProviderAdapter {
       if (!response.ok && tryNative && this.config.nativeTools !== true) {
         delete requestBody.tools;
         this.cacheProbeResult(false);
+        response = await fetchBypassingProxy(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      }
+
+      // Older Ollama builds don't know the `think` key and answer 400. The
+      // suppression is an optimization, not a requirement — drop it and re-send
+      // rather than failing the call over a hint the server didn't understand.
+      if (!response.ok && requestBody.think !== undefined) {
+        delete requestBody.think;
         response = await fetchBypassingProxy(url, {
           method: 'POST',
           headers,
@@ -1162,7 +1224,11 @@ class LocalAdapter implements LLMProviderAdapter {
         );
       }
       if (controller.signal.aborted) {
-        throw new Error(externalSignal?.aborted ? 'Cancelled by operator' : 'Local LLM request timed out');
+        if (externalSignal?.aborted) throw new Error('Cancelled by operator');
+        throw new Error(
+          `Local LLM request timed out after ${Math.round(requestTimeoutMs / 1000)}s (model '${this.getModelName()}' at ${this.config.baseUrl}). ` +
+          `If Ollama doesn't serve that tag it auto-pulls it, which can take minutes — check the model name (Settings → Local model, or \`ollama cp\`/\`ollama pull\`) and server load.`
+        );
       }
       throw error;
     } finally {
@@ -1317,7 +1383,7 @@ class CodexAdapter implements LLMProviderAdapter {
     const workDir = await mkdtemp(join(tmpdir(), 't3mp3st-codex-'));
     const outputPath = join(workDir, 'last-message.txt');
     const prompt = this.formatPrompt(messages, options);
-    const command = config.get('codex').command || 'codex';
+    const command = resolveBin(config.get('codex').command || 'codex') || 'codex';
     const args = [
       '--ask-for-approval',
       'never',
@@ -1342,7 +1408,9 @@ class CodexAdapter implements LLMProviderAdapter {
 
     try {
       const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawn(command, args, {
+        // resolveBin + spawnAgent: on Windows the npm shim is codex.cmd — a bare spawn('codex')
+        // throws ENOENT (cmd shims need an explicit cmd.exe-mediated, pre-quoted launch).
+        const child = spawnAgent(resolveBin(command) || command, args, {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, NO_COLOR: '1' },
         });
@@ -1354,8 +1422,8 @@ class CodexAdapter implements LLMProviderAdapter {
           reject(new Error('Codex CLI timed out while planning'));
         }, this.config.timeout || 240000);
 
-        child.stdout.on('data', chunk => { stdout += chunk.toString(); });
-        child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        child.stdout?.on('data', chunk => { stdout += chunk.toString(); });
+        child.stderr?.on('data', chunk => { stderr += chunk.toString(); });
         child.on('error', error => {
           clearTimeout(timer);
           reject(error);
@@ -1368,7 +1436,7 @@ class CodexAdapter implements LLMProviderAdapter {
             reject(new Error(`Codex CLI exited ${code}: ${(stderr || stdout).trim().slice(0, 4000)}`));
           }
         });
-        child.stdin.end(prompt);
+        child.stdin?.end(prompt);
       });
 
       let content = '';
@@ -1704,6 +1772,9 @@ constructor(config: LLMConfig) {
         return new MockAdapter(config);
       case 'local':
         return new LocalAdapter(config);
+      case 'ollama':
+        // Named Ollama provider (issue #164) — same native wire protocol as `local`.
+        return new LocalAdapter(config);
       case 'local-agent':
         return new LocalAgentAdapter(config);
       default:
@@ -1787,11 +1858,14 @@ constructor(config: LLMConfig) {
           // re-hits the same cap after 1s+2s of pointless backoff, then finally advances to a
           // cloud fallback the operator may not want. Treat a local/local-agent timeout as
           // permanent so the ladder advances straight to the next hop instead of retrying in place.
-          const isLocalProvider = hop.provider === 'local' || hop.provider === 'local-agent';
+          const isLocalProvider = hop.provider === 'local' || hop.provider === 'ollama' || hop.provider === 'local-agent';
           const permanent = (error instanceof LLMApiError &&
             (error.status === 401 || error.status === 403 || error.status === 404)) ||
             !!options?.signal?.aborted ||
-            (isLocalProvider && classifyErrorKind(error as Error) === 'timeout');
+            (isLocalProvider && classifyErrorKind(error as Error) === 'timeout') ||
+            // A refused local backend won't heal on a 1s+2s retry either — advance to
+            // the next ladder hop (e.g. OpenRouter) instead of stalling in place.
+            (isLocalProvider && /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(String((error as Error).message)));
           if (permanent || attempt >= this.retryAttempts) break;
           let delayMs = this.retryDelayMs * Math.pow(2, attempt - 1);
           if (error instanceof LLMApiError && error.retryAfterMs) {
@@ -2043,6 +2117,16 @@ export function createLocalBackbone(model?: string, baseUrl?: string): LLMBackbo
   });
 }
 
+export function createOllamaBackbone(model?: string, baseUrl?: string): LLMBackbone {
+  return new LLMBackbone({
+    provider: 'ollama',
+    model: model || 'llama3',
+    baseUrl: baseUrl || 'http://localhost:11434/api',
+    maxTokens: 4096,
+    temperature: 0.7,
+  });
+}
+
 /**
  * Create the best available backbone based on configured API keys
  */
@@ -2090,3 +2174,21 @@ export type { LLMMessage, LLMResponse, LLMConfig, LLMToolDefinition, LLMToolCall
 export function __resetLocalAdapterCache(): void {
   LocalAdapter.__resetProbeCache();
 }
+
+// ChainAST + ChainSummary (pentagi pkg/cast + pkg/csum port)
+export {
+  ChainAST,
+  newChainAST,
+  sanitizeJSONControlChars,
+  SUMMARIZATION_TOOL_NAME,
+  FALLBACK_RESPONSE_CONTENT,
+  SUMMARIZED_CONTENT_PREFIX,
+} from './chain-ast.js';
+export type { BodyPairType, ChainSection, ChainHeader, ChainBodyPair } from './chain-ast.js';
+export {
+  SummarizerCache,
+  cachedSummarizeHandler,
+  createChainSummarizer,
+  generateSummary,
+} from './chain-summary.js';
+export type { SummarizeHandler, SummarizerConfig, ChainSummarizer, CacheOptions } from './chain-summary.js';

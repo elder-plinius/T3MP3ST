@@ -21,37 +21,39 @@ import {
 } from '../types/index.js';
 import type { LLMBackbone } from '../llm/index.js';
 import type { Arsenal } from '../arsenal/index.js';
-import type { AgentLoop } from '../agent/index.js';
+import type { AgentLoop, AgentResult } from '../agent/index.js';
 import type { ToolResult } from '../types/index.js';
 import type { Target } from '../types/index.js';
-import { resolveSystemPrompt } from '../prompts/index.js';
+import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
-import { SEVERITY_SCORES } from '../evidence/index.js';
-import type { Severity } from '../types/index.js';
-import { diagnoseOperatorCapabilities } from './capability-diagnostics.js';
 
-// ── Phase-based model routing (opt-in) ───────────────────────────────────────
-// Env per phase: T3MP3ST_MODEL_RECON / _SCAN / _EXPLOIT / _POST / _ANALYSIS.
-// Missions burn most LLM calls in recon/scanner phases; routing a cheap model
-// there and a strong model only to exploit/analysis cuts cost 2-3x at the same
-// deep-phase quality. Unset vars keep the operator's configured model.
-const PHASE_MODEL_ENV: Record<string, string> = {
-  [KillChainPhase.RECON]: 'T3MP3ST_MODEL_RECON',
-  [KillChainPhase.WEAPONIZE]: 'T3MP3ST_MODEL_SCAN',
-  [KillChainPhase.DELIVER]: 'T3MP3ST_MODEL_SCAN',
-  [KillChainPhase.EXPLOIT]: 'T3MP3ST_MODEL_EXPLOIT',
-  [KillChainPhase.INSTALL]: 'T3MP3ST_MODEL_POST',
-  [KillChainPhase.C2]: 'T3MP3ST_MODEL_POST',
-  [KillChainPhase.ACTIONS]: 'T3MP3ST_MODEL_POST',
-  ANALYSIS: 'T3MP3ST_MODEL_ANALYSIS',
-};
+// =============================================================================
+// MISSION AUTHORIZATION
+// =============================================================================
 
-/** Resolve the LLM to drive a task of this phase; base itself when unconfigured. */
-function routeModelForPhase(phase: string, base: LLMBackbone): LLMBackbone {
-  const envName = PHASE_MODEL_ENV[phase] ?? PHASE_MODEL_ENV[KillChainPhase.RECON];
-  const model = (process.env[envName] ?? '').trim();
-  if (!model) return base;
-  return base.withModel(model);
+/** Operator-granted authorization for a mission. Captured server-side when the
+ * operator approves the scan (authorization banner) or when every target qualifies
+ * for the lab-scope auto-grant. Injected into every task prompt so agents know
+ * they are authorized and never pause to request authorization mid-scan. */
+export interface MissionAuthorization {
+  receipts: Array<{ id: string; target: string; approvedAt?: string }>;
+  source: 'operator-approval-banner' | 'lab-scope-auto-grant';
+  missionName?: string;
+  targets?: string[];
+  authorizedAt: string;
+}
+
+function buildAuthorizationBlock(auth: MissionAuthorization): string {
+  const receipts = auth.receipts
+    .map(r => `receipt ${r.id} — target ${r.target}${r.approvedAt ? ' — approved ' + r.approvedAt : ''}`)
+    .join('; ');
+  return [
+    '## OPERATOR AUTHORIZATION — VALID FOR THIS MISSION',
+    `The operator approved this scan via the authorization banner (${auth.source}${auth.authorizedAt ? ', ' + auth.authorizedAt : ''}).`,
+    receipts ? `Authorization receipts on record: ${receipts}.` : 'Authorization basis: lab-scope auto-grant (operator-owned target range).',
+    'This approval IS your authorization for the whole mission: execute tasks against the approved targets WITHOUT pausing to request authorization, receipts, or permission.',
+    'Still refused: actions outside the approved targets, autonomous_execution without its own gate, or anything that would damage operator-owned infrastructure.',
+  ].join('\n');
 }
 
 // =============================================================================
@@ -105,66 +107,66 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     description: 'Specialized in OSINT, network discovery, and asset enumeration',
     mitreTactics: ['TA0043'],
     primaryPhases: [KillChainPhase.RECON],
-    defaultTools: ['dns_lookup', 'ip_info', 'username_search', 'telegram_lookup', 'email_format', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'subdomain_takeover_check', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery', 'subfinder_tool', 'httpx_tool', 'dnsx_tool', 'katana_tool', 'naabu_tool', 'gobuster_tool', 'nmap_tool'],
-    toolCategories: ['recon', 'web'],
+    defaultTools: ['dns_lookup', 'reverse_dns', 'whois_lookup', 'subdomain_enum', 'subdomain_takeover_check', 'nmap_scan', 'port_scan', 'network_trace', 'version_detect', 'robots_txt_fetch', 'cidr_expand', 'technology_detect', 'http_request', 'curl_request', 'header_analysis', 'api_endpoint_discovery', 'osint_person_locate', 'osint_username_sweep', 'osint_username_deep', 'osint_email_lookup', 'osint_phone_lookup', 'osint_phone_scan', 'osint_leakcheck', 'osint_breach_lookup', 'osint_username_permutate', 'osint_darkweb_leak_monitor', 'osint_onion_search', 'osint_onion_fetch', 'osint_people_records', 'osint_infostealer_check', 'osint_breach_catalog', 'osint_historical_recovery', 'osint_google_dorks', 'osint_domain_infra', 'osint_ip_infra', 'osint_google_app_linkage', 'osint_google_bssid_locate'],
+    toolCategories: ['recon', 'web', 'osint'],
     capabilities: ['osint', 'dns_enum', 'subdomain_discovery', 'port_scanning', 'service_detection'],
     techniques: ['T1595', 'T1592', 'T1589', 'T1590', 'T1591'],
-    systemPrompt: resolveSystemPrompt('recon'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.recon,
   },
   scanner: {
     name: 'Vulnerability Scanner',
     description: 'Identifies vulnerabilities and security misconfigurations',
     mitreTactics: ['TA0007'],
     primaryPhases: [KillChainPhase.WEAPONIZE],
-    defaultTools: ['r2_analyze', 'binary_sink_scan', 'kev_check', 'idor_probe', 'js_analyze', 'nuclei_scan', 'browser_probe', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request', 'nuclei_tool', 'httpx_tool', 'dalfox_tool', 'sqlmap_tool', 'gobuster_tool'],
+    defaultTools: ['nuclei_scan', 'ssl_scan', 'cors_check', 'csp_analysis', 'clickjacking_test', 'cookie_analysis', 'http_methods_test', 'open_redirect_test', 'port_scan', 'version_detect', 'technology_detect', 'api_endpoint_discovery', 'header_analysis', 'http_request', 'curl_request', 'xsser_scan'],
     toolCategories: ['vuln', 'web', 'recon'],
     capabilities: ['vuln_scanning', 'web_scanning', 'service_enum', 'config_audit'],
     techniques: ['T1046', 'T1082', 'T1083', 'T1087'],
-    systemPrompt: resolveSystemPrompt('scanner'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.scanner,
   },
   exploiter: {
     name: 'Exploitation Specialist',
     description: 'Executes exploits and achieves initial access',
     mitreTactics: ['TA0001', 'TA0002'],
     primaryPhases: [KillChainPhase.DELIVER, KillChainPhase.EXPLOIT],
-    defaultTools: ['sqli_scan', 'js_analyze', 'browser_probe', 'xss_scan', 'ssti_test', 'lfi_test', 'open_redirect_test', 'nuclei_scan', 'ffuf_fuzz', 'dir_bruteforce', 'api_endpoint_discovery', 'http_methods_test', 'password_spray', 'hash_crack', 'base64_decode', 'url_encode', 'jwt_decode', 'http_request', 'curl_request', 'technology_detect', 'header_analysis', 'sqlmap_tool', 'dalfox_tool', 'httpx_tool'],
+    defaultTools: ['sqli_scan', 'xss_scan', 'xsser_scan', 'ssti_test', 'lfi_test', 'open_redirect_test', 'nuclei_scan', 'ffuf_fuzz', 'dir_bruteforce', 'api_endpoint_discovery', 'http_methods_test', 'password_spray', 'hash_crack', 'base64_decode', 'url_encode', 'jwt_decode', 'http_request', 'curl_request', 'technology_detect', 'header_analysis'],
     toolCategories: ['vuln', 'web', 'auth', 'util'],
     capabilities: ['exploit_dev', 'payload_delivery', 'initial_access', 'code_execution'],
     techniques: ['T1190', 'T1133', 'T1078', 'T1059'],
-    systemPrompt: resolveSystemPrompt('exploiter'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.exploiter,
   },
   infiltrator: {
     name: 'Lateral Movement Specialist',
     description: 'Moves through networks and escalates privileges',
     mitreTactics: ['TA0008', 'TA0004'],
     primaryPhases: [KillChainPhase.INSTALL],
-    defaultTools: ['hash_crack', 'password_spray', 'jwt_decode', 'cookie_analysis', 'dns_lookup', 'port_scan', 'subdomain_enum', 'network_trace', 'nmap_scan', 'sqli_scan', 'lfi_test', 'cve_lookup', 'base64_decode', 'http_request', 'curl_request', 'technology_detect'],
+    defaultTools: ['hash_crack', 'password_spray', 'jwt_decode', 'cookie_analysis', 'dns_lookup', 'port_scan', 'subdomain_enum', 'network_trace', 'nmap_scan', 'sqli_scan', 'lfi_test', 'cve_lookup', 'base64_decode', 'http_request', 'curl_request', 'technology_detect', 'mimikatz_exec', 'rubeus_exec', 'creddump7_dump'],
     toolCategories: ['recon', 'web', 'auth', 'vuln'],
     capabilities: ['priv_esc', 'lateral_movement', 'credential_access', 'domain_enum'],
     techniques: ['T1021', 'T1078', 'T1068', 'T1548'],
-    systemPrompt: resolveSystemPrompt('infiltrator'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.infiltrator,
   },
   exfiltrator: {
     name: 'Data Exfiltration Specialist',
-    description: 'Collects and extracts sensitive data',
-    mitreTactics: ['TA0009', 'TA0010'],
+    description: 'Harvests credentials and extracts sensitive data',
+    mitreTactics: ['TA0006', 'TA0009', 'TA0010'],
     primaryPhases: [KillChainPhase.ACTIONS],
-    defaultTools: ['http_request', 'curl_request', 'api_endpoint_discovery', 'dir_bruteforce', 'base64_decode', 'url_encode', 'jwt_decode', 'cookie_analysis', 'subdomain_enum', 'robots_txt_fetch', 'technology_detect', 'lfi_test', 'sqli_scan', 'header_analysis', 'cve_lookup'],
-    toolCategories: ['web', 'recon', 'util'],
-    capabilities: ['data_collection', 'exfiltration', 'staging', 'compression'],
-    techniques: ['T1041', 'T1048', 'T1567', 'T1560'],
-    systemPrompt: resolveSystemPrompt('exfiltrator'),
+    defaultTools: ['http_request', 'curl_request', 'api_endpoint_discovery', 'dir_bruteforce', 'ffuf_fuzz', 'base64_decode', 'url_encode', 'jwt_decode', 'cookie_analysis', 'password_spray', 'hash_crack', 'subdomain_enum', 'robots_txt_fetch', 'technology_detect', 'lfi_test', 'sqli_scan', 'header_analysis', 'cve_lookup', 'nuclei_scan', 'nmap_scan', 'mimikatz_exec', 'rubeus_exec', 'creddump7_dump'],
+    toolCategories: ['web', 'recon', 'util', 'auth'],
+    capabilities: ['credential_access', 'data_collection', 'exfiltration', 'staging', 'compression'],
+    techniques: ['T1110', 'T1552', 'T1555', 'T1041', 'T1048', 'T1567', 'T1560'],
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.exfiltrator,
   },
   ghost: {
     name: 'Persistence Specialist',
     description: 'Establishes persistence and covers tracks',
     mitreTactics: ['TA0003', 'TA0005'],
     primaryPhases: [KillChainPhase.INSTALL, KillChainPhase.C2],
-    defaultTools: ['http_request', 'curl_request', 'cookie_analysis', 'header_analysis', 'csp_analysis', 'clickjacking_test', 'technology_detect', 'http_methods_test', 'jwt_decode', 'base64_decode', 'url_encode', 'robots_txt_fetch', 'subdomain_enum', 'open_redirect_test', 'ssl_scan'],
-    toolCategories: ['web', 'recon', 'vuln'],
+    defaultTools: ['http_request', 'curl_request', 'cookie_analysis', 'header_analysis', 'csp_analysis', 'clickjacking_test', 'technology_detect', 'http_methods_test', 'jwt_decode', 'base64_decode', 'url_encode', 'robots_txt_fetch', 'subdomain_enum', 'open_redirect_test', 'ssl_scan', 'osint_username_sweep', 'osint_username_deep', 'osint_breach_lookup', 'osint_infostealer_check', 'osint_breach_catalog', 'osint_historical_recovery', 'osint_google_dorks'],
+    toolCategories: ['web', 'recon', 'vuln', 'osint'],
     capabilities: ['persistence', 'evasion', 'cleanup', 'anti_forensics'],
     techniques: ['T1547', 'T1053', 'T1136', 'T1070'],
-    systemPrompt: resolveSystemPrompt('ghost'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.ghost,
   },
   coordinator: {
     name: 'Mission Coordinator',
@@ -175,18 +177,18 @@ export const ARCHETYPE_PROFILES: Record<OperatorArchetype, ArchetypeProfile> = {
     toolCategories: ['recon', 'web', 'vuln'],
     capabilities: ['orchestration', 'task_management', 'communication', 'decision_making'],
     techniques: ['T1071', 'T1095', 'T1573', 'T1132'],
-    systemPrompt: resolveSystemPrompt('coordinator'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.coordinator,
   },
   analyst: {
     name: 'Security Analyst',
     description: 'Analyzes findings and generates reports',
     mitreTactics: [],
     primaryPhases: [KillChainPhase.ACTIONS],
-    defaultTools: ['cve_lookup', 'jwt_decode', 'hash_crack', 'base64_decode', 'url_encode', 'technology_detect', 'ssl_scan', 'header_analysis', 'cors_check', 'csp_analysis', 'cookie_analysis', 'whois_lookup', 'dns_lookup', 'http_request', 'curl_request'],
-    toolCategories: ['web', 'vuln', 'recon', 'util'],
+    defaultTools: ['cve_lookup', 'jwt_decode', 'hash_crack', 'base64_decode', 'url_encode', 'technology_detect', 'ssl_scan', 'header_analysis', 'cors_check', 'csp_analysis', 'cookie_analysis', 'whois_lookup', 'dns_lookup', 'http_request', 'curl_request', 'osint_breach_lookup', 'osint_email_lookup', 'osint_person_locate', 'osint_darkweb_leak_monitor', 'osint_onion_search', 'osint_infostealer_check', 'osint_breach_catalog', 'osint_historical_recovery', 'osint_google_dorks', 'osint_hash_lookup'],
+    toolCategories: ['web', 'vuln', 'recon', 'util', 'osint'],
     capabilities: ['analysis', 'reporting', 'recommendations', 'risk_assessment'],
     techniques: [],
-    systemPrompt: resolveSystemPrompt('analyst'),
+    systemPrompt: OPERATOR_SYSTEM_PROMPTS.analyst,
   },
 };
 
@@ -198,17 +200,6 @@ export interface OperatorParams { temperature: number; maxTokens: number; topP: 
 export interface OperatorOverride { systemPrompt?: string; params?: Partial<OperatorParams>; }
 const DEFAULT_OPERATOR_PARAMS: OperatorParams = { temperature: 0.4, maxTokens: 4096, topP: 1.0 };
 const OPERATOR_OVERRIDES: Partial<Record<OperatorArchetype, OperatorOverride>> = {};
-const OPERATOR_PROFILE_REVISIONS: Partial<Record<OperatorArchetype, number>> = {};
-
-function advanceOperatorProfileRevision(archetype: OperatorArchetype): number {
-  const revision = (OPERATOR_PROFILE_REVISIONS[archetype] || 0) + 1;
-  OPERATOR_PROFILE_REVISIONS[archetype] = revision;
-  return revision;
-}
-
-export function getOperatorProfileRevision(archetype: OperatorArchetype): number {
-  return OPERATOR_PROFILE_REVISIONS[archetype] || 0;
-}
 
 export function setOperatorOverride(archetype: OperatorArchetype, override: OperatorOverride): void {
   const cur = OPERATOR_OVERRIDES[archetype] || {};
@@ -216,12 +207,8 @@ export function setOperatorOverride(archetype: OperatorArchetype, override: Oper
     systemPrompt: override.systemPrompt !== undefined ? override.systemPrompt : cur.systemPrompt,
     params: { ...(cur.params || {}), ...(override.params || {}) },
   };
-  advanceOperatorProfileRevision(archetype);
 }
-export function resetOperatorOverride(archetype: OperatorArchetype): void {
-  delete OPERATOR_OVERRIDES[archetype];
-  advanceOperatorProfileRevision(archetype);
-}
+export function resetOperatorOverride(archetype: OperatorArchetype): void { delete OPERATOR_OVERRIDES[archetype]; }
 export function getOperatorParams(archetype: OperatorArchetype): OperatorParams {
   return { ...DEFAULT_OPERATOR_PARAMS, ...(OPERATOR_OVERRIDES[archetype]?.params || {}) };
 }
@@ -236,7 +223,6 @@ export function listOperatorPrompts() {
   return (Object.keys(ARCHETYPE_PROFILES) as OperatorArchetype[]).map((a) => {
     const base = ARCHETYPE_PROFILES[a];
     const ov = OPERATOR_OVERRIDES[a];
-    const systemPrompt = (ov && ov.systemPrompt) || base.systemPrompt;
     return {
       archetype: a,
       name: base.name,
@@ -245,11 +231,9 @@ export function listOperatorPrompts() {
       toolCategories: base.toolCategories,
       capabilities: base.capabilities,
       techniques: base.techniques,
-      systemPrompt,
+      systemPrompt: (ov && ov.systemPrompt) || base.systemPrompt,
       defaultSystemPrompt: base.systemPrompt,
       params: getOperatorParams(a),
-      capabilityDiagnostics: diagnoseOperatorCapabilities(systemPrompt, base.defaultTools),
-      revision: getOperatorProfileRevision(a),
       overridden: !!(ov && (ov.systemPrompt || (ov.params && Object.keys(ov.params).length))),
     };
   });
@@ -314,7 +298,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   public readonly id: string;
   public readonly callsign: string;
   public readonly archetype: OperatorArchetype;
-  public profile: ArchetypeProfile;
+  public readonly profile: ArchetypeProfile;
   public readonly config: OperatorConfig;
 
   private _state: OperatorState;
@@ -327,8 +311,13 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   private credentials: Credential[] = [];
   /** White-box source excerpt (security-prioritized), set by TempestCommand.setWhiteboxSource */
   private whiteboxSource: string = '';
-  private profileRevision: number;
-  private pendingProfileRevision: number | null = null;
+  /** Prior per-target scan notes (durable) — threaded into the agent prompt so infiltration continues prior work. */
+  private priorScanNotes: string = '';
+  /** Operator-selected mission focus phase (from the War Room SITREP) — biases effort toward one phase. */
+  private missionFocus: string = '';
+
+  /** Operator-granted authorization for the running mission (scan-approval banner receipts). */
+  private missionAuthorization: MissionAuthorization | null = null;
 
   constructor(
     callsign: string,
@@ -341,7 +330,6 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.callsign = callsign;
     this.archetype = archetype;
     this.profile = resolveProfile(archetype);
-    this.profileRevision = getOperatorProfileRevision(archetype);
     this.config = { ...DEFAULT_OPERATOR_CONFIG, ...config };
     this.llm = llm;
 
@@ -389,7 +377,6 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
    * Assign a task to the operator
    */
   async assignTask(task: Task, target?: Target): Promise<TaskResult> {
-    this.applyPendingProfileRefresh();
     if (!this.isAvailable()) {
       throw new Error(`Operator ${this.callsign} is not available (status: ${this._state.status})`);
     }
@@ -456,30 +443,6 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
   }
 
   /**
-   * Adopt the latest archetype profile without changing an in-flight request.
-   * Idle operators update immediately; all other live states defer until the
-   * next transition back to idle.
-   */
-  requestProfileRefresh(): 'applied' | 'deferred' {
-    const latestRevision = getOperatorProfileRevision(this.archetype);
-    if (this._state.status === 'idle') {
-      this.profile = resolveProfile(this.archetype);
-      this.profileRevision = latestRevision;
-      this.pendingProfileRevision = null;
-      return 'applied';
-    }
-    this.pendingProfileRevision = latestRevision;
-    return 'deferred';
-  }
-
-  private applyPendingProfileRefresh(): void {
-    if (this.pendingProfileRevision === null || this._state.status !== 'idle') return;
-    this.profile = resolveProfile(this.archetype);
-    this.profileRevision = getOperatorProfileRevision(this.archetype);
-    this.pendingProfileRevision = null;
-  }
-
-  /**
    * Attach an Arsenal and AgentLoop for autonomous tool-using execution
    */
   attachArsenal(_arsenal: Arsenal, agentLoop: AgentLoop): void {
@@ -501,6 +464,23 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
     this.board = board;
   }
 
+  /** Set persistent prior scan notes for the current target so the agent resumes instead of re-probing. */
+  setPriorScanNotes(notes: string): void {
+    this.priorScanNotes = String(notes || '');
+  }
+
+  /** Set the operator-selected mission focus phase — biases the agent toward one kill-chain phase. */
+  setMissionFocus(phase: string): void {
+    this.missionFocus = String(phase || '');
+  }
+
+  /** Set the operator's mission authorization — the scan-approval banner receipt(s) (or
+   * lab-scope auto-grant) ARE this bot's authorization for the whole mission; they are
+   * injected into every task prompt so the agent never pauses to request authorization. */
+  setMissionAuthorization(auth: MissionAuthorization | null): void {
+    this.missionAuthorization = auth || null;
+  }
+
   /**
    * Execute a task with an optional target context
    */
@@ -518,49 +498,17 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
       const onToolResult = ({ name, result, source }: { name: string; result: ToolResult; source?: 'agent' | 'backend_seeded' }): void => {
         this.emit('agent:tool_result', { task, name, result, source });
       };
-      const canForwardAgentEvents =
-        typeof this.agentLoop.on === 'function' &&
-        typeof this.agentLoop.off === 'function';
-      if (canForwardAgentEvents) {
-        this.agentLoop.on('agent:thinking', onThinking);
-        this.agentLoop.on('agent:tool_call', onToolCall);
-        this.agentLoop.on('agent:tool_result', onToolResult);
-      }
 
-      let result;
-      // [Phase-2] Register as live on the board and pull the shared situation report so this
-      // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
-      this.board?.heartbeat(this.id, 'hunting', task.name);
-      const sharedContext = this.board?.situationReport(this.id);
-      // ── Phase-based model routing (opt-in) ──────────────────────────────
-      // Missions burn most LLM calls in recon/scanner phases and fewest in
-      // exploit/analysis. With two providers configured, route the cheap model
-      // to high-volume phases and the strong model only where reasoning matters:
-      //   T3MP3ST_MODEL_RECON / _SCAN / _EXPLOIT / _POST / _ANALYSIS
-      // (model id per phase; unset = keep the operator's configured model).
-      let routedLLM: LLMBackbone | null = null;
-      try {
-        const routed = routeModelForPhase(task.phase, this.llm);
-        if (routed !== this.llm && this.agentLoop) {
-          routedLLM = routed;
-          this.agentLoop.setLLM(routed);
-        }
-        result = await this.agentLoop.run(task, this.profile.systemPrompt, target, this.whiteboxSource, sharedContext);
-      } finally {
-        if (routedLLM && this.agentLoop) this.agentLoop.setLLM(this.llm);
-        if (canForwardAgentEvents) {
-          this.agentLoop.off('agent:thinking', onThinking);
-          this.agentLoop.off('agent:tool_call', onToolCall);
-          this.agentLoop.off('agent:tool_result', onToolResult);
-        }
-      }
-
-      // Convert agent findings to operator findings.
-      // PROVENANCE-HONEST: only a tool-backed finding gets tool-output evidence (the raw
-      // output that produced it). A model-asserted finding carries NO fabricated evidence —
-      // recordFinding's gate then refuses to mark it verified. The old code laundered the
-      // model's prose summary as `type:'output'` for EVERY finding, which passed the gate.
-      for (const finding of result.findings) {
+      // INCREMENTAL FINDING RECORDING. The old flow recorded findings only when the
+      // agent loop RETURNED — so a task reaped by the dispatch backstop (or any
+      // mid-run crash) silently lost everything its tools had discovered. Now every
+      // 'agent:findings' event is recorded into the vault the moment it arrives;
+      // the completion pass below skips anything already recorded (by object
+      // identity — the loop emits the same references it later returns).
+      const recordedNow = new Set<AgentResult['findings'][number]>();
+      const recordAgentFinding = (finding: AgentResult['findings'][number]): void => {
+        if (recordedNow.has(finding)) return;
+        recordedNow.add(finding);
         const toolBacked = finding.provenance === 'tool';
         this.recordFinding({
           id: `finding-${randomUUID()}`,
@@ -584,6 +532,47 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
           remediation: finding.remediation,
           discoveredAt: Date.now(),
         });
+      };
+      const onFindings = ({ findings }: { findings: AgentResult['findings'] }): void => {
+        for (const f of findings) recordAgentFinding(f);
+      };
+
+      const canForwardAgentEvents =
+        typeof this.agentLoop.on === 'function' &&
+        typeof this.agentLoop.off === 'function';
+      if (canForwardAgentEvents) {
+        this.agentLoop.on('agent:thinking', onThinking);
+        this.agentLoop.on('agent:tool_call', onToolCall);
+        this.agentLoop.on('agent:tool_result', onToolResult);
+        this.agentLoop.on('agent:findings', onFindings);
+      }
+
+      let result;
+      try {
+        // [Phase-2] Register as live on the board and pull the shared situation report so this
+        // operator sees teammates' verified leads/claims — it builds on them instead of running blind.
+        this.board?.heartbeat(this.id, 'hunting', task.name);
+        const sharedContext = this.board?.situationReport(this.id);
+        // OPERATOR AUTHORIZATION: when the mission carries the operator's banner approval,
+        // it rides on the system prompt of EVERY task so the agent never stalls asking
+        // for authorization/receipts mid-scan (that approval already covers the mission).
+        const sysPrompt = this.missionAuthorization
+          ? this.profile.systemPrompt + '\n\n' + buildAuthorizationBlock(this.missionAuthorization)
+          : this.profile.systemPrompt;
+        result = await this.agentLoop.run(task, sysPrompt, target, this.whiteboxSource, sharedContext, this.priorScanNotes, this.missionFocus);
+      } finally {
+        if (canForwardAgentEvents) {
+          this.agentLoop.off('agent:thinking', onThinking);
+          this.agentLoop.off('agent:tool_call', onToolCall);
+          this.agentLoop.off('agent:tool_result', onToolResult);
+          this.agentLoop.off('agent:findings', onFindings);
+        }
+      }
+
+      // Completion pass: record only what the incremental path hasn't already
+      // stored (model-asserted debrief findings, limit-summary findings).
+      for (const finding of result.findings) {
+        recordAgentFinding(finding);
       }
 
       return {
@@ -732,16 +721,6 @@ Respond in a structured format.`;
       finding.verifiedAt = finding.verifiedAt ?? Date.now();
     } else {
       delete finding.verifiedAt;
-      // PROVENANCE SEVERITY CAP — an unverified claim must not outrank a verified one
-      // in the report. The original model assertion is preserved in assertedSeverity;
-      // the reported severity is capped: no provenance → low, context-only → medium,
-      // tool-backed → unchanged (verified).
-      const cap: Record<string, Severity> = { none: 'low', context: 'medium' };
-      const capped = cap[gate.provenance];
-      if (capped && SEVERITY_SCORES[finding.severity] > SEVERITY_SCORES[capped]) {
-        finding.assertedSeverity = finding.severity;
-        finding.severity = capped;
-      }
     }
     this.findings.push(finding);
     this._state.findingsCount++;
@@ -867,7 +846,6 @@ Respond in a structured format.`;
   private setStatus(newStatus: OperatorStatus): void {
     const oldStatus = this._state.status;
     this._state.status = newStatus;
-    if (newStatus === 'idle') this.applyPendingProfileRefresh();
     this.emit('status:changed', { oldStatus, newStatus });
   }
 
@@ -900,8 +878,6 @@ Respond in a structured format.`;
     findings: number;
     credentials: number;
     detectionRisk: number;
-    profileRevision: number;
-    pendingProfileRevision: number | null;
   } {
     return {
       id: this.id,
@@ -913,8 +889,6 @@ Respond in a structured format.`;
       findings: this._state.findingsCount,
       credentials: this._state.credentialsCount,
       detectionRisk: this._state.detectionRisk,
-      profileRevision: this.profileRevision,
-      pendingProfileRevision: this.pendingProfileRevision,
     };
   }
 }
@@ -1030,28 +1004,6 @@ export class OperatorCell extends EventEmitter<CellEvents> {
    */
   getOperatorsByArchetype(archetype: OperatorArchetype): OperatorAgent[] {
     return this.getAllOperators().filter(op => op.archetype === archetype);
-  }
-
-  refreshOperatorProfiles(archetype: OperatorArchetype): {
-    policy: 'idle-now-active-next-task';
-    revision: number;
-    appliedOperatorIds: string[];
-    deferredOperatorIds: string[];
-    futureSpawns: true;
-  } {
-    const appliedOperatorIds: string[] = [];
-    const deferredOperatorIds: string[] = [];
-    for (const operator of this.getOperatorsByArchetype(archetype)) {
-      const result = operator.requestProfileRefresh();
-      (result === 'applied' ? appliedOperatorIds : deferredOperatorIds).push(operator.id);
-    }
-    return {
-      policy: 'idle-now-active-next-task',
-      revision: getOperatorProfileRevision(archetype),
-      appliedOperatorIds,
-      deferredOperatorIds,
-      futureSpawns: true,
-    };
   }
 
   /**

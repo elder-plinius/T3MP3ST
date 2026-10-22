@@ -1,15 +1,13 @@
----
-title: "Changelog"
-summary: "Project change history."
-description: "Project change history."
-audience: ["operator", "developer", "maintainer"]
-category: "release"
-status: "current"
-source: "T3MP3ST repository"
-sourcePath: "docs/CHANGELOG.md"
-updated: "2026-07-20"
----
 # T3MP3ST Changelog
+
+## 1.5.0 — 2026-09-19 — OSINT / Geo / Dark-Web Suite + CTF Hardening
+
+- **OSINT & Person Locator suite** — 67-site username sweep (status/body/json probes), email intel (Gravatar + MX + breach lanes), dump lanes (LeakCheck v2/DeHashed/Snusbase key-gated with runtime arming from Settings → OSINT), phone intel (E.164 + NANP), username permutation engine, Bing SERP extraction, Interpol/OFAC screening (Tor fallback), public-records browser lane (TruePeopleSearch/FastPeopleSearch, Playwright-rendered, 10-min cache), identity corroboration (GitHub profile scoring, excluded mismatches), contact-first dossier (names/emails/phones/addresses) and Spokeo-style report.
+- **Agent wiring** — `osint_people_records`, `osint_username_sweep`, `osint_email_lookup`, `osint_phone_lookup`, `osint_breach_lookup`, `osint_person_locate`, `osint_darkweb_leak_monitor`, `osint_onion_search`, `osint_onion_fetch` (10 OSINT tools; recon gets full suite, arsenal headline 129 with opt-in `T3MP3ST_FULL_ARSENAL`).
+- **Geo Intel & Live GPS** — keyless IP geolocation (ipwho.is/ip-api), OSM Nominatim geocoding, map-feed aggregation, Leaflet + Esri dark tiles, aircraft AIS trails, quakes/alerts/ISS, Overpass POIs, OpenCellID towers (single-search, viewport-guarded), satellite.js TLE ground tracks, Tor egress badge + sfx.
+- **Dark-Web tab** — ransomware.live leak-site monitor, Ahmia onion search (honest degraded note), direct `.onion` fetch via local Tor circuit (9050/9150), `torStatus()` probe.
+- **Settings** — deep-dump lane keys panel (LeakCheck v2/DeHashed/Snusbase/OpencellID) + `T3MP3ST_OSINT_ALLOW_DIRECT` toggle, leak-glow SFX wiring across 16 pages, `sfx.js` synth engine.
+- **CTF & platform hardening since 1.0.0** — synthetic memory-forensics fixture (PROVENANCE + generator/solver), blind-SQLi / XSS-stored / SSRF-metadata isolation labs, WPScan structured parser, scope containment verbiage, provenance-safe batch `findBinaryLocations` (5×16) + WSL cache + pre-warm.
 
 ## 1.0.0 — 2026-09-08 — Certified source checkpoint
 

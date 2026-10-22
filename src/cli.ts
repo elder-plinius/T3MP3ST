@@ -513,7 +513,7 @@ async function openSettings(): Promise<void> {
   ]);
 
   switch (setting) {
-    case 'view':
+    case 'view': {
       const settings = config.getAll();
       console.log('');
       console.log(chalk.bold('Current Configuration:'));
@@ -527,8 +527,9 @@ async function openSettings(): Promise<void> {
       console.log(chalk.cyan('  HuggingFace:'), hasApiKey('huggingface') ? chalk.green('configured') : chalk.red('not set'));
       console.log('');
       break;
+    }
 
-    case 'provider':
+    case 'provider': {
       const providers = getConfiguredProviders().filter(p => p !== 'mock');
       if (providers.length === 0) {
         showWarning('No API keys configured');
@@ -546,6 +547,7 @@ async function openSettings(): Promise<void> {
       config.setDefaultProvider(provider);
       showSuccess(`Default provider set to: ${provider}`);
       break;
+    }
 
     case 'model': {
       const currentProvider = config.get('defaultProvider');
@@ -571,7 +573,7 @@ async function openSettings(): Promise<void> {
       break;
     }
 
-    case 'apikey':
+    case 'apikey': {
       const { keyProvider } = await inquirer.prompt([
         {
           type: 'list',
@@ -593,6 +595,7 @@ async function openSettings(): Promise<void> {
         showSuccess(`${keyProvider} API key saved!`);
       }
       break;
+    }
   }
 }
 
@@ -605,7 +608,7 @@ const program = new Command();
 program
   .name('t3mp3st')
   .description('T3MP3ST - Tactical Execution Multi-agent Platform for Elite Security Testing')
-  .version('1.0.0');
+  .version('1.5.0');
 
 program
   .command('interactive', { isDefault: true })

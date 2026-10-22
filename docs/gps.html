@@ -1,0 +1,2001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="manifest" href="manifest.webmanifest">
+    <title>T3MP3ST — Public GPS Map</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        try { var _t3mpTheme = localStorage.getItem('t3mp3st_theme'); if (_t3mpTheme && _t3mpTheme !== 'storm') document.documentElement.setAttribute('data-theme', _t3mpTheme); } catch (e) {}
+    </script>
+    <script>
+        (function () {
+            var embedded = false;
+            try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+            if (embedded && !/[?&]standalone/.test(location.search)) {
+                document.documentElement.classList.add('t3mp-embedded');
+                var s = document.createElement('style');
+                s.id = 't3mpEmbedGuard';
+                s.textContent = '.t3mp-embedded .sidebar{display:none!important}' +
+                    '.t3mp-embedded .main-content{margin-left:0!important;width:100%!important}' +
+                    '.t3mp-embedded .mobile-toggle{display:none!important}';
+                document.head.appendChild(s);
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --bg-primary: #071017;
+            --bg-secondary: #0b1822;
+            --bg-tertiary: #102534;
+            --bg-card: #0c1b25;
+            --surface: #10212d;
+            --card-bg: #0c1b25;
+            --border-color: #1e4053;
+            --border-glow: #2fffd255;
+            --text-primary: #e0e0e0;
+            --text-secondary: #9baeb8;
+            --text-muted: #6f8794;
+            --accent: #2fffd2;
+            --accent-dim: rgba(47, 255, 210, 0.12);
+            --danger: #ff4757;
+            --warning: #ffb142;
+            --success: #2ed573;
+            --info: #70a1ff;
+            --radius: 8px;
+        }
+        [data-theme="ember"] { --accent: #ffab40; --accent-dim: rgba(255,171,64,0.12); --border-glow: #ffab4055; }
+        [data-theme="crimson"] { --accent: #ff5470; --accent-dim: rgba(255,84,112,0.12); --border-glow: #ff547055; }
+        [data-theme="void"] { --accent: #b57bff; --accent-dim: rgba(181,123,255,0.12); --border-glow: #b57bff55; }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .bg-grid {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-image:
+                linear-gradient(rgba(47, 255, 210, 0.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(47, 255, 210, 0.025) 1px, transparent 1px);
+            background-size: 40px 40px;
+            pointer-events: none; z-index: 0;
+        }
+        .app-container { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+
+        .sidebar {
+            width: 240px; background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            position: fixed; top: 0; left: 0; bottom: 0;
+            display: flex; flex-direction: column;
+            transition: transform 0.3s ease; z-index: 100;
+        }
+        .sidebar-header { padding: 18px 15px; border-bottom: 1px solid var(--border-color); }
+        .logo {
+            font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px;
+            color: var(--accent); display: flex; align-items: center; gap: 8px;
+            text-shadow: 0 0 10px var(--border-glow);
+        }
+        .logo-icon { font-size: 20px; }
+        .version-badge {
+            font-size: 10px; background: var(--bg-tertiary); color: var(--text-muted);
+            padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-color);
+        }
+        .api-status-bar {
+            padding: 10px 15px; border-bottom: 1px solid var(--border-color);
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        }
+        .api-status-indicator { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+        .api-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); animation: pulse 2s infinite; }
+        .api-dot.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .api-dot.err { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .api-reconnect-btn {
+            background: none; border: 1px solid var(--border-color); color: var(--text-secondary);
+            border-radius: 4px; cursor: pointer; padding: 2px 7px; font-size: 12px;
+        }
+        .api-reconnect-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+        nav.nav-section { flex: 1; overflow-y: auto; padding: 10px; }
+        .nav-label {
+            font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+            color: var(--text-muted); padding: 12px 8px 6px;
+        }
+        .nav-item {
+            display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+            color: var(--text-secondary); text-decoration: none; font-size: 13px;
+            border-radius: 6px; margin-bottom: 2px; border: 1px solid transparent;
+            transition: all 0.15s ease;
+        }
+        .nav-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+        .nav-item.active { background: var(--accent-dim); color: var(--accent); border-color: var(--border-glow); }
+        .nav-item .icon { font-size: 16px; width: 22px; text-align: center; }
+
+        .sidebar-footer { padding: 12px 15px; border-top: 1px solid var(--border-color); }
+        .theme-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--text-muted); }
+        .theme-select {
+            background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color);
+            border-radius: 4px; font-size: 11px; padding: 3px 6px;
+        }
+
+        .main-content {
+            flex: 1; margin-left: 240px; display: flex; flex-direction: column;
+            min-height: 100vh; width: calc(100% - 240px);
+        }
+        .header {
+            padding: 16px 24px; border-bottom: 1px solid var(--border-color);
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            background: rgba(7, 16, 23, 0.7); backdrop-filter: blur(6px);
+            position: sticky; top: 0; z-index: 50;
+        }
+        .header-title {
+            font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 700;
+            color: var(--text-primary); display: flex; align-items: center; gap: 10px;
+        }
+        .header-title span { color: var(--accent); }
+        .header-actions { display: flex; align-items: center; gap: 10px; }
+
+        .egress-badge {
+            display: inline-flex; align-items: center; gap: 7px; font-family: 'JetBrains Mono', monospace;
+            font-size: 11px; padding: 4px 10px; border-radius: 20px; cursor: pointer;
+            border: 1px solid var(--border-color); color: var(--text-secondary); background: var(--bg-card);
+        }
+        .egress-badge .egress-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
+        .egress-badge.egress-proxied { border-color: var(--success); color: var(--success); }
+        .egress-badge.egress-proxied .egress-dot { background: var(--success); box-shadow: 0 0 7px var(--success); }
+        .egress-badge.egress-leak, .egress-badge.egress-no-ip, .egress-badge.egress-error {
+            border-color: #ff0033; color: #ff3355; animation: egressAlert 1.4s ease-in-out infinite;
+        }
+        .egress-badge.egress-leak .egress-dot, .egress-badge.egress-no-ip .egress-dot, .egress-badge.egress-error .egress-dot {
+            background: #ff0033; box-shadow: 0 0 8px #ff0033;
+        }
+        @keyframes egressAlert {
+            0%, 100% { box-shadow: 0 0 4px rgba(255, 0, 51, 0.35); }
+            50% { box-shadow: 0 0 16px rgba(255, 0, 51, 0.85); }
+        }
+
+        .page-content { padding: 20px 24px 40px; flex: 1; }
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px; margin-bottom: 18px;
+        }
+        .stat-card {
+            background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius);
+            padding: 14px 16px;
+        }
+        .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; color: var(--accent); }
+        .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-top: 4px; }
+
+        .panel {
+            background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius);
+            padding: 16px; margin-bottom: 18px;
+        }
+        .panel-title {
+            font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 12px;
+        }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+        .field { display: flex; flex-direction: column; gap: 5px; }
+        .field label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); }
+        input[type="text"], select {
+            background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary);
+            border-radius: 6px; padding: 8px 10px; font-size: 13px; font-family: 'JetBrains Mono', monospace;
+            outline: none; min-width: 110px;
+        }
+        input[type="text"]:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+        .btn {
+            background: var(--accent-dim); border: 1px solid var(--border-glow); color: var(--accent);
+            padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;
+            font-family: 'JetBrains Mono', monospace; letter-spacing: 0.5px; transition: all 0.15s ease;
+        }
+        .btn:hover { background: var(--accent); color: #04121a; box-shadow: 0 0 14px var(--border-glow); }
+        .btn.ghost { background: transparent; border-color: var(--border-color); color: var(--text-secondary); }
+        .btn.ghost:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); box-shadow: none; }
+        .btn.active { background: var(--accent); color: #04121a; }
+
+        .map-wrap { position: relative; border: 1px solid var(--border-color); border-radius: var(--radius); overflow: hidden; }
+        #gpsMap { height: 560px; width: 100%; background: #0a141d; }
+        .layer-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; background: var(--bg-secondary); border-top: 1px solid var(--border-color); }
+        .layer-chip {
+            display: inline-flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace;
+            font-size: 11px; padding: 5px 11px; border-radius: 16px; cursor: pointer;
+            border: 1px solid var(--border-color); color: var(--text-secondary); background: var(--bg-card);
+            user-select: none;
+        }
+        .layer-chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .layer-chip.active { border-color: var(--border-glow); color: var(--text-primary); box-shadow: 0 0 8px rgba(47, 255, 210, 0.15); }
+        .layer-chip.active .count { color: var(--accent); }
+        .layer-chip .count { font-weight: 700; }
+
+        .pin-readout {
+            position: absolute; top: 10px; right: 10px; z-index: 500;
+            background: rgba(7, 16, 23, 0.92); border: 1px solid var(--border-glow); border-radius: 8px;
+            padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+            min-width: 230px; max-width: 320px; box-shadow: 0 0 18px rgba(47, 255, 210, 0.12);
+        }
+        .pin-readout .pr-title { color: var(--accent); font-weight: 700; margin-bottom: 5px; letter-spacing: 0.5px; line-height: 1.3; }
+        .pin-readout .pr-coords { color: var(--text-primary); word-break: break-all; margin-top: 5px; }
+        .pin-readout .pr-place { color: var(--text-secondary); margin-top: 5px; font-size: 10.5px; line-height: 1.45; }
+        .pin-readout .pr-meta { color: var(--text-muted); margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color); font-size: 9.5px; line-height: 1.5; }
+        .pin-readout .pr-source { color: var(--text-muted); font-size: 9px; margin-top: 4px; opacity: 0.8; }
+
+        .status-line {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted);
+            padding: 8px 2px 0; min-height: 18px;
+        }
+        .status-line b { color: var(--accent); font-weight: 600; }
+        .status-line .warn { color: var(--warning); }
+
+        /* "Nothing in your viewport" is a correct answer, not a dead feed — so the
+           layer says how many exist elsewhere and offers to fly you to the biggest. */
+        .outside-strip {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 8px 0 2px;
+            padding: 9px 11px; border: 1px dashed var(--border-color); border-radius: 6px;
+            background: var(--bg-secondary);
+        }
+        .outside-strip .os-label {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase;
+            letter-spacing: 0.7px; color: var(--text-muted);
+        }
+        .outside-chip {
+            display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+            font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 4px 10px;
+            border-radius: 13px; border: 1px solid var(--border-color); background: var(--bg-card);
+            color: var(--text-secondary); transition: all 0.15s ease;
+        }
+        .outside-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+        .outside-chip .mag { font-weight: 700; color: var(--warning); }
+
+        /* AREA WATCH — fires on its own ~5s after the pin settles. The local model
+           summarizes; the headlines below the brief are the actual evidence. */
+        .area-watch {
+            margin: 10px 0 16px; padding: 12px 14px; border: 1px solid var(--border-color);
+            border-left: 2px solid var(--info); border-radius: var(--radius); background: var(--bg-card);
+        }
+        .area-watch.watching { border-left-color: var(--warning); }
+        .area-watch.ready { border-left-color: var(--info); box-shadow: 0 0 14px rgba(112, 161, 255, 0.10); }
+        .area-watch.empty { border-left-color: var(--text-muted); }
+        .aw-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+        .aw-title { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.9px; color: var(--info); }
+        .aw-place { font-size: 11.5px; color: var(--text-secondary); flex: 1; min-width: 120px; word-break: break-word; }
+        .aw-status { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--text-muted); margin-top: 6px; }
+        .aw-brief {
+            margin-top: 9px; font-size: 12.5px; line-height: 1.6; color: var(--text-primary);
+            border-left: 1px solid var(--border-glow); padding-left: 10px; white-space: pre-wrap; word-break: break-word;
+        }
+        .aw-articles { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+        .aw-article {
+            display: flex; gap: 8px; align-items: baseline; text-decoration: none; color: var(--text-secondary);
+            font-size: 11.5px; line-height: 1.45; padding: 4px 7px; border-radius: 5px; border: 1px solid transparent;
+        }
+        .aw-article:hover { border-color: var(--border-color); background: var(--bg-tertiary); color: var(--text-primary); }
+        .aw-article .src { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--info); white-space: nowrap; }
+        .aw-article .age { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--text-muted); white-space: nowrap; margin-left: auto; }
+
+        .phone-result { margin-top: 12px; display: none; }
+        .phone-result.show { display: block; }
+        .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 12px; }
+        .kv { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; padding: 9px 11px; }
+        .kv .k { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); }
+        .kv .v { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text-primary); margin-top: 3px; word-break: break-all; }
+        .kv .v.ok { color: var(--success); }
+        .kv .v.bad { color: var(--danger); }
+        .link-row { display: flex; flex-wrap: wrap; gap: 7px; }
+        .pill-link {
+            font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--info);
+            border: 1px solid var(--border-color); border-radius: 14px; padding: 4px 11px;
+            text-decoration: none; transition: all 0.15s ease;
+        }
+        .pill-link:hover { border-color: var(--info); box-shadow: 0 0 8px rgba(112, 161, 255, 0.3); }
+
+        .scope-note {
+            font-size: 11px; color: var(--text-muted); border: 1px dashed var(--border-color);
+            border-radius: 6px; padding: 10px 13px; line-height: 1.55; margin-top: 4px;
+        }
+        .scope-note b { color: var(--text-secondary); }
+
+        /* ── AI COPILOT ───────────────────────────────────────────── */
+        .copilot-panel { border-color: var(--border-glow); box-shadow: 0 0 18px rgba(47, 255, 210, 0.07); }
+        .copilot-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+        .copilot-model {
+            display: inline-flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace;
+            font-size: 10.5px; padding: 3px 9px; border-radius: 12px; border: 1px solid var(--border-color);
+            color: var(--text-secondary); background: var(--bg-tertiary); max-width: 100%;
+        }
+        .copilot-model .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex: none; }
+        .copilot-model.ready { border-color: var(--border-glow); color: var(--accent); }
+        .copilot-model.ready .dot { background: var(--accent); box-shadow: 0 0 7px var(--accent); }
+        .copilot-model.busy { border-color: var(--warning); color: var(--warning); }
+        .copilot-model.busy .dot { background: var(--warning); animation: pulse 1s infinite; }
+        .copilot-model.down { border-color: var(--danger); color: var(--danger); }
+        .copilot-model.down .dot { background: var(--danger); box-shadow: 0 0 7px var(--danger); }
+        .copilot-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 9px 0; }
+        .copilot-chip {
+            font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 4px 10px; border-radius: 13px;
+            border: 1px solid var(--border-color); background: var(--bg-tertiary); color: var(--text-secondary);
+            cursor: pointer; transition: all 0.15s ease;
+        }
+        .copilot-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+        .copilot-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+        .copilot-box {
+            width: 100%; min-height: 62px; resize: vertical; background: var(--bg-tertiary);
+            border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary);
+            padding: 9px 11px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.5; outline: none;
+        }
+        .copilot-box:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+        .copilot-out {
+            margin-top: 11px; border: 1px solid var(--border-color); border-left: 2px solid var(--accent);
+            border-radius: 6px; background: var(--bg-tertiary); padding: 11px 13px; display: none;
+            font-size: 12.5px; line-height: 1.6;
+        }
+        .copilot-out.show { display: block; }
+        .copilot-out .co-answer { white-space: pre-wrap; word-break: break-word; color: var(--text-primary); }
+        .copilot-out .co-answer b { color: var(--accent); font-weight: 600; }
+        .copilot-out .co-answer code {
+            font-family: 'JetBrains Mono', monospace; font-size: 11.5px; background: var(--bg-card);
+            border: 1px solid var(--border-color); border-radius: 3px; padding: 0 4px; color: var(--info);
+        }
+        .co-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        .co-action {
+            display: inline-flex; align-items: center; gap: 5px; font-family: 'JetBrains Mono', monospace;
+            font-size: 10.5px; padding: 3px 9px; border-radius: 12px; border: 1px solid var(--border-color);
+            color: var(--text-secondary); background: var(--bg-card);
+        }
+        .co-action.done { border-color: var(--success); color: var(--success); }
+        .co-action.failed { border-color: var(--danger); color: var(--danger); }
+        .co-facts { margin-top: 10px; border-top: 1px dashed var(--border-color); padding-top: 9px; }
+        .co-facts summary { cursor: pointer; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.7px; }
+        .co-facts ul { margin: 7px 0 0; padding-left: 17px; }
+        .co-facts li { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--text-secondary); line-height: 1.55; margin-bottom: 3px; word-break: break-word; }
+        .copilot-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 9px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted); }
+        .copilot-meta b { color: var(--text-secondary); font-weight: 600; }
+        .measure-line { color: var(--accent); weight: 2; opacity: 0.9; }
+        .measure-label { color: var(--accent); font-size: 10.5px; }
+
+        .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #0c1b25; color: #e0e0e0; border: 1px solid #1e4053; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .leaflet-popup-content { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.5; margin: 10px 14px; }
+        .leaflet-container a.leaflet-popup-close-button { color: #6f8794; }
+        .leaflet-control-attribution { background: rgba(7,16,23,0.8) !important; color: #6f8794 !important; }
+        .leaflet-control-attribution a { color: #70a1ff !important; }
+
+        .gps-pin-icon {
+            font-size: 26px; line-height: 26px; filter: drop-shadow(0 0 6px rgba(255, 193, 7, 0.8));
+            cursor: grab;
+        }
+        .gps-icon-marker {
+            text-align: center; text-shadow: 0 0 4px #04121a, 0 1px 3px rgba(0, 0, 0, 0.9);
+        }
+        .gps-plane { filter: drop-shadow(0 0 3px rgba(112, 161, 255, 0.85)); }
+
+        .mobile-toggle {
+            display: none; position: fixed; top: 14px; left: 14px; z-index: 200;
+            background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--accent);
+            border-radius: 6px; padding: 8px 11px; cursor: pointer; font-size: 16px;
+        }
+        @media (max-width: 900px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main-content { margin-left: 0; width: 100%; }
+            .mobile-toggle { display: block; }
+            #gpsMap { height: 420px; }
+        }
+    </style>
+    <script src="sfx.js"></script>
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <button class="mobile-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">☰</button>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo"><span class="logo-icon">⚡</span> T3MP3ST <span class="version-badge">GPS</span></div>
+            </div>
+            <div class="api-status-bar">
+                <div class="api-status-indicator"><span class="api-dot" id="apiDot"></span><span id="apiText">Connecting…</span></div>
+                <button class="api-reconnect-btn" onclick="checkApiStatus()">↻</button>
+            </div>
+            <nav class="nav-section">
+                <div class="nav-label">Main</div>
+                <a class="nav-item" href="index.html"><span class="icon">⚔️</span> War Room</a>
+                <a class="nav-item" href="live-scan.html"><span class="icon">📡</span> Live Scan</a>
+                <a class="nav-item" href="receipts.html"><span class="icon">🧾</span> Scope Receipts</a>
+                <a class="nav-item" href="operators.html"><span class="icon">🤖</span> Operatives</a>
+                <a class="nav-item" href="evidence.html"><span class="icon">🔐</span> Evidence Vault</a>
+                <div class="nav-label">Ranges</div>
+                <a class="nav-item" href="obsidivm.html"><span class="icon">📈</span> OBSIDIVM</a>
+                <a class="nav-item" href="ctf.html"><span class="icon">🚩</span> CTF Range</a>
+                <div class="nav-label">Toolkit</div>
+                <a class="nav-item" href="arsenal.html"><span class="icon">📡</span> Arsenal</a>
+                <a class="nav-item" href="cves.html"><span class="icon">⚡</span> CVE Vault</a>
+                <a class="nav-item" href="osint.html"><span class="icon">🕵️</span> OSINT</a>
+                <a class="nav-item active" href="gps.html"><span class="icon">🛰️</span> GPS Map</a>
+                <a class="nav-item" href="dfir.html"><span class="icon">🛡️</span> DFIR Response</a>
+                                <a class="nav-item" href="strix.html" title="Strix — autonomous AI pentesters (K:codingappDevstrix)" style="text-decoration:none;">
+            <a class="nav-item" href="search.html" title="Cairn  state-space search over a fact-intent graph"><span class="icon">>�</span> Cairn Search <span style="margin-left:auto; font-size:9px; letter-spacing:0.6px; opacity:0.7;">STATE SEARCH</span></a>
+                    <span class="icon">🦊</span> Strix <span style="margin-left:auto; font-size:9px; letter-spacing:0.6px; opacity:0.7;">AI PENTEST</span>
+                </a>
+<a class="nav-item" href="terminal.html"><span class="icon">💻</span> Terminal</a>
+                <a class="nav-item" href="configs.html"><span class="icon">💾</span> Config Library</a>
+                <div class="nav-label">Command</div>
+                <a class="nav-item" href="general.html"><span class="icon">★</span> Op Admiral</a>
+                <div class="nav-label">System</div>
+                <a class="nav-item" href="self-improve.html"><span class="icon">🧬</span> Self-Improvement</a>
+                <a class="nav-item" href="settings.html"><span class="icon">⚙️</span> Settings</a>
+                <a class="nav-item" href="about.html"><span class="icon">ℹ️</span> About</a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="theme-row">
+                    <span>Theme</span>
+                    <select class="theme-select" id="themeSelect" onchange="setTheme(this.value)">
+                        <option value="storm">Storm</option>
+                        <option value="ember">Ember</option>
+                        <option value="crimson">Crimson</option>
+                        <option value="void">Void</option>
+                    </select>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="header">
+                <div class="header-title"><span>🛰️</span> PUBLIC GPS MAP</div>
+                <div class="header-actions">
+                    <span id="egressIpBadge" class="egress-badge" onclick="refreshEgressIp(true)" title="Egress IP for feed lookups — click to re-check">
+                        <span class="egress-dot"></span>
+                        <span class="egress-label">IP:</span>
+                        <span class="egress-ip" id="egressIpValue">…</span>
+                    </span>
+                    <button class="btn ghost" id="autoBtn" onclick="toggleAuto()">▶ AUTO 30s</button>
+                </div>
+            </header>
+
+            <div class="page-content">
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value" id="statAircraft">—</div><div class="stat-label">Aircraft In View</div></div>
+                    <div class="stat-card"><div class="stat-value" id="statSats">—</div><div class="stat-label">Satellites Shown</div></div>
+                    <div class="stat-card"><div class="stat-value" id="statQuakes">—</div><div class="stat-label">Quakes (24h)</div></div>
+                    <div class="stat-card"><div class="stat-value" id="statAlerts">—</div><div class="stat-label">Weather Alerts</div></div>
+                    <div class="stat-card"><div class="stat-value" id="statPois">—</div><div class="stat-label">POIs At Pin</div></div>
+                    <div class="stat-card"><div class="stat-value" id="statIss">—</div><div class="stat-label">ISS Position</div></div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-title">📍 Operator Pin — click the map, drag the pin, or search a place</div>
+                    <div class="toolbar">
+                        <div class="field" style="flex:1; min-width:220px;">
+                            <label>Search place / address</label>
+                            <input type="text" id="searchBox" placeholder="e.g. Brooklyn Navy Yard" onkeydown="if(event.key==='Enter')searchPlace()">
+                        </div>
+                        <button class="btn" onclick="searchPlace()">🔎 GO</button>
+                        <div class="field"><label>Lat</label><input type="text" id="pinLat" placeholder="40.7000" style="width:110px"></div>
+                        <div class="field"><label>Lon</label><input type="text" id="pinLon" placeholder="-73.9700" style="width:110px"></div>
+                        <button class="btn ghost" onclick="setPinFromInputs()">SET PIN</button>
+                        <div class="field"><label>POI kind</label>
+                            <select id="poiKind">
+                                <option value="cafe">Cafés</option>
+                                <option value="restaurant">Restaurants</option>
+                                <option value="fuel">Fuel stations</option>
+                                <option value="hospital">Hospitals</option>
+                                <option value="pharmacy">Pharmacies</option>
+                                <option value="police">Police</option>
+                                <option value="bank">Banks</option>
+                                <option value="hotel">Hotels</option>
+                                <option value="school">Schools</option>
+                                <option value="place_of_worship">Places of worship</option>
+                            </select>
+                        </div>
+                        <div class="field"><label>Radius</label>
+                            <select id="poiRadius">
+                                <option value="250">250 m</option>
+                                <option value="500" selected>500 m</option>
+                                <option value="1000">1 km</option>
+                                <option value="2000">2 km</option>
+                            </select>
+                        </div>
+                        <button class="btn ghost" onclick="loadPois(true)">🍴 LOAD POIs</button>
+                        <button class="btn ghost" onclick="refreshAll()">↻ REFRESH ALL</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-title">🛰 Public Satellites — CelesTrak GP TLE propagated live with SGP4 (keyless)</div>
+                    <div class="toolbar">
+                        <div class="field"><label>Constellation / group</label>
+                            <select id="satGroup" style="min-width:210px"></select>
+                        </div>
+                        <div class="field"><label>Show</label>
+                            <select id="satLimit">
+                                <option value="50">50 sats</option>
+                                <option value="100">100 sats</option>
+                                <option value="200" selected>200 sats</option>
+                                <option value="350">350 sats</option>
+                                <option value="500">500 sats</option>
+                            </select>
+                        </div>
+                        <button class="btn" onclick="loadSats(true)">🛰 LOAD SATS</button>
+                        <button class="btn ghost" onclick="fitSats()">⛶ FIT ALL</button>
+                        <button class="btn ghost" onclick="clearSats()">✕ CLEAR</button>
+                        <span class="status-line" id="satStatus" style="padding:0 4px">Pick a group and load — positions are propagated to now via satellite.js SGP4.</span>
+                    </div>
+                </div>
+
+                <div class="map-wrap">
+                    <div id="gpsMap"></div>
+                    <div class="pin-readout">
+                        <div class="pr-title" id="pinTitle">📍 NO PIN SET</div>
+                        <div class="pr-place" id="pinPlace">Click the map, drag the pin, or search a place.</div>
+                        <div class="pr-coords" id="pinCoords">—</div>
+                        <div class="pr-meta" id="pinMeta">The pin is your click point — a map coordinate, not a survey-grade position fix.</div>
+                        <div class="pr-source" id="pinSource"></div>
+                    </div>
+                    <div class="layer-chips">
+                        <span class="layer-chip active" data-layer="aircraft" onclick="toggleLayer('aircraft')"><span class="dot" style="background:#70a1ff"></span>✈ AIRCRAFT <span class="count" id="cntAircraft">0</span></span>
+                        <span class="layer-chip" data-layer="sat" onclick="toggleLayer('sat')"><span class="dot" style="background:#ffd166"></span>🛰 SATS <span class="count" id="cntSat">0</span></span>
+                        <span class="layer-chip active" data-layer="quake" onclick="toggleLayer('quake')"><span class="dot" style="background:#ffb142"></span>🌍 QUAKES <span class="count" id="cntQuakes">0</span></span>
+                        <span class="layer-chip active" data-layer="alert" onclick="toggleLayer('alert')"><span class="dot" style="background:#ff4757"></span>⚠ ALERTS <span class="count" id="cntAlerts">0</span></span>
+                        <span class="layer-chip active" data-layer="iss" onclick="toggleLayer('iss')" ondblclick="locateIss()" title="ISS — live International Space Station position (wheretheiss.at). Click to toggle, double-click to fly to it."><span class="dot" style="background:#2ed573"></span>🛰 ISS <span class="count" id="cntIss">0</span></span><button class="btn ghost" style="padding:4px 8px;font-size:11px;" onclick="locateIss()" title="Center map on ISS now">◎ LOCATE ISS</button>
+                        <span class="layer-chip active" data-layer="poi" onclick="toggleLayer('poi')"><span class="dot" style="background:#b57bff"></span>🍴 POIs <span class="count" id="cntPois">0</span></span>
+                        <span class="layer-chip" data-layer="tower" onclick="toggleLayer('tower')"><span class="dot" style="background:#00d2d3"></span>📱 TOWERS <span class="count" id="cntTower">0</span></span><button class="btn ghost" style="padding:4px 8px;font-size:11px;" onclick="towersAtPin()" title="The tower API covers 2×2 km per search — fly to a street-level view at your pin and search it">◎ TOWERS AT PIN</button>
+                        <span class="layer-chip" data-layer="app" onclick="toggleLayer('app')"><span class="dot" style="background:#2fffd2"></span>🎯 APP TARGETS <span class="count" id="cntApp">0</span></span>
+                    </div>
+                </div>
+                <div class="status-line" id="gpsStatus">Feeds: OpenSky ADS-B (anonymous tier) · CelesTrak satellites (GP TLE + SGP4) · USGS 24h · NOAA/NWS active alerts · wheretheiss.at · OpenStreetMap/Overpass · OpenCelliD tower registry (key-gated: T3MP3ST_OPENCELLID_KEY). All keyless except towers.</div>
+                <div class="outside-strip" id="outsideStrip" style="display:none"></div>
+
+                <div class="area-watch" id="areaWatch">
+                    <div class="aw-head">
+                        <span class="aw-title">📰 AREA WATCH</span>
+                        <span class="aw-place" id="awPlace">drop a pin — this searches the news for wherever it lands</span>
+                        <button class="btn ghost" id="awRefresh" onclick="runAreaWatch(true)" style="padding:3px 9px;font-size:10.5px;">⟳</button>
+                        <button class="btn ghost" id="awStop" onclick="stopAreaWatch()" style="padding:3px 9px;font-size:10.5px;display:none">⏹</button>
+                    </div>
+                    <div class="aw-status" id="awStatus">idle</div>
+                    <div class="aw-brief" id="awBrief" style="display:none"></div>
+                    <div class="aw-articles" id="awArticles"></div>
+                </div>
+
+                <div class="panel copilot-panel" style="margin-top:18px;">
+                    <div class="copilot-head">
+                        <div class="panel-title" style="margin-bottom:0">🤖 LOCAL COPILOT — reads the map, moves the map</div>
+                        <span class="copilot-model" id="copilotModel"><span class="dot"></span><span id="copilotModelText">local model: checking…</span></span>
+                    </div>
+                    <div class="status-line" style="padding:0 0 6px">
+                        Grounded in the feeds below and the server-computed facts. It picks map actions from a fixed whitelist and writes the prose —
+                        every distance, bearing and count is calculated by the server, never by the model.
+                    </div>
+                    <div class="toolbar" style="margin-bottom:8px">
+                        <div class="field" style="flex:1; min-width:260px;">
+                            <label>Ollama model</label>
+                            <select id="copilotModelSel" onchange="copilotSaveModel(this.value); copilotLocalConfig();"><option value="">(server default)</option></select>
+                        </div>
+                        <button class="btn ghost" id="copilotScanBtn" onclick="copilotScanModels()">⟳ SCAN OLLAMA</button>
+                        <span class="status-line" id="copilotModelsStatus" style="padding:0 2px">model list not scanned yet</span>
+                    </div>
+                    <textarea class="copilot-box" id="copilotBox" placeholder="Ask the map: “what matters in this view?”, “fly to the ISS”, “how far is the nearest strong quake from my pin?”, “show hospitals near me”…" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter')runCopilot()"></textarea>
+                    <div class="copilot-chips" id="copilotChips">
+                        <span class="copilot-chip" data-mode="brief" onclick="copilotQuick('brief')">✦ Brief this view</span>
+                        <span class="copilot-chip" data-mode="ask" onclick="copilotQuick('ask')">⚡ Nearest strong quake to my pin</span>
+                        <span class="copilot-chip" data-mode="command" onclick="copilotQuick('command')">🛰 Fly to the ISS and measure from my pin</span>
+                        <span class="copilot-chip" data-mode="command" onclick="copilotQuick('command')">📡 Load the Starlink group</span>
+                        <span class="copilot-chip" data-mode="command" onclick="copilotQuick('command')">🏥 Show hospitals near my pin</span>
+                        <span class="copilot-chip" data-mode="ask" onclick="copilotQuick('ask')">📐 What can this map tell me — and what can it not?</span>
+                    </div>
+                    <div class="toolbar" style="align-items:center">
+                        <button class="btn" id="copilotRun" onclick="runCopilot()">✦ ASK COPILOT</button>
+                        <button class="btn ghost" id="copilotStop" onclick="stopCopilot()" style="display:none">⏹ STOP</button>
+                        <span class="status-line" id="copilotStatus" style="padding:0 2px">idle — copilot runs on your LOCAL model; nothing leaves the box.</span>
+                    </div>
+                    <div class="copilot-out" id="copilotOut">
+                        <div class="co-answer" id="copilotAnswer"></div>
+                        <div class="co-actions" id="copilotActions"></div>
+                        <div class="copilot-meta" id="copilotMeta"></div>
+                        <details class="co-facts" id="copilotFactsWrap" style="display:none">
+                            <summary>Server-computed facts given to the model</summary>
+                            <ul id="copilotFacts"></ul>
+                        </details>
+                    </div>
+                    <div class="scope-note" style="margin-top:12px">
+                        <b>Scope:</b> the copilot narrates public environment and vehicle broadcasts on this map and can run whitelisted map actions
+                        (fly, pin, layer toggle, satellite group, POIs, measurement, auto-refresh). It does not track, locate or profile people,
+                        and has no device positioning — that stays in the OSINT Locator.
+                    </div>
+                </div>
+
+                <div class="panel" style="margin-top:18px;">
+                    <div class="panel-title">📱 Phone Number Intel — prefix metadata &amp; public reverse-lookup lanes</div>
+                    <div class="toolbar">
+                        <div class="field" style="flex:1; min-width:220px;">
+                            <label>Phone number (any format)</label>
+                            <input type="text" id="phoneBox" placeholder="+1 718 555 0134" onkeydown="if(event.key==='Enter')lookupPhone()">
+                        </div>
+                        <button class="btn" onclick="lookupPhone()">📱 LOOKUP</button>
+                    </div>
+                    <div class="phone-result" id="phoneResult"></div>
+                    <div class="scope-note" style="margin-top:12px;">
+                        <b>Scope:</b> this parses the number and reports where it was <b>issued</b> (country, NANP area code validity) plus deep links to public reverse-lookup services.
+                        There is no public source for a phone's live position — cell-tower data is carrier-proprietary and device positioning is out of scope by doctrine. The OSINT Locator covers lawful digital-footprint work.
+                    </div>
+                </div>
+
+                <div class="scope-note">
+                    <b>Public GPS data — what this screen is:</b> live positions from public broadcasts and open geodata —
+                    aircraft ADS-B (the same public feed aviation trackers render), USGS seismic events, NOAA/NWS active weather alerts,
+                    the ISS, and OpenStreetMap points of interest around your pin. It maps <b>vehicles, phenomena and places — not people</b>.
+                    Feed counts reflect the current viewport for aircraft; quakes/alerts load globally and filter to view.
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════
+        // SHARED PLUMBING — api, theme, api-status, egress badge
+        // ═══════════════════════════════════════════════════════════════
+        window.T3MP3ST_API = window.T3MP3ST_API || { baseUrl: null, checkHealth: checkApiStatusSafe };
+
+        function getApiBase() {
+            if (window.T3MP3ST_API && window.T3MP3ST_API.baseUrl) return window.T3MP3ST_API.baseUrl;
+            var isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            return isLocal ? (window.location.port === '3333' ? '' : 'http://' + window.location.hostname + ':3333') : '';
+        }
+
+        async function api(path, opts) {
+            const r = await fetch(getApiBase() + path, opts || {});
+            const d = await r.json().catch(function () { return {}; });
+            if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+            return d;
+        }
+
+        async function checkApiStatusSafe() { try { await checkApiStatus(); } catch (e) {} }
+
+        function setTheme(t) {
+            try {
+                if (t && t !== 'storm') document.documentElement.setAttribute('data-theme', t);
+                else document.documentElement.removeAttribute('data-theme');
+                localStorage.setItem('t3mp3st_theme', t);
+            } catch (e) {}
+        }
+        (function initTheme() {
+            try {
+                var t = localStorage.getItem('t3mp3st_theme') || 'storm';
+                var sel = document.getElementById('themeSelect');
+                if (sel) sel.value = t;
+            } catch (e) {}
+        })();
+
+        async function checkApiStatus() {
+            var dot = document.getElementById('apiDot');
+            var txt = document.getElementById('apiText');
+            try {
+                await api('/api/health');
+                if (dot) dot.className = 'api-dot ok';
+                if (txt) txt.textContent = 'API online';
+            } catch (e) {
+                if (dot) dot.className = 'api-dot err';
+                if (txt) txt.textContent = 'API offline';
+            }
+        }
+
+        async function refreshEgressIp(force) {
+            var badge = document.getElementById('egressIpBadge');
+            var val = document.getElementById('egressIpValue');
+            if (!badge || !val) return;
+            var label = badge.querySelector('.egress-label');
+            try {
+                var d = await api('/api/net/ip' + (force ? '?force=1' : ''));
+                var ip = (d.exit && d.exit.ip) ? d.exit.ip : '—';
+                badge.className = 'egress-badge';
+                if (d.leak) {
+                    badge.classList.add('egress-leak');
+                    if (label) label.textContent = 'LEAK:';
+                    val.textContent = ip;
+                    badge.title = '⚠ Feed lookups leave from your REAL IP (' + ip + ') — arm the SOCKS proxy in Settings.';
+                } else {
+                    badge.classList.add('egress-proxied');
+                    if (label) label.textContent = 'IP:';
+                    val.textContent = ip;
+                    badge.title = 'Proxied egress. Real IP hidden from feed services.';
+                }
+            } catch (e) {
+                badge.className = 'egress-badge egress-error';
+                val.textContent = 'n/a';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // MAP + PIN
+        // ═══════════════════════════════════════════════════════════════
+        var LAYERS = ['aircraft', 'sat', 'quake', 'alert', 'iss', 'poi', 'tower', 'app'];
+        var LAYER_COLORS = { aircraft: '#70a1ff', sat: '#ffd166', quake: '#ffb142', alert: '#ff4757', iss: '#2ed573', poi: '#b57bff', tower: '#00d2d3', app: '#2fffd2' };
+        var layerOn = { aircraft: true, sat: true, quake: true, alert: true, iss: true, poi: true, tower: true, app: true };
+        var map = null;
+        var aircraftTrails = null;
+        var aircraftState = {};
+        var aircraftAnimTimer = null;
+        var layerGroups = {};
+        var pinMarker = null;
+        var pin = null;              // {lat, lon}
+        var autoTimer = null;
+        var reverseSeq = 0;
+
+        function ensureMap() {
+            if (map || typeof L === 'undefined') {
+                if (map) setTimeout(function () { map.invalidateSize(); }, 60);
+                return;
+            }
+            map = L.map('gpsMap', { center: [40.7, -73.97], zoom: 11, worldCopyJump: true, zoomControl: true });
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+                attribution: 'Tiles &copy; Esri — Source: USGS Intermap, GIS User Community &middot; GEBCO &middot; Feeds: OpenSky/USGS/NOAA/OSM',
+                maxZoom: 17,
+            }).addTo(map);
+            aircraftTrails = L.layerGroup();
+            if (layerOn.aircraft) aircraftTrails.addTo(map);
+            LAYERS.forEach(function (k) {
+                layerGroups[k] = L.layerGroup();
+                if (layerOn[k]) layerGroups[k].addTo(map);
+            });
+            map.on('click', function (e) { movePin(e.latlng.lat, e.latlng.lng, false); });
+            // Pan/zoom must re-query the feeds for the new viewport (aircraft and
+            // towers are bbox-scoped; quakes/alerts bbox-filter). Debounced so a
+            // drag doesn't hammer the free tiers.
+            var moveTimer = null;
+            map.on('moveend', function () {
+                clearTimeout(moveTimer);
+                moveTimer = setTimeout(function () {
+                    loadAircraft(false);
+                    loadQuakes(false);
+                    loadAlerts(false);
+                    if (layerOn.sat) loadSats(false, { autofit: false });
+                    if (layerOn.tower) loadTowers(false);
+                    if (layerOn.app) loadAppFeed();
+                }, 700);
+            });
+            // The boot pin is a real pin — name it, don't ship a bare marker under
+            // a "NO PIN SET" caption.
+            movePin(40.7, -73.97, false);
+            refreshAll();
+        }
+
+        function toggleLayer(kind) {
+            layerOn[kind] = !layerOn[kind];
+            var chip = document.querySelector('.layer-chip[data-layer="' + kind + '"]');
+            if (chip) chip.classList.toggle('active', layerOn[kind]);
+            if (map && layerGroups[kind]) {
+                if (layerOn[kind]) layerGroups[kind].addTo(map);
+                else map.removeLayer(layerGroups[kind]);
+            }
+            if (kind === 'app' && layerOn[kind] && !layerGroups.app.getLayers().length) loadAppFeed();
+            if (kind === 'aircraft') {
+                if (layerOn.aircraft) { if (aircraftTrails) aircraftTrails.addTo(map); } else { if (aircraftTrails) map.removeLayer(aircraftTrails); }
+            }
+            if (kind === 'tower' && layerOn[kind] && !layerGroups.tower.getLayers().length) loadTowers(false);
+            if (kind === 'sat' && layerOn[kind] && !layerGroups.sat.getLayers().length) loadSats(false);
+            if (kind === 'iss' && layerOn[kind]) {
+                if (!layerGroups.iss.getLayers().length) loadIss(true).then(function(){ setTimeout(function(){ locateIss(false); }, 300); });
+                startIssPoll();
+            } else if (kind === 'iss' && !layerOn[kind]) {
+                stopIssPoll();
+            }
+        }
+
+        function setStatus(html) { var el = document.getElementById('gpsStatus'); if (el) el.innerHTML = html; }
+
+        function flightTooltip(p) {
+            var lines = ['<b>' + esc(plainLabel(p)) + '</b>'];
+            if (p.detail) lines.push(esc(p.detail));
+            lines.push('<span style="color:#6f8794">' + p.lat.toFixed(3) + ', ' + p.lon.toFixed(3) + '</span>');
+            return lines.join('<br>');
+        }
+
+        // One popup shape for every kind, so a cell-tower site and a satellite read
+        // the same way: what it is, what the feed knows, where it is.
+        function pointPopup(p, kind) {
+            var head = '<b>' + esc(plainLabel(p)) + '</b><br><span style="color:#6f8794">' + esc(kindWord(kind)) + '</span>';
+            var body = (p.detail ? '<br>' + esc(p.detail) : '');
+            var extra = '';
+            if (kind === 'quake' && typeof p.mag === 'number') extra = '<br>Magnitude <b>' + p.mag.toFixed(1) + '</b>';
+            if (kind === 'tower') extra = '<br><span style="color:#6f8794">Antenna site from the OpenCellID registry — a radio location, not a device position.</span>';
+            return head + body + extra + '<br><span style="color:#6f8794">' + p.lat.toFixed(4) + ', ' + p.lon.toFixed(4) + '</span>';
+        }
+
+        function ensureAircraftAnim() {
+            if (aircraftAnimTimer) return;
+            aircraftAnimTimer = setInterval(function () {
+                var now = Date.now();
+                Object.values(aircraftState).forEach(function (s) {
+                    if (typeof s.velocity !== 'number' || typeof s.heading !== 'number' || s.velocity < 8) return;
+                    if (now - s.lastSeen > 55000) return;
+                    if (!s.marker || !s.trailLine) return;
+                    var rad = s.heading * Math.PI / 180;
+                    var dLat = (s.velocity * Math.cos(rad)) / 111320;
+                    var cosLat = Math.cos(s.lat * Math.PI / 180);
+                    if (Math.abs(cosLat) < 0.15) cosLat = 0.15 * (cosLat < 0 ? -1 : 1);
+                    var dLon = (s.velocity * Math.sin(rad)) / (111320 * cosLat);
+                    s.lat += dLat; s.lon += dLon;
+                    s.marker.setLatLng([s.lat, s.lon]);
+                    s.trail.push([s.lat, s.lon]);
+                    if (s.trail.length > 24) s.trail.shift();
+                    s.trailLine.setLatLngs(s.trail);
+                });
+            }, 1000);
+        }
+
+        function viewBbox() {
+            if (!map) return null;
+            var b = map.getBounds();
+            return { lamin: b.getSouth(), lomin: b.getWest(), lamax: b.getNorth(), lomax: b.getEast() };
+        }
+
+        // ── AREA WATCH — fires ~5s after the pin settles ──────────────
+        // The operator asked for a news search wherever the pin lands. A local
+        // model cannot browse, so the SERVER fetches real indexed headlines for
+        // the place and the model only summarizes them; the headline list is
+        // always rendered as the evidence, brief or no brief.
+        var areaWatch = { timer: null, controller: null, running: false, lastKey: '', at: 0 };
+        var pinAddress = null;
+
+        function awEls() {
+            return {
+                box: document.getElementById('areaWatch'),
+                place: document.getElementById('awPlace'),
+                status: document.getElementById('awStatus'),
+                brief: document.getElementById('awBrief'),
+                arts: document.getElementById('awArticles'),
+                stop: document.getElementById('awStop'),
+                refresh: document.getElementById('awRefresh'),
+            };
+        }
+
+        function currentPinName() {
+            var t = document.getElementById('pinTitle');
+            if (!pin || !t) return '';
+            var n = t.textContent.replace(/^[^0-9A-Za-z(\[]+/, '').trim();
+            return /NO PIN SET|UNNAMED/i.test(n) ? '' : n;
+        }
+
+        // Debounced: dragging or arrow-key nudging the pin restarts the clock, so
+        // the search only runs once the operator has actually settled on a place.
+        function scheduleAreaWatch() {
+            if (areaWatch.timer) clearTimeout(areaWatch.timer);
+            var el = awEls();
+            if (el.box) el.box.className = 'area-watch watching';
+            if (el.place) el.place.textContent = currentPinName() || 'drop a pin — this searches the news for wherever it lands';
+            if (el.status) el.status.textContent = 'watching for the pin to settle… (fires in 5s)';
+            areaWatch.timer = setTimeout(function () { runAreaWatch(false); }, 5000);
+        }
+
+        function stopAreaWatch() {
+            if (areaWatch.timer) { clearTimeout(areaWatch.timer); areaWatch.timer = null; }
+            if (areaWatch.controller) { try { areaWatch.controller.abort(); } catch (e) {} }
+        }
+
+        async function runAreaWatch(force) {
+            if (areaWatch.running && !force) return;
+            var el = awEls();
+            if (!el.box) return;
+            var name = currentPinName();
+            if (!name) {
+                el.box.className = 'area-watch empty';
+                if (el.status) el.status.textContent = 'no named place at this pin — news search needs a place name (zoom to a town/city, or search one)';
+                return;
+            }
+            // Same place, just refreshed view → don't burn another 40-90s local call.
+            var key = name.toLowerCase() + '|' + (pin ? pin.lat.toFixed(2) + ',' + pin.lon.toFixed(2) : '');
+            if (!force && key === areaWatch.lastKey && Date.now() - areaWatch.at < 10 * 60 * 1000) {
+                el.box.className = 'area-watch ready';
+                if (el.status) el.status.textContent = 'already watched ' + name + ' — hit ⟳ to refresh';
+                return;
+            }
+            stopAreaWatch();
+            copilotLocalConfig();
+            areaWatch.running = true;
+            areaWatch.lastKey = key;
+            el.box.className = 'area-watch watching';
+            if (el.place) el.place.textContent = name;
+            var started = Date.now();
+            if (el.stop) el.stop.style.display = '';
+            if (el.refresh) el.refresh.disabled = true;
+            if (el.status) el.status.innerHTML = '⏳ searching news indexes for <b>' + esc(name) + '</b>, then summarizing on the local model… <span id="awElapsed">0.0s</span>';
+            if (el.brief) { el.brief.style.display = 'none'; el.brief.innerHTML = ''; }
+            if (el.arts) el.arts.innerHTML = '';
+
+            var tick = setInterval(function () {
+                var t = document.getElementById('awElapsed');
+                if (t) t.textContent = ((Date.now() - started) / 1000).toFixed(1) + 's';
+            }, 100);
+
+            var ctrl = new AbortController();
+            areaWatch.controller = ctrl;
+            var body = { lat: pin.lat, lon: pin.lon, place: name, address: pinAddress || undefined, timeout: 300000 };
+            if (copilot.baseUrl) body.baseUrl = copilot.baseUrl;
+            if (copilot.model) body.model = copilot.model;
+            if (copilot.apiKey) body.apiKey = copilot.apiKey;
+
+            try {
+                var r = await fetch(getApiBase() + '/api/gps/area-brief', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body), signal: ctrl.signal
+                });
+                var d = await r.json().catch(function () { return {}; });
+                if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+                areaWatch.at = Date.now();
+                renderAreaWatch(d, ((Date.now() - started) / 1000).toFixed(1) + 's');
+            } catch (e) {
+                var aborted = ctrl.signal.aborted;
+                el.box.className = 'area-watch empty';
+                if (el.status) el.status.innerHTML = '<span style="color:' + (aborted ? 'var(--warning)' : 'var(--danger)') + '">' +
+                    (aborted ? 'stopped' : 'area watch failed: ' + esc(e.message || e)) + '</span>';
+            } finally {
+                clearInterval(tick);
+                areaWatch.running = false;
+                areaWatch.controller = null;
+                if (el.stop) el.stop.style.display = 'none';
+                if (el.refresh) el.refresh.disabled = false;
+            }
+        }
+
+        function renderAreaWatch(d, secs) {
+            var el = awEls();
+            var arts = d.articles || [];
+            if (el.arts) {
+                el.arts.innerHTML = arts.slice(0, 12).map(function (a) {
+                    return '<a class="aw-article" href="' + esc(a.link) + '" target="_blank" rel="noopener noreferrer">' +
+                        '<span>' + esc(a.title) + '</span>' +
+                        '<span class="src">' + esc(a.source) + '</span>' +
+                        '<span class="age">' + (typeof a.ageHours === 'number' ? (a.ageHours < 1 ? '<1h' : a.ageHours + 'h') : '—') + '</span></a>';
+                }).join('');
+            }
+            if (!arts.length) {
+                el.box.className = 'area-watch empty';
+                if (el.status) el.status.textContent = d.reason || 'no indexed coverage for this place in the last 24h';
+                return;
+            }
+            el.box.className = 'area-watch ready';
+            if (el.brief) {
+                if (d.brief) {
+                    el.brief.style.display = '';
+                    el.brief.innerHTML = copilotMd(d.brief);
+                } else {
+                    el.brief.style.display = '';
+                    el.brief.innerHTML = '<span style="color:var(--warning)">local model produced no summary' + (d.briefError ? ' (' + esc(d.briefError) + ')' : '') + ' — the headlines below are the source.</span>';
+                }
+            }
+            var bits = ['<b>' + arts.length + '</b> articles in 24h', 'query <b>' + esc(d.query || '—') + '</b>', secs + 's'];
+            if (d.model) bits.push('model <b>' + esc(d.model) + '</b>');
+            bits.push('sources: Google News + Bing News');
+            if (d.notes && d.notes.length) bits.push('<span style="color:var(--warning)">' + esc(d.notes.join(' · ')) + '</span>');
+            if (el.status) el.status.innerHTML = bits.join(' · ');
+        }
+
+        // ── PIN ──────────────────────────────────────────────────────
+        // The readout is a LABEL, and it has to be accurate about what it is
+        // naming. Nominatim's raw `display_name` ("Canal Street, Tribeca,
+        // Manhattan, New York County, New York, 10013, United States") used to be
+        // dumped here verbatim under a static "📍 PIN" header, which read as "this
+        // is where the pin is" when it is really "this is the nearest feature OSM
+        // has at zoom 14". Now the readout names the feature, breaks out the
+        // locality, and states the precision of both halves.
+        var PIN_META = {
+            none: 'The pin is your click point — a map coordinate, not a survey-grade position fix.',
+            loading: 'Asking OpenStreetMap which feature is nearest this point…',
+            reverse: 'OSM reverse match at zoom 14 (≈ neighbourhood). The name is the NEAREST feature — not a survey of the exact point.',
+            search: 'Forward geocode match. Coordinates are the matched place, not your click.',
+            failed: 'No OSM match for this point. The coordinates below are the raw click.',
+            noneNamed: 'No named OSM feature at this point. The coordinates below are the raw click.'
+        };
+
+        function pinIcon() {
+            return L.divIcon({ className: '', html: '<div class="gps-pin-icon">📍</div>', iconSize: [26, 26], iconAnchor: [13, 24] });
+        }
+
+        // Nominatim address records vary by feature; pick the first present key
+        // rather than assuming a fixed schema.
+        function addrPick(a, keys) {
+            for (var i = 0; i < keys.length; i++) {
+                var v = a && a[keys[i]];
+                if (v) return String(v);
+            }
+            return '';
+        }
+
+        // Name the feature (title) and the locality (sub-line) separately instead
+        // of one comma soup, and never repeat the same token in both.
+        function pinLabelParts(label, address) {
+            var segs = String(label || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+            var a = address || {};
+            var feature = addrPick(a, ['road', 'pedestrian', 'footway', 'path', 'cycleway', 'house', 'building', 'amenity', 'tourism', 'historic', 'leisure', 'shop', 'landuse', 'place', 'waterway', 'natural']);
+            var city = addrPick(a, ['city', 'town', 'village', 'municipality', 'borough', 'suburb', 'hamlet', 'county']);
+            var state = addrPick(a, ['state', 'region', 'province']);
+            var code = addrPick(a, ['postcode', 'postal_code']);
+            var country = addrPick(a, ['country']);
+
+            if (!feature && segs.length) feature = segs[0];
+            var rest = segs.filter(function (s) { return s.toLowerCase() !== feature.toLowerCase(); });
+            var locality = [];
+            [city, state && (state + (code ? ' ' + code : '')) || code, country].forEach(function (v) {
+                if (v && locality.join(' · ').toLowerCase().indexOf(v.toLowerCase()) < 0) locality.push(v);
+            });
+            if (!locality.length) locality = rest.filter(function (s) { return !/^\d+[A-Za-z]?$/.test(s); }).slice(0, 3);
+            return { name: feature || (segs[0] || ''), locality: locality.join(' · ') };
+        }
+
+        function setPinReadout(opts) {
+            var set = function (id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
+            set('pinTitle', opts.title || '📍 PIN');
+            set('pinPlace', opts.place || '');
+            set('pinMeta', PIN_META[opts.kind] || PIN_META.none);
+            set('pinSource', opts.kind === 'none' ? '' : 'place data © OpenStreetMap contributors (Nominatim)');
+        }
+
+        function movePin(lat, lon, skipReverse) {
+            pin = { lat: lat, lon: lon };
+            document.getElementById('pinLat').value = lat.toFixed(5);
+            document.getElementById('pinLon').value = lon.toFixed(5);
+            var coords = document.getElementById('pinCoords');
+            if (coords) coords.textContent = lat.toFixed(5) + ', ' + lon.toFixed(5);
+            if (skipReverse) {
+                setPinReadout({ kind: 'none', title: '📍 PIN', place: 'No place looked up for this point yet.' });
+            } else {
+                setPinReadout({ kind: 'loading', title: '📍 PIN', place: 'locating…' });
+            }
+            if (pinMarker) pinMarker.bindTooltip(null);
+            if (!map) return;
+            if (pinMarker) pinMarker.setLatLng([lat, lon]);
+            else {
+                pinMarker = L.marker([lat, lon], { icon: pinIcon(), draggable: true }).addTo(map);
+                pinMarker.on('dragend', function () {
+                    var p = pinMarker.getLatLng();
+                    movePin(p.lat, p.lng, false);
+                });
+            }
+            if (!skipReverse) reversePin(lat, lon);
+        }
+
+        async function reversePin(lat, lon) {
+            var seq = ++reverseSeq;
+            try {
+                var d = await api('/api/gps/reverse?lat=' + lat.toFixed(5) + '&lon=' + lon.toFixed(5));
+                if (seq !== reverseSeq) return; // a newer pin move superseded this lookup
+                var hit = d.pin || {};
+                if (!hit.label) {
+                    setPinReadout({ kind: 'noneNamed', title: '📍 UNNAMED POINT', place: 'No named OpenStreetMap feature within the match radius.' });
+                    return;
+                }
+                var parts = pinLabelParts(hit.label, hit.address);
+                pinAddress = hit.address || null;
+                setPinReadout({ kind: 'reverse', title: '📍 ' + (parts.name || hit.label), place: parts.locality });
+                if (pinMarker) pinMarker.bindTooltip('<b>' + esc(parts.name || hit.label) + '</b>' + (parts.locality ? '<br>' + esc(parts.locality) : ''), { direction: 'top', offset: [0, -22] });
+                scheduleAreaWatch();
+            } catch (e) {
+                if (seq !== reverseSeq) return;
+                setPinReadout({ kind: 'failed', title: '📍 PIN', place: 'Reverse geocoding unavailable right now.' });
+            }
+        }
+
+        // Forward geocode (search box / copilot search_place): the coordinates are
+        // the MATCH, not a click, and the readout has to say so.
+        function applyForwardPin(geocode, query) {
+            movePin(geocode.lat, geocode.lon, true);
+            var parts = pinLabelParts(geocode.label || query, geocode.address);
+            pinAddress = geocode.address || null;
+            setPinReadout({
+                kind: 'search',
+                title: '📍 ' + (geocode.label || query),
+                place: parts.locality && parts.locality !== (geocode.label || query) ? parts.locality : 'matched by place name',
+            });
+            if (pinMarker) pinMarker.bindTooltip('<b>' + esc(geocode.label || query) + '</b><br><span style="color:#6f8794">matched place</span>', { direction: 'top', offset: [0, -22] });
+            scheduleAreaWatch();
+        }
+
+        function setPinFromInputs() {
+            var la = parseFloat(document.getElementById('pinLat').value);
+            var lo = parseFloat(document.getElementById('pinLon').value);
+            if (!isFinite(la) || !isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) {
+                setStatus('<span class="warn">invalid coordinates — lat ∈ [-90,90], lon ∈ [-180,180]</span>');
+                return;
+            }
+            movePin(la, lo, false);
+            map.setView([la, lo], Math.max(map.getZoom(), 12));
+        }
+
+        async function searchPlace() {
+            var q = document.getElementById('searchBox').value.trim();
+            if (!q) return;
+            setStatus('geocoding "' + q.replace(/</g, '&lt;') + '"…');
+            try {
+                var d = await api('/api/osint/geocode', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q: q }) });
+                if (d.geocode && typeof d.geocode.lat === 'number') {
+                    applyForwardPin(d.geocode, q);
+                    map.setView([d.geocode.lat, d.geocode.lon], 13);
+                    setStatus('pin set to <b>' + (d.geocode.label || q).replace(/</g, '&lt;') + '</b>');
+                } else {
+                    setStatus('<span class="warn">no match for that place text</span>');
+                }
+            } catch (e) {
+                setStatus('<span class="warn">geocode failed: ' + String(e.message || e).replace(/</g, '&lt;') + '</span>');
+            }
+        }
+
+        // ── FEED LOADERS ─────────────────────────────────────────────
+        // Markers should read like a map: rotated plane glyphs for aircraft,
+        // magnitude-scaled circles for quakes, emoji pins for icon-bearing kinds.
+        function planeIcon(heading, color) {
+            return L.divIcon({
+                className: '',
+                html: '<div class="gps-plane" style="width:20px;height:20px;transform:rotate(' + (typeof heading === 'number' ? heading : 0) + 'deg);">' +
+                    '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2 L13.6 8.6 L22 12.4 L13.6 13.6 L13.6 17.4 L16.4 20 L16.4 21.4 L12 19.8 L7.6 21.4 L7.6 20 L10.4 17.4 L10.4 13.6 L2 12.4 L10.4 8.6 Z" fill="' + color + '" stroke="#04121a" stroke-width="0.8"/></svg></div>',
+                iconSize: [20, 20], iconAnchor: [10, 10],
+            });
+        }
+
+        function emojiIcon(ch, size) {
+            var s = size || 18;
+            return L.divIcon({
+                className: '',
+                html: '<div class="gps-icon-marker" style="font-size:' + s + 'px;line-height:' + s + 'px;">' + ch + '</div>',
+                iconSize: [s, s], iconAnchor: [s / 2, s / 2],
+            });
+        }
+
+        function quakeColor(mag) {
+            if (typeof mag !== 'number') return '#9baeb8';
+            if (mag >= 6) return '#ff3355';
+            if (mag >= 4.5) return '#ff7b42';
+            if (mag >= 2.5) return '#ffb142';
+            return '#ffe084';
+        }
+
+        function feedPointMarker(p, kind) {
+            var color = LAYER_COLORS[kind];
+            if (kind === 'quake') {
+                var r = 4 + (typeof p.mag === 'number' ? Math.min(10, p.mag * 1.6) : 2);
+                var qc = quakeColor(p.mag);
+                return L.circleMarker([p.lat, p.lon], { radius: r, color: qc, weight: 1.5, fillColor: qc, fillOpacity: 0.6 });
+            }
+            if (p.icon) return L.marker([p.lat, p.lon], { icon: emojiIcon(p.icon, kind === 'iss' ? 22 : 17), title: p.label });
+            return L.circleMarker([p.lat, p.lon], { radius: 5, color: color, weight: 1.5, fillColor: color, fillOpacity: 0.75 });
+        }
+
+        function renderFeed(kind, feed) {
+            if (kind === 'aircraft') { updateAircraft(feed); return; }
+            var g = layerGroups[kind];
+            if (!g) return;
+            g.clearLayers();
+            (feed.points || []).forEach(function (p) {
+                var m = feedPointMarker(p, kind);
+                m.bindPopup(pointPopup(p, kind));
+                m.bindTooltip(flightTooltip(p), { direction: 'top', offset: [0, -8], sticky: true });
+                g.addLayer(m);
+            });
+            var cnt = document.getElementById('cnt' + kind.charAt(0).toUpperCase() + kind.slice(1));
+            if (cnt) cnt.textContent = String((feed.points || []).length);
+        }
+
+        function updateAircraft(feed) {
+            ensureAircraftAnim();
+            var now = Date.now();
+            var seen = {};
+            (feed.points || []).forEach(function (p) {
+                seen[p.id] = true;
+                var s = aircraftState[p.id];
+                if (!s) {
+                    s = { id: p.id, trail: [[p.lat, p.lon]], lastSeen: now };
+                    aircraftState[p.id] = s;
+                    s.lat = p.lat; s.lon = p.lon; s.heading = p.heading; s.velocity = p.velocity;
+                    s.label = p.label; s.detail = p.detail;
+                    var m = L.marker([p.lat, p.lon], { icon: planeIcon(p.heading, LAYER_COLORS.aircraft) });
+                    m.bindPopup(pointPopup(p, 'aircraft'));
+                    m.bindTooltip(flightTooltip(p), { direction: 'top', offset: [0, -10], sticky: true });
+                    s.marker = m; layerGroups.aircraft.addLayer(m);
+                    var line = L.polyline([[p.lat, p.lon]], { color: LAYER_COLORS.aircraft, weight: 1.6, opacity: 0.32, dashArray: '5 7' });
+                    s.trailLine = line; if (aircraftTrails) aircraftTrails.addLayer(line);
+                } else {
+                    var last = s.trail[s.trail.length - 1];
+                    if (!last || Math.abs(last[0] - p.lat) > 0.00008 || Math.abs(last[1] - p.lon) > 0.00008) {
+                        s.trail.push([p.lat, p.lon]);
+                        if (s.trail.length > 24) s.trail.shift();
+                        s.trailLine.setLatLngs(s.trail);
+                    }
+                    s.lat = p.lat; s.lon = p.lon; s.heading = p.heading; s.velocity = p.velocity;
+                    s.label = p.label; s.detail = p.detail; s.lastSeen = now;
+                    s.marker.setLatLng([p.lat, p.lon]);
+                    if (typeof p.heading === 'number') s.marker.setIcon(planeIcon(p.heading, LAYER_COLORS.aircraft));
+                    s.marker.setTooltipContent(flightTooltip(p));
+                    s.marker.getPopup().setContent(pointPopup(p, 'aircraft'));
+                }
+                s.lastSeen = now;
+            });
+            Object.keys(aircraftState).forEach(function (id) {
+                if (seen[id]) return;
+                if (Date.now() - aircraftState[id].lastSeen > 120000) {
+                    try { layerGroups.aircraft.removeLayer(aircraftState[id].marker); } catch (e) {}
+                    try { if (aircraftTrails) aircraftTrails.removeLayer(aircraftState[id].trailLine); } catch (e) {}
+                    delete aircraftState[id];
+                }
+            });
+            var n = Object.keys(aircraftState).length;
+            var el = document.getElementById('cntAircraft'); if (el) el.textContent = String(n);
+            var st = document.getElementById('statAircraft'); if (st) st.textContent = String(n);
+        }
+
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Feed labels carry the marker's own glyph ('✈ UAL123', '📱 LTE site 42',
+        // '🌍 M6.1 …'). The marker already draws that glyph, so repeating it in the
+        // popup/tooltip read as a doubled, mislabelled pin. Strip the leading
+        // symbol run for display only — p.label stays intact for titles/aria.
+        function plainLabel(p) {
+            var s = String((p && p.label) || '');
+            return s.replace(/^[^0-9A-Za-z(\[]+/, '').trim() || s;
+        }
+
+        function kindWord(kind) {
+            return { aircraft: 'Aircraft', sat: 'Satellite', quake: 'Earthquake', alert: 'Weather alert', iss: 'ISS', poi: 'Place', tower: 'Cell-tower site' }[kind] || kind;
+        }
+
+        // A layer chip that is ON but has no markers in view must SAY why, or the
+        // operator reads it as a broken feed. Each loader passes the reason.
+        function setChipNote(kind, note) {
+            var chip = document.querySelector('.layer-chip[data-layer="' + kind + '"]');
+            if (chip) chip.title = note || '';
+        }
+
+        // Quakes and weather alerts are GLOBAL feeds filtered to your viewport, so
+        // an operator parked on one city legitimately sees zero — which looked
+        // identical to a broken feed. When that happens, list the biggest ones
+        // nationwide as chips that fly the map to them.
+        var outsideKinds = {};
+        function renderOutsideStrip() {
+            var box = document.getElementById('outsideStrip');
+            if (!box) return;
+            var blocks = [];
+            Object.keys(outsideKinds).forEach(function (kind) {
+                var entry = outsideKinds[kind];
+                if (!entry) return;
+                var label = kind === 'quake' ? '🌍 quakes' : '⚠ alerts';
+                var chips = entry.points.slice(0, 4).map(function (p, i) {
+                    var head = kind === 'quake'
+                        ? (typeof p.mag === 'number' ? '<span class="mag">M' + p.mag.toFixed(1) + '</span> ' : '') + esc(plainLabel(p).slice(0, 34))
+                        : esc(plainLabel(p).slice(0, 34));
+                    return '<span class="outside-chip" onclick="flyToPoint(' + p.lat + ',' + p.lon + ')">' + head + ' ↗</span>';
+                }).join('');
+                blocks.push('<span class="os-label">' + label + ' · ' + entry.total + ' outside this view</span>' + chips);
+            });
+            box.innerHTML = blocks.join('');
+            box.style.display = blocks.length ? 'flex' : 'none';
+        }
+
+        function flyToPoint(lat, lon) {
+            if (!map) ensureMap();
+            map.flyTo([lat, lon], 7, { duration: 1.2 });
+        }
+
+        // Hand a feed the chance to explain an empty viewport.
+        function noteOutsideView(kind, d) {
+            var inView = (d.points || []).length;
+            var total = typeof d.total === 'number' ? d.total : null;
+            if (inView > 0 || !total || d.note) { delete outsideKinds[kind]; }
+            else {
+                // Re-query unfiltered so the chips carry real nationwide events.
+                var q = (kind === 'quake' ? '/api/gps/quakes' : '/api/gps/alerts') + '?refresh=0';
+                api(q).then(function (all) {
+                    outsideKinds[kind] = {
+                        total: all.total || (all.points || []).length,
+                        points: (all.points || []).slice().sort(function (a, b) {
+                            if (kind === 'quake') return (b.mag || -99) - (a.mag || -99);
+                            var rank = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
+                            var sev = function (p) { var m = String(p.detail || '').match(/\b(Extreme|Severe|Moderate|Minor|Unknown)\b/); return m ? rank[m[1]] : 0; };
+                            return sev(b) - sev(a);
+                        }),
+                    };
+                    renderOutsideStrip();
+                }).catch(function () {});
+            }
+            renderOutsideStrip();
+        }
+
+        async function loadAircraft(refresh) {
+            if (!map) return;
+            var bbox = viewBbox();
+            if (!bbox) return;
+            try {
+                var d = await api('/api/gps/aircraft?refresh=' + (refresh ? 1 : 0) +
+                    '&lamin=' + bbox.lamin.toFixed(3) + '&lomin=' + bbox.lomin.toFixed(3) +
+                    '&lamax=' + bbox.lamax.toFixed(3) + '&lomax=' + bbox.lomax.toFixed(3));
+                renderFeed('aircraft', d);
+                var note = d.note ? ' · <span class="warn">aircraft: ' + esc(d.note) + '</span>' : '';
+                var cov = (bbox.lamax - bbox.lamin > 10.2 || bbox.lomax - bbox.lomin > 10.2)
+                    ? ' · coverage: center 10° of view (OpenSky anonymous cap)'
+                    : '';
+                setStatus('aircraft <b>' + (d.points || []).length + '</b> in view' + cov + note);
+            } catch (e) {
+                setStatus('<span class="warn">aircraft feed: ' + esc(e.message || e) + '</span>');
+            }
+        }
+
+        var towerLoad = { key: '', at: 0 };
+        async function loadTowers(refresh) {
+            if (!map) return;
+            var bbox = viewBbox();
+            if (!bbox) return;
+            // The cells-in-area API answers ONE search covering ~2×2 km, so a wide
+            // view can never be searched directly. Refusing there left the layer
+            // permanently empty at any normal zoom. Instead: search a 2 km box
+            // around the operator's PIN (or the map center when there is no pin),
+            // plot those sites, and say the search box is the pin area — ◎ TOWERS AT
+            // PIN then flies the view onto them.
+            var kmWide = (bbox.lomax - bbox.lomin) * 111.32 * Math.cos(bbox.lamin * Math.PI / 180);
+            var searchingPinArea = false;
+            if (kmWide > 2.2) {
+                var c = pin || { lat: map.getCenter().lat, lon: map.getCenter().lng };
+                var dLat = 0.009, dLon = 0.012;
+                bbox = { lamin: c.lat - dLat, lomin: c.lon - dLon, lamax: c.lat + dLat, lomax: c.lon + dLon };
+                searchingPinArea = true;
+            }
+            var key = [bbox.lamin, bbox.lomin, bbox.lamax, bbox.lomax].map(function (v) { return v.toFixed(3); }).join(',');
+            if (!refresh && key === towerLoad.key && Date.now() - towerLoad.at < 120000) return;
+            towerLoad.key = key; towerLoad.at = Date.now();
+            try {
+                var d = await api('/api/gps/towers?refresh=' + (refresh ? 1 : 0) +
+                    '&lamin=' + bbox.lamin.toFixed(3) + '&lomin=' + bbox.lomin.toFixed(3) +
+                    '&lamax=' + bbox.lamax.toFixed(3) + '&lomax=' + bbox.lomax.toFixed(3));
+                renderFeed('tower', d);
+                var n = (d.points || []).length;
+                if (d.note && /key/i.test(d.note)) {
+                    setChipNote('tower', 'OpenCellID key not configured — set T3MP3ST_OPENCELLID_KEY in Settings → OSINT');
+                    setStatus('<span class="warn">cell towers: ' + esc(d.note) + '</span>');
+                } else {
+                    setChipNote('tower', n + ' tower sites — antenna locations, not devices' + (searchingPinArea ? ' (searched a 2 km box at your pin)' : ''));
+                    setStatus('OpenCelliD: <b>' + n + '</b> tower sites' +
+                        (searchingPinArea ? ' in a 2 km box at your pin — hit <b>◎ TOWERS AT PIN</b> to zoom onto them' : ' in view') +
+                        ' · one search per area, 2-min lock');
+                }
+            } catch (e) {
+                setChipNote('tower', 'Feed error: ' + (e.message || e));
+                setStatus('<span class="warn">tower feed: ' + esc(e.message || e) + '</span>');
+            }
+        }
+
+        // The tower registry is a 2×2 km search, so a wide view can never show
+        // sites. One click takes the operator to a street-level view of their own
+        // pin and searches exactly that box.
+        function towersAtPin() {
+            if (!pin) { setStatus('<span class="warn">set a pin first — click the map, or search a place</span>'); return; }
+            if (!layerOn.tower) toggleLayer('tower');
+            map.setView([pin.lat, pin.lon], 16, { animate: true });
+            setTimeout(function () { loadTowers(true); }, 450);
+        }
+
+        async function loadQuakes(refresh) {
+            try {
+                var bbox = viewBbox();
+                var qs = bbox ? '&lamin=' + bbox.lamin.toFixed(2) + '&lomin=' + bbox.lomin.toFixed(2) + '&lamax=' + bbox.lamax.toFixed(2) + '&lomax=' + bbox.lomax.toFixed(2) : '';
+                var d = await api('/api/gps/quakes?refresh=' + (refresh ? 1 : 0) + qs);
+                renderFeed('quake', d);
+                var n = (d.points || []).length;
+                document.getElementById('statQuakes').textContent = String(n);
+                // Zero in view is legitimate most days — say what the global feed holds,
+                // so an empty layer reads as "nothing near you" and not "feed is dead".
+                var total = typeof d.total === 'number' ? d.total : null;
+                if (!n && total) {
+                    setChipNote('quake', 'No earthquakes in this view in the past 24h. ' + total + ' worldwide — use the chips below the map to fly to the strongest.');
+                    setStatus('earthquakes: <b>0</b> in view · ' + total + ' worldwide in the past 24h — the strongest are listed below the map');
+                    noteOutsideView('quake', d);
+                } else {
+                    setChipNote('quake', n ? n + ' earthquakes in this view (past 24h)' : '');
+                    if (n) { delete outsideKinds.quake; renderOutsideStrip(); }
+                }
+            } catch (e) {
+                setChipNote('quake', 'Feed error: ' + (e.message || e));
+                setStatus('<span class="warn">quake feed: ' + esc(e.message || e) + '</span>');
+            }
+        }
+
+        async function loadAlerts(refresh) {
+            try {
+                var bbox = viewBbox();
+                var qs = bbox ? '&lamin=' + bbox.lamin.toFixed(2) + '&lomin=' + bbox.lomin.toFixed(2) + '&lamax=' + bbox.lamax.toFixed(2) + '&lomax=' + bbox.lomax.toFixed(2) : '';
+                var d = await api('/api/gps/alerts?refresh=' + (refresh ? 1 : 0) + qs);
+                renderFeed('alert', d);
+                var n = (d.points || []).length;
+                document.getElementById('statAlerts').textContent = String(n);
+                var total = typeof d.total === 'number' ? d.total : null;
+                if (d.note) {
+                    setChipNote('alert', 'NOAA feed problem: ' + d.note);
+                } else if (!n && total) {
+                    setChipNote('alert', 'No active weather alerts in this view. ' + total + ' active nationwide — the strongest are listed below the map.');
+                    setStatus('weather alerts: <b>0</b> in view · ' + total + ' active nationwide — click a chip below the map to fly to one');
+                    noteOutsideView('alert', d);
+                } else {
+                    setChipNote('alert', n ? n + ' active alerts in this view' : '');
+                    if (n) { delete outsideKinds.alert; renderOutsideStrip(); }
+                }
+            } catch (e) {
+                setChipNote('alert', 'Feed error: ' + (e.message || e));
+                setStatus('<span class="warn">alert feed: ' + esc(e.message || e) + '</span>');
+            }
+        }
+
+        async function loadIss(refresh) {
+            try {
+                var d = await api('/api/gps/iss?refresh=' + (refresh ? 1 : 0));
+                renderFeed('iss', d);
+                var p = (d.points || [])[0];
+                document.getElementById('statIss').textContent = p ? p.lat.toFixed(1) + ', ' + p.lon.toFixed(1) : '—';
+                if (d.note) setStatus('<span class="warn">ISS: ' + esc(d.note) + '</span>');
+                else if (p && d.points.length) {
+                    // Give operator a hint that ISS is global — not in current viewport
+                    var b = map ? map.getBounds() : null;
+                    var inView = b && p.lat >= b.getSouth() && p.lat <= b.getNorth() && p.lon >= b.getWest() && p.lon <= b.getEast();
+                    if (!inView && layerOn.iss) setStatus('ISS at <b>' + p.lat.toFixed(2) + ', ' + p.lon.toFixed(2) + '</b> (' + esc(p.detail || '') + ') — off-screen, use <b>◎ LOCATE ISS</b> or double-click the 🛰 chip to fly there.');
+                }
+                return d;
+            } catch (e) {
+                setStatus('<span class="warn">ISS feed: ' + esc(e.message || e) + '</span>');
+                return null;
+            }
+        }
+
+        var issPollTimer = null;
+        function startIssPoll() {
+            if (issPollTimer) return;
+            issPollTimer = setInterval(function(){ if (layerOn.iss) loadIss(true); }, 15000);
+        }
+        function stopIssPoll() {
+            if (issPollTimer) { clearInterval(issPollTimer); issPollTimer = null; }
+        }
+        async function locateIss(fly) {
+            var doFly = fly !== false;
+            if (!map) ensureMap();
+            // Ensure layer is visible
+            if (!layerOn.iss) toggleLayer('iss');
+            var d = await loadIss(true);
+            var p = d && (d.points || [])[0];
+            if (!p) { setStatus('<span class="warn">ISS position unavailable right now — wheretheiss.at did not return a fix.</span>'); return; }
+            if (doFly && map) {
+                var targetZoom = Math.max(map.getZoom(), 3);
+                if (map.getZoom() < 3) targetZoom = 3;
+                map.flyTo([p.lat, p.lon], targetZoom, { duration: 1.1 });
+                setStatus('ISS at <b>' + p.lat.toFixed(2) + ', ' + p.lon.toFixed(2) + '</b> (' + esc(p.detail || '') + ') — map centered on station.');
+            }
+        }
+
+        // ── SATELLITES (CelesTrak TLE + SGP4) ─────────────────────────────────
+        async function initSatGroups() {
+            var sel = document.getElementById('satGroup');
+            if (!sel) return;
+            try {
+                var d = await api('/api/gps/satellites/groups');
+                var groups = d.groups || [];
+                sel.innerHTML = groups.map(function(g){ return '<option value="' + esc(g.id) + '">' + esc(g.label) + ' — ' + esc(g.id) + '</option>'; }).join('');
+                // sensible default: visual (brightest) is small and global
+                sel.value = 'visual';
+            } catch (e) {
+                sel.innerHTML = '<option value="visual">Brightest / visual — visual</option><option value="stations">Space stations — stations</option><option value="starlink">Starlink — starlink</option>';
+            }
+        }
+        async function loadSats(refresh, opts) {
+            var sel = document.getElementById('satGroup');
+            var limEl = document.getElementById('satLimit');
+            var group = (sel && sel.value) ? sel.value : 'visual';
+            var limit = (limEl && limEl.value) ? limEl.value : '200';
+            if (!layerOn.sat) toggleLayer('sat');
+            var satStatus = document.getElementById('satStatus');
+            if (satStatus) satStatus.textContent = 'fetching ' + group + ' — ' + limit + ' max via CelesTrak…';
+            setStatus('fetching satellites <b>' + esc(group) + '</b>…');
+            try {
+                var d = await api('/api/gps/satellites?group=' + encodeURIComponent(group) + '&limit=' + encodeURIComponent(limit) + (refresh ? '&refresh=1' : ''));
+                renderFeed('sat', d);
+                var n = (d.points || []).length;
+                document.getElementById('statSats').textContent = String(n);
+                var cntEl = document.getElementById('cntSat'); if (cntEl) cntEl.textContent = String(n);
+                var note = d.note ? ' · <span class="warn">' + esc(d.note) + '</span>' : '';
+                var src = d.source ? ' — <span style="color:#6f8794">' + esc(d.source) + '</span>' : '';
+                if (satStatus) satStatus.innerHTML = '<b>' + n + '</b> satellites loaded (' + esc(group) + ')' + src + note;
+                setChipNote('sat', n ? n + ' satellites plotted (orbit propagated to now via SGP4)' : 'No satellites returned for this group');
+                setStatus('satellites <b>' + n + '</b> (' + esc(group) + ')' + note);
+                // Auto-fit only on an operator-initiated load. The boot load must NOT
+                // yank the viewport out to the whole constellation.
+                if (n && !refresh && !(opts && opts.autofit === false)) setTimeout(function(){ fitSats(); }, 250);
+            } catch (e) {
+                if (satStatus) satStatus.innerHTML = '<span class="warn">' + esc(e.message || e) + '</span>';
+                setChipNote('sat', 'Feed error: ' + (e.message || e));
+                setStatus('<span class="warn">satellites: ' + esc(e.message || e) + '</span>');
+            }
+        }
+        function fitSats() {
+            var g = layerGroups.sat;
+            if (!g || !map) return;
+            var latlngs = [];
+            g.eachLayer(function(m){
+                try {
+                    var ll = m.getLatLng ? m.getLatLng() : null;
+                    if (ll) latlngs.push(ll);
+                } catch(e){}
+            });
+            if (!latlngs.length) { setStatus('<span class="warn">no satellites to fit — load a group first</span>'); return; }
+            try { map.fitBounds(L.latLngBounds(latlngs).pad(0.12)); } catch(e){}
+        }
+        function clearSats() {
+            var g = layerGroups.sat;
+            if (g) g.clearLayers();
+            var cntEl = document.getElementById('cntSat'); if (cntEl) cntEl.textContent = '0';
+            document.getElementById('statSats').textContent = '—';
+            var satStatus = document.getElementById('satStatus');
+            if (satStatus) satStatus.textContent = 'cleared — pick a group and load again.';
+            setStatus('satellites cleared');
+        }
+
+        async function loadPois(refresh) {
+            if (!pin) { setStatus('<span class="warn">set a pin first — click the map</span>'); return; }
+            var kind = document.getElementById('poiKind').value;
+            var radius = document.getElementById('poiRadius').value;
+            if (!layerOn.poi) toggleLayer('poi');
+            setStatus('querying OpenStreetMap around the pin…');
+            try {
+                var d = await api('/api/gps/poi?lat=' + pin.lat.toFixed(5) + '&lon=' + pin.lon.toFixed(5) + '&radius=' + radius + '&kind=' + kind + (refresh ? '&refresh=1' : ''));
+                renderFeed('poi', d);
+                var n = (d.points || []).length;
+                document.getElementById('statPois').textContent = String(n);
+                setChipNote('poi', n ? n + ' ' + kind + ' within ' + radius + ' m of the pin' : 'No ' + kind + ' within ' + radius + ' m of the pin — widen the radius or change the kind');
+                var note = d.note ? ' · <span class="warn">' + esc(d.note) + '</span>' : '';
+                setStatus('POIs <b>' + n + '</b> ' + esc(kind) + ' within ' + radius + ' m of the pin' + note);
+            } catch (e) {
+                setChipNote('poi', 'Query failed: ' + (e.message || e));
+                setStatus('<span class="warn">POI query: ' + esc(e.message || e) + '</span>');
+            }
+        }
+
+        async function loadAppFeed() {
+            try {
+                var d = await api('/api/osint/map-feed');
+                var g = layerGroups.app;
+                g.clearLayers();
+                (d.points || []).forEach(function (p) {
+                    if (typeof p.lat !== 'number' || typeof p.lon !== 'number') return;
+                    var m = feedPointMarker(p, 'app');
+                    m.bindPopup(pointPopup(p, 'app') + (p.geoNote ? '<br><span style="color:#6f8794">' + esc(p.geoNote) + '</span>' : ''));
+                    g.addLayer(m);
+                });
+                document.getElementById('cntApp').textContent = String((d.points || []).filter(function (p) { return typeof p.lat === 'number'; }).length);
+            } catch (e) { /* app feed is optional */ }
+        }
+
+        function refreshAll() {
+            loadAircraft(false);
+            loadQuakes(false);
+            loadAlerts(false);
+            loadIss(false).then(function(){ if (layerOn.iss) startIssPoll(); });
+            if (layerOn.sat) loadSats(false, { autofit: false });
+            if (layerOn.app) loadAppFeed();
+            if (layerOn.tower) loadTowers(false);
+            if (layerOn.poi) loadPois(false);
+        }
+
+        function toggleAuto() {
+            var btn = document.getElementById('autoBtn');
+            if (autoTimer) {
+                clearInterval(autoTimer);
+                autoTimer = null;
+                btn.classList.remove('active');
+                btn.textContent = '▶ AUTO 30s';
+                return;
+            }
+            autoTimer = setInterval(function () {
+                loadAircraft(false);   // moving things: aircraft + ISS
+                loadIss(false);
+                if (layerOn.app) loadAppFeed();
+            }, 30000);
+            btn.classList.add('active');
+            btn.textContent = '⏸ AUTO ON';
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // PHONE INTEL — number metadata + public reverse-lookup lanes
+        // ═══════════════════════════════════════════════════════════════
+        async function lookupPhone() {
+            var raw = document.getElementById('phoneBox').value.trim();
+            var box = document.getElementById('phoneResult');
+            if (!raw) return;
+            box.classList.add('show');
+            box.innerHTML = '<div class="status-line">parsing number…</div>';
+            try {
+                var d = await api('/api/osint/phone', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: raw }) });
+                var i = d.intel;
+                var nanp = i.nanp
+                    ? '<div class="kv"><div class="k">NANP area code</div><div class="v ' + (i.nanp.validAreaCode ? 'ok' : 'bad') + '">' + esc(i.nanp.areaCode) + (i.nanp.validAreaCode ? ' (valid)' : ' (INVALID)') + '</div></div>'
+                    : '';
+                var links = (i.searchLinks || []).map(function (l) {
+                    return '<a class="pill-link" target="_blank" rel="noopener noreferrer" href="' + esc(l.url) + '">' + esc(l.label) + '</a>';
+                }).join('');
+                box.innerHTML =
+                    '<div class="kv-grid">' +
+                    '<div class="kv"><div class="k">E.164</div><div class="v">' + esc(i.e164) + '</div></div>' +
+                    '<div class="kv"><div class="k">Country</div><div class="v">' + esc(i.country) + '</div></div>' +
+                    '<div class="kv"><div class="k">Length</div><div class="v ' + (i.lengthValid ? 'ok' : 'bad') + '">' + esc(String(i.lengthValid ? 'valid' : 'unexpected')) + ' (' + esc(String((i.digits || '').length)) + ' digits)</div></div>' +
+                    nanp +
+                    '</div>' +
+                    '<div class="link-row">' + links + '</div>';
+            } catch (e) {
+                box.innerHTML = '<div class="status-line"><span class="warn">' + esc(e.message || e) + '</span></div>';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // LOCAL COPILOT — asks the operator's LOCAL model to read the map and
+        // run whitelisted map actions. The server owns every number (see
+        // src/tools/gps-copilot.ts); this half renders the answer, executes the
+        // validated actions, and draws the measurement leg the server computed.
+        // ═══════════════════════════════════════════════════════════════
+        var copilot = { running: false, controller: null, timer: null, startedAt: 0, baseUrl: '', model: '', apiKey: '', serverModel: '', explicitBase: false, models: [] };
+
+        // Settings → Local Model lives in the shared localStorage state blob; the
+        // page stays in sync with Settings without its own config UI.
+        function copilotSavedSettings() {
+            try { return (JSON.parse(localStorage.getItem('t3mp3st') || '{}').settings) || {}; } catch (e) { return {}; }
+        }
+        function copilotLocalConfig() {
+            var s = copilotSavedSettings();
+            // Only an EXPLICIT host/port saved in Settings overrides the server's
+            // configured Ollama. Without one, the request sends no baseUrl at all so
+            // the server's TEMPEST_LOCAL_BASE_URL wins — sending a hardcoded
+            // 127.0.0.1:8080 default would point every copilot call at a dead port.
+            var explicit = !!(s.localHost || s.localPort);
+            copilot.explicitBase = explicit;
+            copilot.baseUrl = '';
+            if (explicit) {
+                var host = (s.localHost || '127.0.0.1').trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+                var port = (s.localPort || '').trim();
+                var path = (s.localPath || '/v1').trim();
+                if (path.charAt(0) !== '/') path = '/' + path;
+                path = path.replace(/\/$/, '');
+                copilot.baseUrl = 'http://' + host + (port ? ':' + port : '') + path;
+            }
+            var sel = document.getElementById('copilotModelSel');
+            var picked = sel && sel.value ? sel.value : '';
+            copilot.model = picked || (s.localModel || '').trim();
+            copilot.apiKey = (s.localApiKey || '').trim();
+        }
+
+        // Persist the picked tag into the SHARED settings blob so Settings →
+        // Local Model and every other page's local calls follow the same model.
+        function copilotSaveModel(tag) {
+            try {
+                var blob = {};
+                try { blob = JSON.parse(localStorage.getItem('t3mp3st') || '{}'); } catch (e) {}
+                if (!blob.settings) blob.settings = {};
+                blob.settings.localModel = tag || '';
+                localStorage.setItem('t3mp3st', JSON.stringify(blob));
+            } catch (e) {}
+        }
+
+        // Live model list straight from the configured Ollama (/api/tags). Runs
+        // server-side through the existing /api/models route, so the browser never
+        // touches Ollama's CORS wall.
+        async function copilotScanModels() {
+            var btn = document.getElementById('copilotScanBtn');
+            var st = document.getElementById('copilotModelsStatus');
+            var sel = document.getElementById('copilotModelSel');
+            if (!sel) return;
+            copilotLocalConfig();
+            if (btn) btn.disabled = true;
+            if (st) st.textContent = 'scanning Ollama…';
+            try {
+                var body = { provider: 'local' };
+                if (copilot.explicitBase) body.baseUrl = copilot.baseUrl;
+                var d = await api('/api/models', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                var models = (d.models || []).map(function (m) { return m.id || m.name; }).filter(Boolean);
+                copilot.models = models;
+                var current = sel.value || copilotSavedSettings().localModel || '';
+                sel.innerHTML = '<option value="">(server default — ' + esc(copilot.serverModel || 'auto') + ')</option>' +
+                    models.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('');
+                if (current && models.indexOf(current) >= 0) sel.value = current;
+                if (d.source === 'live') {
+                    if (st) st.innerHTML = '<b>' + models.length + '</b> models served' + (copilot.explicitBase ? ' by your Settings host' : ' by the server-configured Ollama') + (current ? ' · running <b>' + esc(sel.value) + '</b>' : '');
+                } else {
+                    if (st) st.innerHTML = '<span class="warn">Ollama not reachable — ' + esc(d.note || 'no live list') + '. Server env: TEMPEST_LOCAL_BASE_URL / TEMPEST_LOCAL_MODEL.</span>';
+                }
+            } catch (e) {
+                if (st) st.innerHTML = '<span class="warn">scan failed: ' + esc(e.message || e) + '</span>';
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        function copilotChip(cls, text) {
+            var el = document.getElementById('copilotModel');
+            var tx = document.getElementById('copilotModelText');
+            if (!el || !tx) return;
+            el.className = 'copilot-model' + (cls ? ' ' + cls : '');
+            tx.textContent = text;
+        }
+
+        async function copilotProbe() {
+            try {
+                var d = await api('/api/gps/copilot');
+                copilot.serverModel = d.model || '';
+                if (d.configured) {
+                    copilotChip('', 'Ollama: ' + (copilot.serverModel || 'default model') + ' · local only');
+                } else {
+                    copilotChip('down', 'no local model configured — set one in Settings → Local Model');
+                }
+            } catch (e) {
+                copilotChip('down', 'copilot route unreachable');
+            }
+            copilotScanModels();
+        }
+
+        function copilotView() {
+            var b = map ? map.getBounds() : null;
+            var titleEl = document.getElementById('pinTitle');
+            var label = titleEl && pin ? titleEl.textContent.replace(/^[^0-9A-Za-z(\[]+/, '').trim() : null;
+            var txt = function (id) { var e = document.getElementById(id); var n = e ? parseInt(e.textContent, 10) : NaN; return isFinite(n) ? n : 0; };
+            return {
+                lamin: b ? b.getSouth() : null, lomin: b ? b.getWest() : null,
+                lamax: b ? b.getNorth() : null, lomax: b ? b.getEast() : null,
+                centerLat: map ? map.getCenter().lat : null, centerLon: map ? map.getCenter().lng : null,
+                zoom: map ? map.getZoom() : null,
+                pinLat: pin ? pin.lat : null, pinLon: pin ? pin.lon : null,
+                pinLabel: label,
+                layers: Object.keys(layerOn).filter(function (k) { return layerOn[k]; }),
+                satellites: { group: (document.getElementById('satGroup') || {}).value, count: txt('statSats') },
+                pois: { kind: (document.getElementById('poiKind') || {}).value, count: txt('statPois') },
+                towers: txt('cntTower')
+            };
+        }
+
+        var copilotQuickPrompts = {
+            brief: 'Give me the situation briefing for this view.',
+            ask: 'What is the strongest or nearest notable event to my pin right now, and what would you look at next on this map?',
+            command: 'Center the map on the ISS and measure the great-circle distance from my pin to it.'
+        };
+
+        function copilotQuick(mode) {
+            var box = document.getElementById('copilotBox');
+            if (box && !box.value.trim()) box.value = copilotQuickPrompts[mode] || copilotQuickPrompts.ask;
+            runCopilot(mode);
+        }
+
+        function copilotStatus(html) { var el = document.getElementById('copilotStatus'); if (el) el.innerHTML = html; }
+
+        // Minimal, escape-first markdown: local models love **bold** and `code`,
+        // and both are worth keeping. Everything is HTML-escaped BEFORE any
+        // markup is inserted, so a model reply can never inject into the page.
+        function copilotMd(s) {
+            return esc(s)
+                .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+                .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+        }
+
+        async function runCopilot(mode) {
+            if (copilot.running) return;
+            var box = document.getElementById('copilotBox');
+            var prompt = box ? box.value.trim() : '';
+            if (!prompt) {
+                if (box) { box.value = copilotQuickPrompts.brief; prompt = box.value; box.focus(); }
+                return;
+            }
+            copilotLocalConfig();
+            copilot.running = true;
+            copilot.startedAt = Date.now();
+            var runBtn = document.getElementById('copilotRun');
+            var stopBtn = document.getElementById('copilotStop');
+            if (runBtn) runBtn.disabled = true;
+            if (stopBtn) stopBtn.style.display = '';
+            var chips = document.querySelectorAll('#copilotChips .copilot-chip');
+            for (var i = 0; i < chips.length; i++) chips[i].disabled = true;
+            copilotChip('busy', 'thinking on local model…');
+            copilotStatus('⏳ local model is reading the view… <span id="copilotElapsed">0.0s</span>');
+            var out = document.getElementById('copilotOut');
+            if (out) out.classList.add('show');
+            var ansEl = document.getElementById('copilotAnswer');
+            var actEl = document.getElementById('copilotActions');
+            var metaEl = document.getElementById('copilotMeta');
+            var factsEl = document.getElementById('copilotFacts');
+            var factsWrap = document.getElementById('copilotFactsWrap');
+            if (ansEl) ansEl.innerHTML = '<span style="color:var(--text-muted)">thinking…</span>';
+            if (actEl) actEl.innerHTML = '';
+            if (metaEl) metaEl.innerHTML = '';
+            if (factsEl) factsEl.innerHTML = '';
+            if (factsWrap) factsWrap.style.display = 'none';
+
+            copilot.timer = setInterval(function () {
+                var e = document.getElementById('copilotElapsed');
+                if (e) e.textContent = ((Date.now() - copilot.startedAt) / 1000).toFixed(1) + 's';
+            }, 100);
+
+            var controller = new AbortController();
+            copilot.controller = controller;
+            var body = { prompt: prompt, mode: mode || 'auto', view: copilotView() };
+            if (copilot.baseUrl) body.baseUrl = copilot.baseUrl;
+            if (copilot.model) body.model = copilot.model;
+            if (copilot.apiKey) body.apiKey = copilot.apiKey;
+            body.timeout = 300000;
+
+            try {
+                var r = await fetch(getApiBase() + '/api/gps/copilot', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body), signal: controller.signal
+                });
+                var d = await r.json().catch(function () { return {}; });
+                if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+                await copilotRender(d, mode || 'auto');
+            } catch (e) {
+                var aborted = controller.signal.aborted;
+                if (ansEl) ansEl.innerHTML = '<span style="color:' + (aborted ? 'var(--warning)' : 'var(--danger)') + '">' +
+                    (aborted ? 'stopped by operator.' : esc('copilot failed: ' + (e.message || e))) +
+                    (aborted ? '' : ' — the map still works; check Settings → Local Model or the server .env (TEMPEST_LOCAL_*).') + '</span>';
+                copilotStatus('<span class="warn">' + (aborted ? '⏹ stopped' : 'copilot unavailable') + '</span> — map unaffected.');
+                copilotChip('down', aborted ? 'stopped' : 'local model unreachable');
+            } finally {
+                copilot.running = false;
+                copilot.controller = null;
+                if (copilot.timer) { clearInterval(copilot.timer); copilot.timer = null; }
+                if (runBtn) runBtn.disabled = false;
+                if (stopBtn) stopBtn.style.display = 'none';
+                for (var j = 0; j < chips.length; j++) chips[j].disabled = false;
+            }
+        }
+
+        function stopCopilot() {
+            if (copilot.controller) { try { copilot.controller.abort(); } catch (e) {} }
+        }
+
+        async function copilotRender(d, mode) {
+            var secs = ((Date.now() - copilot.startedAt) / 1000).toFixed(1);
+            var ansEl = document.getElementById('copilotAnswer');
+            if (ansEl) {
+                if (d.say) ansEl.innerHTML = copilotMd(d.say);
+                else if (d.parseFailed) ansEl.innerHTML = '<span style="color:var(--warning)">the local model replied in a form the planner could not read — raw reply shown below, no map action taken.</span><div style="margin-top:6px;color:var(--text-secondary)">' + copilotMd(d.raw || '') + '</div>';
+                else ansEl.innerHTML = '<span style="color:var(--text-muted)">(no prose — the copilot only ran map actions)</span>';
+            }
+            var meta = document.getElementById('copilotMeta');
+            if (meta) {
+                var bits = ['<span><b>' + secs + 's</b> on <b>' + esc(d.model || copilot.model || 'local model') + '</b></span>',
+                    '<span>mode <b>' + esc(mode) + '</b></span>',
+                    '<span>actions <b>' + (d.actions || []).length + '</b></span>'];
+                if (d.usage && d.usage.total_tokens) bits.push('<span>tokens <b>' + d.usage.total_tokens + '</b></span>');
+                if ((d.notes || []).length) bits.push('<span style="color:var(--warning)">feed caveat: ' + esc(d.notes.join(' · ')) + '</span>');
+                meta.innerHTML = bits.join('');
+            }
+            var factsWrap = document.getElementById('copilotFactsWrap');
+            var factsEl = document.getElementById('copilotFacts');
+            if (factsWrap && factsEl && (d.facts || []).length) {
+                factsEl.innerHTML = d.facts.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('');
+                factsWrap.style.display = '';
+            }
+            copilotStatus('<b>copilot done</b> in ' + secs + 's — every number above was computed server-side from the live feeds.');
+            await executeCopilotActions(d.actions || []);
+        }
+
+        // ── ACTION EXECUTOR ──────────────────────────────────────────
+        // Runs the server-validated whitelist. Each action reports itself in a
+        // chip, so the operator can see exactly what the model moved.
+        function coChip(label, cls) {
+            var el = document.createElement('span');
+            el.className = 'co-action' + (cls ? ' ' + cls : '');
+            el.textContent = (cls === 'failed' ? '✕ ' : cls === 'done' ? '✓ ' : '• ') + label;
+            var box = document.getElementById('copilotActions');
+            if (box) box.appendChild(el);
+            return function (cls2, text) { el.className = 'co-action ' + cls2; el.textContent = (cls2 === 'done' ? '✓ ' : '✕ ') + (text || label); };
+        }
+
+        async function executeCopilotActions(actions) {
+            for (var i = 0; i < actions.length; i++) {
+                var a = actions[i];
+                var args = a.args || {};
+                try {
+                    switch (a.action) {
+                        case 'fly_to':
+                            if (!map) ensureMap();
+                            map.flyTo([args.lat, args.lon], args.zoom || Math.max(map.getZoom(), 11), { duration: 1.1 });
+                            coChip('fly_to ' + args.lat + ', ' + args.lon, 'done')();
+                            break;
+                        case 'search_place':
+                            await copilotGeocode(String(args.q));
+                            coChip('search_place "' + args.q + '"', 'done')();
+                            break;
+                        case 'set_pin':
+                            if (!map) ensureMap();
+                            movePin(args.lat, args.lon, false);
+                            coChip('set_pin ' + args.lat + ', ' + args.lon, 'done')();
+                            break;
+                        case 'layer':
+                            if (layerOn[args.kind] !== !!args.on) toggleLayer(args.kind);
+                            coChip('layer ' + args.kind + ' ' + (args.on ? 'ON' : 'OFF'), 'done')();
+                            break;
+                        case 'satellites': {
+                            var sg = document.getElementById('satGroup');
+                            if (sg) {
+                                var has = Array.prototype.some.call(sg.options, function (o) { return o.value === args.group; });
+                                if (!has) { sg.innerHTML = '<option value="' + esc(args.group) + '">' + esc(args.group) + '</option>'; }
+                                sg.value = args.group;
+                            }
+                            var sl = document.getElementById('satLimit');
+                            if (sl && args.limit) sl.value = String(args.limit);
+                            await loadSats(true);
+                            coChip('satellites ' + args.group, 'done')();
+                            break;
+                        }
+                        case 'pois': {
+                            var pk = document.getElementById('poiKind');
+                            var pr = document.getElementById('poiRadius');
+                            if (pk) pk.value = args.kind;
+                            if (pr && args.radius) pr.value = String(args.radius);
+                            if (!pin) { coChip('pois (no pin set)', 'failed')('skipped — no operator pin'); break; }
+                            await loadPois(true);
+                            coChip('pois ' + args.kind + ' @' + args.radius + 'm', 'done')();
+                            break;
+                        }
+                        case 'measure':
+                            if (!a.result) { coChip('measure (no endpoints)', 'failed')('skipped — nothing to measure from'); break; }
+                            drawMeasure(a.result);
+                            coChip('measure ' + Math.round(a.result.km) + 'km ' + a.result.bearingCompass, 'done')();
+                            setStatus('measured <b>' + esc(a.result.fromLabel) + '</b> → <b>' + esc(a.result.toLabel) + '</b>: <b>' + Math.round(a.result.km).toLocaleString() + ' km</b> on bearing ' + a.result.bearing + '° (' + esc(a.result.bearingCompass) + ')');
+                            break;
+                        case 'clear_measure':
+                            drawMeasure(null);
+                            coChip('clear_measure', 'done')();
+                            break;
+                        case 'auto':
+                            if ((!!autoTimer) !== !!args.on) toggleAuto();
+                            coChip('auto ' + (args.on ? 'ON' : 'OFF'), 'done')();
+                            break;
+                        default:
+                            coChip('unknown action ' + a.action, 'failed')('dropped by validator');
+                    }
+                } catch (e) {
+                    coChip(a.action, 'failed')(String(e.message || e).slice(0, 80));
+                }
+            }
+        }
+
+        async function copilotGeocode(q) {
+            var d = await api('/api/osint/geocode', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q: q }) });
+            if (!d.geocode || typeof d.geocode.lat !== 'number') throw new Error('no match for "' + q + '"');
+            if (!map) ensureMap();
+            applyForwardPin(d.geocode, q);
+            map.setView([d.geocode.lat, d.geocode.lon], 13);
+        }
+
+        // Measurement leg: server-computed great-circle samples drawn straight to
+        // the map, with a distance label at the midpoint.
+        var measureLine = null;
+        var measurePin = null;
+        function drawMeasure(result) {
+            if (!map) ensureMap();
+            [measureLine, measurePin].forEach(function (l) { if (l) { try { map.removeLayer(l); } catch (e) {} } });
+            measureLine = null; measurePin = null;
+            if (!result || !result.path || !result.path.length) return;
+            measureLine = L.polyline(result.path, { color: LAYER_COLORS.app, weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map);
+            var mid = result.path[Math.floor(result.path.length / 2)];
+            measurePin = L.marker(mid, {
+                icon: L.divIcon({ className: '', html: '<div class="measure-label" style="background:rgba(7,16,23,.9);border:1px solid #2fffd2;border-radius:6px;padding:2px 7px;white-space:nowrap;">✈ ' + Math.round(result.km).toLocaleString() + ' km · ' + esc(result.bearing) + '° ' + esc(result.bearingCompass) + '</div>', iconSize: [10, 10], iconAnchor: [0, 0] })
+            }).addTo(map);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // BOOT
+        // ═══════════════════════════════════════════════════════════════
+        checkApiStatus();
+        setInterval(checkApiStatus, 10000);
+        refreshEgressIp(false);
+        setInterval(function () { refreshEgressIp(false); }, 30000);
+        ensureMap();
+        initSatGroups();
+        copilotProbe();
+        setTimeout(function () { if (map) map.invalidateSize(); }, 250);
+    </script>
+    <script src="embed.js"></script>
+</body>
+</html>

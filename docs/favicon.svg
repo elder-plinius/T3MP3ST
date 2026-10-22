@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="T3MP3ST">
+  <defs>
+    <linearGradient id="t3-bolt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2fffd2"/>
+      <stop offset="1" stop-color="#00ff88"/>
+    </linearGradient>
+    <radialGradient id="t3-glow" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#00ff88" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#00ff88" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Dark brand tile -->
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#071017"/>
+  <!-- Ambient green glow -->
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#t3-glow)"/>
+  <!-- Signature green edge -->
+  <rect x="3.25" y="3.25" width="57.5" height="57.5" rx="13.5" fill="none" stroke="#00ff88" stroke-opacity="0.45" stroke-width="2.5"/>
+  <!-- Tempest bolt (Lucide "zap" geometry, scaled + centered) -->
+  <g transform="translate(9.2,9.2) scale(1.9)">
+    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="url(#t3-bolt)"/>
+  </g>
+</svg>

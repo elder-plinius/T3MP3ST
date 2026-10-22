@@ -65,6 +65,27 @@ export TEMPEST_LOCAL_MODEL=llama3
 export TEMPEST_LOCAL_API_KEY=...  # only if your local server requires one
 ```
 
+### Ollama as a named provider
+
+Ollama is a first-class provider — you do not need to know that it hides
+behind the generic `local` settings:
+
+```bash
+ollama serve
+ollama pull llama3
+export OLLAMA_BASE_URL=http://localhost:11434   # default; /api is added automatically
+export OLLAMA_MODEL=llama3                      # any tag in `ollama list`
+```
+
+- `OLLAMA_BASE_URL` / `OLLAMA_MODEL` take precedence when the provider is
+  `ollama`, and act as fallbacks for the generic `local` provider.
+- Ollama is keyless. `OLLAMA_API_KEY` exists only for auth-fronted proxies.
+- In the War Room (**Settings → Universal API Config**), pick the
+  **Ollama · Local, keyless (native API)** provider and use **Fetch models** —
+  it calls Ollama's own `/api/tags` and lists every tag you have pulled.
+- Missions pre-flight the provider: if the selected tag is not served, launch
+  fails fast with the served list instead of hanging on Ollama's auto-pull.
+
 Check current configuration:
 
 ```bash

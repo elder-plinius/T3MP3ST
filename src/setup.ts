@@ -128,7 +128,7 @@ async function setupVeniceKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'venice',
-      model: 'llama-3.3-70b',
+      model: 'qwen-3-8-27b',
       apiKey,
       maxTokens: 10,
       temperature: 0,
@@ -267,7 +267,7 @@ async function setupHuggingFaceKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'huggingface',
-      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      model: 'Qwen/Qwen3.8-27B',
       baseUrl: 'https://router.huggingface.co/v1',
       apiKey,
       maxTokens: 10,

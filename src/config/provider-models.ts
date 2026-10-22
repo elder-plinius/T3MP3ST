@@ -8,6 +8,8 @@
  * list — a broken/keyless provider must never leave the panel empty.
  */
 
+import { fetchBypassingProxy } from '../net/proxy.js';
+
 export interface ProviderModel {
   id: string;
 }
@@ -23,7 +25,7 @@ const DEFAULT_MODEL_LIST_TIMEOUT_MS = 15_000;
 
 // Pseudo-providers with no remote model list (CLI-driven or in-process).
 const NO_REMOTE_LIST = new Set(['codex', 'mock', 'local-agent']);
-const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'nanogpt', 'novita', 'local']);
+const OPENAI_COMPATIBLE_REMOTE_LIST = new Set(['openai', 'venice', 'xai', 'gemini', 'nanogpt', 'novita', 'local', 'ollama']);
 const DIRECT_REMOTE_LIST = new Set(['anthropic', 'openrouter']);
 
 const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');
@@ -57,6 +59,18 @@ function parseModelList(body: unknown): ProviderModel[] {
   return models;
 }
 
+/** Extract `models[].name` from Ollama's native `/api/tags` response, or throw if malformed/empty. */
+function parseOllamaTagList(body: unknown): ProviderModel[] {
+  const models = (body as { models?: unknown } | null)?.models;
+  if (!Array.isArray(models)) throw new Error('Ollama /api/tags response has no models[] array');
+  const list = models
+    .map((m) => (m && typeof m === 'object' ? (m as { name?: unknown }).name : undefined))
+    .filter((n): n is string => typeof n === 'string' && n.length > 0)
+    .map((n) => ({ id: n }));
+  if (!list.length) throw new Error('Ollama returned an empty model list');
+  return list;
+}
+
 /**
  * List a provider's available models via its own endpoint. Throws on any failure (missing baseUrl,
  * non-2xx, malformed/empty body, or a provider with no remote list) — the caller fails open.
@@ -71,8 +85,11 @@ export async function listProviderModels(
   if (!providerCanListModels(provider)) {
     throw new Error(`provider '${provider}' is not supported for remote model listing`);
   }
-  const doFetch = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
-  if (!doFetch) throw new Error('no fetch implementation available');
+  // Model-list scans are operator CONTROL-PLANE calls (talking to the operator's own
+  // local/LAN model servers or the provider's API), never attack traffic — they must
+  // bypass the egress SOCKS proxy. A LAN endpoint like http://192.168.x.x:11434 is
+  // unreachable THROUGH the proxy and died with "Socks5 proxy rejected connection".
+  const doFetch = opts.fetchImpl ?? (fetchBypassingProxy as unknown as FetchLike);
 
   let url: string;
   const headers: Record<string, string> = {};
@@ -89,17 +106,39 @@ export async function listProviderModels(
     url = opts.baseUrl && opts.baseUrl.trim() ? `${stripTrailingSlash(opts.baseUrl)}/models` : OPENROUTER_MODELS_URL;
     if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
   } else {
-    // OpenAI-compatible: openai / venice / xai / gemini / local / litellm / openai-compat.
+    // OpenAI-compatible: openai / venice / xai / gemini / local / ollama / litellm / openai-compat.
     const base = opts.baseUrl && opts.baseUrl.trim() ? stripTrailingSlash(opts.baseUrl) : undefined;
     if (!base) throw new Error(`provider '${provider}' requires a baseUrl to list models`);
-    url = `${base}/models`;
+    // The named `ollama` provider (issue #164) always speaks Ollama's native API, whether the
+    // operator typed the bare root (http://localhost:11434) or the /api form used by `local`.
+    if (provider === 'ollama') {
+      const root = base.replace(/\/api$/, '');
+      url = `${root}/api/tags`;
+    } else if (provider === 'local' && /\/api$/.test(base)) {
+      // Ollama NATIVE api (base ends in /api): its model list is /api/tags → {models:[{name}]}
+      // (there is no /api/models endpoint). Everything else speaks OpenAI /models → {data:[{id}]}.
+      url = `${base}/tags`;
+    } else {
+      url = `${base}/models`;
+    }
     if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
   }
 
   const signal = timeoutSignal(opts.timeoutMs ?? DEFAULT_MODEL_LIST_TIMEOUT_MS);
-  const res = await doFetch(url, { headers, signal });
+  let res: Awaited<ReturnType<typeof doFetch>>;
+  try {
+    res = await doFetch(url, { headers, signal });
+  } catch (e) {
+    // undici's message is a useless "fetch failed" — the REAL reason (ECONNREFUSED vs
+    // ETIMEDOUT vs ENOTFOUND) lives on err.cause. Surface it + the exact URL so the
+    // operator can tell "wrong port" from "remote Ollama bound to loopback only" from "DNS".
+    const err = e as Error & { cause?: { code?: string; message?: string } };
+    const cause = err?.cause?.code || err?.cause?.message || err?.message || 'unknown';
+    throw new Error(`cannot reach ${url} (${cause})`);
+  }
   if (!res.ok) throw new Error(`model-list request failed: HTTP ${res.status}`);
-  return parseModelList(await res.json());
+  const body = (await res.json()) as unknown;
+  return url.endsWith('/tags') ? parseOllamaTagList(body) : parseModelList(body);
 }
 
 export interface ResolvedModels {

@@ -16,13 +16,6 @@ import * as dns from 'dns';
 import * as tls from 'tls';
 import { ApprovalController, isGatedRisk, type ApprovalRequest } from './approval.js';
 import { classifySubdomainTakeover, renderTakeoverReport } from './takeover.js';
-import { browserProbeTool } from './browser.js';
-import { usernameSearchTool, telegramLookupTool, emailFormatTool, ipInfoTool } from './social-osint.js';
-import { idorProbeTool } from './idor.js';
-import { jsAnalyzeTool } from './js-analyze.js';
-import { kevCheckTool } from './kev.js';
-import { binarySinkScanTool } from './binary.js';
-import { r2AnalyzeTool } from './r2-analyze.js';
 
 const execFileAsync = promisify(execFile);
 import type {
@@ -35,6 +28,7 @@ import type {
 } from '../types/index.js';
 import { ToolError, ToolErrorCategory } from '../types/index.js';
 import { validateToolArgs, buildJsonSchema, assertSchemaDepth } from '../validation/index.js';
+import { proxySubprocessEnv } from '../net/proxy.js';
 
 const dnsResolve = promisify(dns.resolve);
 const dnsResolve4 = promisify(dns.resolve4);
@@ -595,16 +589,6 @@ export function stampSpicyBuiltin(tool: CustomTool): CustomTool {
 }
 
 export const BUILTIN_TOOLS: CustomTool[] = [
-  browserProbeTool,
-  usernameSearchTool,
-  telegramLookupTool,
-  emailFormatTool,
-  ipInfoTool,
-  idorProbeTool,
-  jsAnalyzeTool,
-  kevCheckTool,
-  binarySinkScanTool,
-  r2AnalyzeTool,
   // =============================================================================
   // RECONNAISSANCE TOOLS
   // =============================================================================
@@ -640,17 +624,20 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           case 'NS':
             records = await dnsResolveNs(domain);
             break;
-          default: {
-            // dns.resolve returns an array for most rrtypes, but a single object
-            // for SOA (and other structured types) — normalize before joining.
-            const raw = await dnsResolve(domain, recordType);
-            records = Array.isArray(raw) ? (raw as unknown as string[]) : [JSON.stringify(raw)];
-          }
+          default:
+            records = await dnsResolve(domain, recordType) as string[];
         }
 
         return {
           success: true,
           output: `DNS ${recordType} lookup for ${domain}:\n${records.join('\n')}`,
+          // DNS records are target discoveries — emit them so they land in the evidence
+          // vault (tool-provenanced) instead of living only in this tool's output text.
+          findings: records.length > 0 ? [{
+            title: `DNS ${recordType} Records — ${domain}`,
+            severity: 'info',
+            details: `${recordType} records for ${domain}: ${records.join('; ')}`,
+          }] : undefined,
         };
       } catch (error) {
         return {
@@ -863,6 +850,13 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           resolve({
             success: true,
             output: `WHOIS for ${domain} (via ${whoisServer}):\n\n${output}${extracted.length > 20 ? '\n... (truncated)' : ''}`,
+            // Registration intel (registrar, nameservers, expiry) is a target discovery —
+            // emit it so it reaches the evidence vault with tool provenance.
+            findings: extracted.length > 0 ? [{
+              title: `WHOIS Registration — ${domain}`,
+              severity: 'info',
+              details: `WHOIS for ${domain}: ${extracted.slice(0, 12).join(' | ')}`,
+            }] : undefined,
           });
         });
 
@@ -949,9 +943,17 @@ export const BUILTIN_TOOLS: CustomTool[] = [
           const value = response.headers.get(h);
           return `${h}: ${value ? `✓ ${value}` : '✗ Missing'}`;
         });
+        // Missing security headers are a (low-severity) discovery — emit them so they land
+        // in the evidence vault instead of only in the tool's output text.
+        const missing = securityHeaders.filter(h => !response.headers.get(h));
         return {
           success: true,
           output: `Security Header Analysis for ${url}:\n${analysis.join('\n')}`,
+          findings: missing.length > 0 ? [{
+            title: `Missing Security Headers — ${url}`,
+            severity: 'low',
+            details: `${missing.length} security header(s) missing: ${missing.join(', ')}`,
+          }] : undefined,
         };
       } catch (error) {
         return { success: false, error: `Failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -2459,7 +2461,6 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
       const methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD', 'TRACE', 'CONNECT'];
       const results: { method: string; status: number; allowed: boolean }[] = [];
       const dangerousMethods: string[] = [];
-      const wafBlocks: string[] = [];
 
       // First try OPTIONS to see if Allow header is returned
       let optionsAllow: string | null = null;
@@ -2493,42 +2494,27 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
           });
 
           const status = response.status;
-          // A method is "allowed" ONLY on a 2xx/3xx origin response. 403/503 are
-          // almost always WAF/CDN blocks (Akamai, Cloudflare, nginx deny) — the
-          // origin may not even support the method, so they must NOT count as
-          // "dangerous methods enabled". 400/404/409 are not method-allow signals.
-          const allowed = status >= 200 && status < 400;
-          const wafBlocked = status === 403 || status === 503;
+          // Consider a method "allowed" if it doesn't return 405 Method Not Allowed
+          const allowed = status !== 405 && status !== 501;
           results.push({ method, status, allowed });
 
           if (allowed && ['PUT', 'DELETE', 'TRACE', 'PATCH'].includes(method)) {
             dangerousMethods.push(method);
-          } else if (wafBlocked && ['PUT', 'DELETE', 'TRACE', 'PATCH'].includes(method)) {
-            wafBlocks.push(method);
           }
 
           // Consume response body to prevent connection leaks
           await response.text().catch(() => {});
-        } catch (error) {
-          // Distinguish a TIMEOUT from a connection failure: a busy backend that
-          // can't answer in time is not "unreachable" — the label misleads the LLM.
-          const timedOut = error instanceof Error &&
-            (error.name === 'TimeoutError' || error.name === 'AbortError' || /timeout/i.test(error.message));
-          results.push({ method, status: timedOut ? 408 : 0, allowed: false });
+        } catch {
+          results.push({ method, status: 0, allowed: false });
         }
       }
 
       const output = results.map(r => {
         if (r.status === 0) return `  ${r.method}: unreachable`;
-        if (r.status === 408) return `  ${r.method}: timeout`;
-        const verdict = r.allowed ? '(allowed)' : (r.status === 403 || r.status === 503) ? '(blocked - likely WAF/CDN)' : '(not allowed)';
-        return `  ${r.method}: ${r.status} ${verdict}`;
+        return `  ${r.method}: ${r.status} ${r.allowed ? '(allowed)' : '(not allowed)'}`;
       }).join('\n');
 
       const sections = [`HTTP Methods Test for ${url}:\n${output}`];
-      if (wafBlocks.length) {
-        sections.push(`\nNote: ${wafBlocks.join(', ')} returned 403/503 — likely WAF/CDN blocking, NOT method support on the origin. Run wafw00f to confirm.`);
-      }
       if (optionsAllow) {
         sections.push(`\nAllow header: ${optionsAllow}`);
       }
@@ -3132,89 +3118,23 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
   // =============================================================================
   {
     name: 'cve_lookup',
-    description: 'Look up CVEs by ID or keyword — live NVD (CVSS/vector/published) + EPSS exploit probability, local DB fallback',
+    description: 'Look up CVEs from the built-in CVE database by keyword or CVE ID',
     category: 'util',
     parameters: [
-      { name: 'query', type: 'string', description: 'CVE ID (e.g. CVE-2024-4577) or keyword (e.g. log4j)', required: true },
+      { name: 'query', type: 'string', description: 'Search keyword or CVE ID (e.g., "log4j" or "CVE-2021-44228")', required: true },
     ],
     handler: async (context) => {
-      const query = (context.parameters.query as string).trim();
-      const q = query.toLowerCase();
-      const cveIdMatch = /^CVE-\d{4}-\d{4,}$/i.exec(q);
-
-      // ── Live enrichment for a full CVE ID: NVD CVSS + EPSS probability ──
-      if (cveIdMatch) {
-        const cveId = cveIdMatch[0].toUpperCase();
-        const parts: string[] = [];
-        let cvssBase: number | null = null;
-        let severity: string | null = null;
-        let found = false;
-        try {
-          const nvd = await targetFetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${cveId}`, {
-            signal: AbortSignal.timeout(15000),
-            headers: { 'user-agent': 'T3MP3ST/1.0' },
-          });
-          const j = (await nvd.json()) as { resultsPerPage?: number; vulnerabilities?: { cve: { id: string; descriptions?: { lang: string; value: string }[]; published?: string; metrics?: Record<string, unknown[]> } }[] };
-          const v = j.vulnerabilities?.[0]?.cve;
-          if (v) {
-            found = true;
-            parts.push(`CVE: ${v.id}`);
-            const desc = v.descriptions?.find((d) => d.lang === 'en')?.value ?? '';
-            if (desc) parts.push(`Description: ${desc.slice(0, 400)}`);
-            if (v.published) parts.push(`Published: ${v.published.slice(0, 10)}`);
-            const metrics = v.metrics ?? {};
-            const cvssV4 = metrics.cvssMetricV40?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
-            const cvssV31 = metrics.cvssMetricV31?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
-            const cvssV3 = metrics.cvssMetricV30?.[0] as { cvssData?: { baseScore?: number; baseSeverity?: string; vectorString?: string } } | undefined;
-            const pick = cvssV4 ?? cvssV31 ?? cvssV3;
-            if (pick?.cvssData) {
-              cvssBase = pick.cvssData.baseScore ?? null;
-              severity = pick.cvssData.baseSeverity ?? null;
-              parts.push(`CVSS: ${cvssBase} (${severity})`);
-              if (pick.cvssData.vectorString) parts.push(`Vector: ${pick.cvssData.vectorString}`);
-            }
-          }
-        } catch { /* NVD unreachable — fall through to EPSS + local */ }
-
-        try {
-          const epss = await targetFetch(`https://api.first.org/data/v1/epss?cve=${cveId}`, { signal: AbortSignal.timeout(10000) });
-          const ej = (await epss.json()) as { data?: { epss?: string; percentile?: string }[] };
-          const e = ej.data?.[0];
-          if (e?.epss !== undefined) {
-            const pct = (parseFloat(e.epss) * 100).toFixed(1);
-            const ptile = e.percentile ? (parseFloat(e.percentile) * 100).toFixed(1) : '?';
-            parts.push(`EPSS exploit probability: ${pct}% (percentile ${ptile})`);
-          }
-        } catch { /* EPSS unreachable */ }
-
-        if (found || parts.length > 0) {
-          const risk = cvssBase !== null && cvssBase >= 9.0 ? 'critical'
-            : cvssBase !== null && cvssBase >= 7.0 ? 'high'
-            : cvssBase !== null && cvssBase >= 4.0 ? 'medium' : 'info';
-          const high = risk === 'critical' || risk === 'high';
-          return {
-            success: true,
-            output: parts.join('\n'),
-            findings: [{
-              title: `CVE Intelligence: ${cveId}`,
-              severity: (high ? 'high' : 'info') as 'high' | 'info',
-              details: parts.join(' | ').slice(0, 400),
-              ...(cveIdMatch ? { cve: [cveId] } : {}),
-            }],
-          };
-        }
-        // NVD+EPSS both failed — fall back to local DB
-      }
+      const query = (context.parameters.query as string).toLowerCase();
 
       const matches: CVEEntry[] = CVE_DATABASE.filter(cve =>
-        cve.id.toLowerCase().includes(q) ||
-        cve.description.toLowerCase().includes(q)
+        cve.id.toLowerCase().includes(query) ||
+        cve.description.toLowerCase().includes(query)
       );
 
       if (matches.length === 0) {
         return {
           success: true,
-          output: `CVE Lookup for "${query}":\nNo matching CVEs found (live NVD/EPSS unavailable or no local match; ${CVE_DATABASE.length} local entries).`,
+          output: `CVE Lookup for "${query}":\nNo matching CVEs found in the local database (${CVE_DATABASE.length} entries).`,
         };
       }
 
@@ -3350,24 +3270,302 @@ ${issues.length ? `Issues:\n${issues.join('\n')}` : '✓ No obvious issues'}`,
 // SUBPROCESS TOOL EXECUTION
 // =============================================================================
 
+export interface BinaryLocation {
+  available: boolean;
+  path: string | null;
+  inWsl: boolean;
+  distro?: string;
+  /** When this entry was cached — negative (not-found) results expire so a cold WSL start self-heals. */
+  cachedAt?: number;
+  /**
+   * The probe did not complete (killed on timeout, or the WSL layer was unreachable), so
+   * `available: false` here means UNKNOWN, not absent. Never cached — the next call retries.
+   * Callers must not render this as "missing"; it is a failed measurement.
+   */
+  probeFailed?: boolean;
+}
+
+const binaryLocationCache = new Map<string, BinaryLocation>();
+
 /**
- * Check if a command-line tool is available on the system
+ * Clear the binary location cache (useful for testing or after installing tools)
  */
-export async function isToolAvailable(command: string): Promise<boolean> {
+// WSL is expensive to probe (a cold distro boot can take >10s). Availability is checked ONCE and
+// cached so a host without WSL never pays the per-binary probe again.
+let wslAvailabilityCache: { available: boolean; checkedAt: number } | null = null;
+// A CONFIRMED-absent WSL layer can be cached long: nothing will change it. A probe that merely
+// timed out must NOT be — a cold boot legitimately takes ~2s and an unlucky moment exceeds a
+// tight budget, and caching that verdict hides every WSL-resident tool for the whole window.
+const WSL_ABSENT_TTL_MS = 10 * 60_000;
+const WSL_FAILED_TTL_MS = 20_000;
+// Measured: a warm `wsl -d … -e /bin/true` runs ~0.5-0.6s, but a COLD distro boot takes 1.6-2.6s.
+// The old 3s budget left ~1.1s of headroom, which concurrent load ate — and because the failure
+// was cached as a definitive "WSL absent", one slow boot hid Kali's whole toolchain.
+const WSL_PROBE_TIMEOUT_MS = 15_000;
+function wslDistro(): string {
+  return process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+}
+/** Tri-state on purpose: a failed probe must not read as "WSL is absent". */
+async function isWslUsable(): Promise<boolean | 'unknown'> {
+  if (wslAvailabilityCache) {
+    const age = Date.now() - wslAvailabilityCache.checkedAt;
+    const ttl = wslAvailabilityCache.available ? WSL_ABSENT_TTL_MS : WSL_FAILED_TTL_MS;
+    if (age < ttl) return wslAvailabilityCache.available;
+  }
   try {
-    // Windows has `where.exe`, POSIX has `which` — `which` alone makes every
-    // installed tool (e.g. curl.exe) look missing on Windows.
-    const probe = process.platform === 'win32' ? 'where' : 'which';
-    await execFileAsync(probe, [command], { timeout: 5000 });
+    // --status answers without booting the VM, so it reports "usable" on hosts whose
+    // distro can't actually start — then every per-binary `wsl -d … which` probe hangs
+    // its full timeout. Probe with a real exec instead: proves the VM can run commands.
+    // `which true` rather than `/bin/true`: a bare absolute POSIX path is rewritten by Git-Bash
+    // MSYS path translation into C:/Program Files/Git/usr/bin/true, which does not exist in
+    // the distro — a false negative on any host launched from Git Bash.
+    await execFileAsync('wsl.exe', ['-d', wslDistro(), '-e', 'which', 'true'], { timeout: WSL_PROBE_TIMEOUT_MS });
+    wslAvailabilityCache = { available: true, checkedAt: Date.now() };
     return true;
   } catch {
-    return false;
+    // Genuinely absent (wsl.exe missing) vs. merely slow — indistinguishable here, so keep the
+    // verdict short-lived: the next call re-probes instead of trusting a blip for 10 minutes.
+    wslAvailabilityCache = { available: false, checkedAt: Date.now() };
+    return 'unknown';
   }
+}
+export function clearBinaryLocationCache(): void {
+  binaryLocationCache.clear();
+  wslAvailabilityCache = null;
 }
 
 /**
- * Run a subprocess tool with timeout and output capture
+ * Locate multiple command-line binaries on the host PATH, or falling back to WSL (e.g. Kali Linux) on Windows.
  */
+export async function findBinaryLocations(commands: string[]): Promise<Map<string, BinaryLocation>> {
+  const result = new Map<string, BinaryLocation>();
+  const needed: string[] = [];
+
+  const NEGATIVE_TTL_MS = 60_000;
+  for (const cmd of commands) {
+    const cached = binaryLocationCache.get(cmd);
+    if (cached) {
+      const expired = !cached.available && cached.cachedAt && Date.now() - cached.cachedAt > NEGATIVE_TTL_MS;
+      if (!expired) {
+        result.set(cmd, cached);
+        continue;
+      }
+      binaryLocationCache.delete(cmd);
+    }
+    needed.push(cmd);
+  }
+
+  if (needed.length === 0) {
+    return result;
+  }
+
+  if (process.platform === 'win32') {
+    // where.exe costs ~200ms/binary when most names miss (INFO lines for each). Chunk the batch
+    // and run the chunks CONCURRENTLY so the wall-time stops scaling with the catalog size.
+    const CHUNK = 16;
+    const chunks: string[][] = [];
+    for (let i = 0; i < needed.length; i += CHUNK) chunks.push(needed.slice(i, i + CHUNK));
+    const chunkOut = await Promise.all(chunks.map((c) =>
+      execFileAsync('where.exe', c, { timeout: 6000 })
+        .then((res) => res.stdout || '')
+        .catch((err: unknown) => {
+          const e = err as { stdout?: string };
+          return (e && typeof e.stdout === 'string') ? e.stdout : '';
+        }),
+    ));
+    const whereStdout = chunkOut.join('\n');
+
+    const hostFound = new Map<string, string>();
+    for (const line of whereStdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed && (trimmed.includes(':\\') || trimmed.startsWith('\\'))) {
+        const binWithExt = trimmed.split('\\').pop() || '';
+        const binBase = binWithExt.replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+        if (binBase && !hostFound.has(binBase)) {
+          hostFound.set(binBase, trimmed);
+        }
+      }
+    }
+
+    const missingOnHost: string[] = [];
+    for (const cmd of needed) {
+      const lower = cmd.toLowerCase();
+      if (hostFound.has(lower)) {
+        const loc: BinaryLocation = { available: true, path: hostFound.get(lower)!, inWsl: false, cachedAt: Date.now() };
+        binaryLocationCache.set(cmd, loc);
+        result.set(cmd, loc);
+      } else {
+        missingOnHost.push(cmd);
+      }
+    }
+
+    // Batch query WSL for remaining tools. When the WSL layer is CONFIRMED absent, the missing
+    // binaries are cached as unavailable (they must NOT be left uncached, or every call
+    // re-pays the full where.exe sweep). A merely-FAILED probe caches nothing — see below.
+    if (missingOnHost.length > 0) {
+      const wslUsable = await isWslUsable();
+      if (wslUsable !== true) {
+        // 'unknown' means the probe did not complete, so we learned nothing about these
+        // binaries. Recording that as "not installed" is the exact lie this fixes: it made
+        // the war room report hydra/mimikatz/rubeus/xsser as MISSING on a box where Kali has
+        // all four. Answer unknown, cache nothing, and let the next call re-measure.
+        const probeFailed = wslUsable === 'unknown';
+        for (const cmd of missingOnHost) {
+          const loc: BinaryLocation = { available: false, path: null, inWsl: false, probeFailed: probeFailed || undefined };
+          if (!probeFailed) binaryLocationCache.set(cmd, loc);
+          result.set(cmd, loc);
+        }
+      } else {
+      const distro = wslDistro();
+      // Chunk the probe. A single `which` over the whole catalogue (81 names) reliably
+      // overran the old 8s budget and was killed mid-flight, and a killed probe returns
+      // EMPTY stdout — which the old code read as "found nothing", marking all 81 missing.
+      // Chunking keeps each exec small, and running them concurrently keeps wall-time flat.
+      const WSL_CHUNK = 16;
+      const chunks: string[][] = [];
+      for (let i = 0; i < missingOnHost.length; i += WSL_CHUNK) chunks.push(missingOnHost.slice(i, i + WSL_CHUNK));
+      const chunkOut = await Promise.all(chunks.map((c) =>
+        execFileAsync('wsl.exe', ['-d', distro, '-e', 'which', ...c], { timeout: 20_000 })
+          .then((res) => res.stdout || '')
+          .catch((err: unknown) => {
+            const e = err as { stdout?: string };
+            return (e && typeof e.stdout === 'string') ? e.stdout : '';
+          }),
+      ));
+      const wslStdout = chunkOut.join('\n');
+
+      // A killed chunk yields no output for its names, which is indistinguishable from
+      // "absent". Detect it: if `which` printed nothing at all AND some names were asked
+      // about, the layer told us nothing — answer unknown rather than a false negative.
+      const wslFound = new Map<string, string>();
+      for (const line of wslStdout.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (trimmed && trimmed.startsWith('/')) {
+          const binName = trimmed.split('/').pop();
+          if (binName) {
+            wslFound.set(binName, trimmed);
+          }
+        }
+      }
+      const probeFailed = wslFound.size === 0 && missingOnHost.length > 0;
+
+      for (const cmd of missingOnHost) {
+        if (wslFound.has(cmd)) {
+          const fullPath = wslFound.get(cmd)!;
+          const loc: BinaryLocation = {
+            available: true,
+            path: `wsl:${distro}:${fullPath}`,
+            inWsl: true,
+            distro,
+            cachedAt: Date.now(),
+          };
+          binaryLocationCache.set(cmd, loc);
+          result.set(cmd, loc);
+        } else {
+          const loc: BinaryLocation = { available: false, path: null, inWsl: false, cachedAt: Date.now(), probeFailed: probeFailed || undefined };
+          if (!probeFailed) binaryLocationCache.set(cmd, loc);
+          result.set(cmd, loc);
+        }
+      }
+      }
+    }
+  } else {
+    // POSIX host batch query — `which` may be absent in minimal containers (issue #154),
+    // fall back to `command -v` via sh.
+    let posixStdout = '';
+    try {
+      const res = await execFileAsync('which', needed, { timeout: 6000 });
+      posixStdout = res.stdout || '';
+    } catch (err: unknown) {
+      const e = err as { stdout?: string };
+      posixStdout = (e && typeof e.stdout === 'string') ? e.stdout : '';
+    }
+    // If which is missing (empty stdout and no partial hits), try sh `command -v` fallback.
+    if (!posixStdout.trim()) {
+      try {
+        const probe = needed.map((n) => `command -v ${n} 2>/dev/null`).join('; ');
+        const res2 = await execFileAsync('sh', ['-c', probe], { timeout: 4000 });
+        posixStdout = res2.stdout || '';
+      } catch {
+        // keep empty — all tools will be marked unavailable
+      }
+    }
+
+    const posixFound = new Map<string, string>();
+    for (const line of posixStdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed && trimmed.startsWith('/')) {
+        const binName = trimmed.split('/').pop();
+        if (binName) posixFound.set(binName, trimmed);
+      }
+    }
+
+    for (const cmd of needed) {
+      if (posixFound.has(cmd)) {
+        const fullPath = posixFound.get(cmd)!;
+        const loc: BinaryLocation = { available: true, path: fullPath, inWsl: false, cachedAt: Date.now() };
+        binaryLocationCache.set(cmd, loc);
+        result.set(cmd, loc);
+      } else {
+        const loc: BinaryLocation = { available: false, path: null, inWsl: false, cachedAt: Date.now() };
+        binaryLocationCache.set(cmd, loc);
+        result.set(cmd, loc);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Locate a single command-line binary on the host PATH, or falling back to WSL (e.g. Kali Linux) on Windows.
+ */
+export async function findBinaryLocation(command: string): Promise<BinaryLocation> {
+  const map = await findBinaryLocations([command]);
+  return map.get(command) || { available: false, path: null, inWsl: false };
+}
+
+/**
+ * Check if a command-line tool is available on the system (native host or WSL bridge).
+ *
+ * A failed probe answers false, but carries `probeFailed` on the location so callers that
+ * report to a human can say "could not verify" instead of "not installed".
+ */
+export async function isToolAvailable(command: string): Promise<boolean> {
+  const loc = await findBinaryLocation(command);
+  return loc.available;
+}
+
+/**
+ * Run a subprocess tool with timeout and output capture (with automatic WSL bridge routing if binary is inside WSL)
+ */
+/**
+ * Run a command directly inside a WSL distro — WITHOUT runSubprocess's re-routing. Needed when the
+ * command IS wsl.exe: interop exposes wsl.exe inside the distro PATH, so runSubprocess('wsl.exe', …)
+ * double-nests (wsl -d X -e wsl.exe -d X -e …) and the inner relay fails with execvpe(wsl.exe).
+ */
+export async function runWsl(
+  distro: string,
+  args: string[],
+  options?: { timeout?: number; maxOutput?: number }
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const timeout = options?.timeout ?? 60000;
+  const maxOutput = options?.maxOutput ?? 1024 * 1024;
+  try {
+    const { stdout, stderr } = await execFileAsync('wsl.exe', ['-d', distro, '-e', ...args], {
+      timeout,
+      maxBuffer: maxOutput,
+    });
+    return { stdout: stdout || '', stderr: stderr || '', exitCode: 0 };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; code?: number; killed?: boolean };
+    if (err.killed) {
+      return { stdout: err.stdout || '', stderr: 'Process killed (timeout)', exitCode: -1 };
+    }
+    return { stdout: err.stdout || '', stderr: err.stderr || String(error), exitCode: err.code || 1 };
+  }
+}
+
 export async function runSubprocess(
   command: string,
   args: string[],
@@ -3376,10 +3574,27 @@ export async function runSubprocess(
   const timeout = options?.timeout ?? 60000;
   const maxOutput = options?.maxOutput ?? 1024 * 1024; // 1MB
 
+  let execCmd = command;
+  let execArgs = args;
+
+  if (process.platform === 'win32') {
+    const loc = await findBinaryLocation(command);
+    if (loc.inWsl && loc.distro) {
+      // NOTE: proxy env is intentionally NOT injected here — WSL2 cannot reach a Windows-host
+      // SOCKS client on 127.0.0.1:1080 (no mirrored networking on Win10), so the vars would only
+      // break every WSL tool with connection-refused. WSL-side coverage is a proxychains4 follow-up.
+      execCmd = 'wsl.exe';
+      execArgs = ['-d', loc.distro, '-e', command, ...args];
+    }
+  }
+
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, {
+    // Proxy env injection (host binaries): without it subprocess CLIs egress from the operator's
+    // real IP even while the SOCKS proxy is on — the undici dispatcher only covers Node's fetch.
+    const { stdout, stderr } = await execFileAsync(execCmd, execArgs, {
       timeout,
       maxBuffer: maxOutput,
+      env: { ...process.env, ...proxySubprocessEnv() },
     });
     return { stdout, stderr, exitCode: 0 };
   } catch (error: unknown) {
@@ -3471,6 +3686,7 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       { name: 'target', type: 'string', description: 'Target URL', required: true },
       { name: 'severity', type: 'string', description: 'Severity filter: info,low,medium,high,critical', required: false, default: 'medium,high,critical' },
       { name: 'tags', type: 'string', description: 'Template tags (e.g., "cve,sqli,xss")', required: false },
+      { name: 'templates', type: 'string', description: 'Template path, file, or category (e.g., "cves", "technologies", "exposures")', required: false },
     ],
     handler: async (context) => {
       if (!(await isToolAvailable('nuclei'))) {
@@ -3479,9 +3695,13 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       const target = context.parameters.target as string;
       const severity = context.parameters.severity as string || 'medium,high,critical';
       const tags = context.parameters.tags as string | undefined;
+      const templates = (context.parameters.templates as string | undefined) ||
+        (context.parameters.template as string | undefined) ||
+        (context.parameters.t as string | undefined);
 
       const args = ['-target', target, '-severity', severity, '-silent', '-jsonl'];
       if (tags) args.push('-tags', tags);
+      if (templates) args.push('-t', templates);
 
       const result = await runSubprocess('nuclei', args, { timeout: 300000 });
 
@@ -3617,6 +3837,151 @@ export const EXTERNAL_TOOLS: CustomTool[] = [
       } finally {
         if (configDir) await rm(configDir, { recursive: true, force: true });
       }
+    },
+  },
+  {
+    name: 'creddump7_dump',
+    description: 'Extract Windows credentials from registry hives with creddump7 (pwdump/cachedump/lsadump). Offline: operates on SYSTEM/SAM/security hive files or an extracted hive set — never on the live host.',
+    category: 'cred',
+    parameters: [
+      { name: 'action', type: 'string', description: 'Extraction action: pwdump | cachedump | lsadump', required: true },
+      { name: 'systemHive', type: 'string', description: 'Path to the SYSTEM hive (WSL-accessible, e.g. /mnt/c/...)', required: true },
+      { name: 'samHive', type: 'string', description: 'Path to the SAM hive (pwdump/lsadump) or SECURITY hive (cachedump)', required: true },
+    ],
+    handler: async (context) => {
+      if (!(await isToolAvailable('creddump7'))) {
+        return { success: false, error: 'creddump7 is not installed. Install it with: apt install creddump7 (Kali Linux WSL).' };
+      }
+      const action = String(context.parameters.action || '').toLowerCase();
+      const systemHive = String(context.parameters.systemHive || '').trim();
+      const samHive = String(context.parameters.samHive || '').trim();
+      if (!['pwdump', 'cachedump', 'lsadump'].includes(action)) {
+        return { success: false, error: 'action must be one of: pwdump, cachedump, lsadump' };
+      }
+      // /usr/bin/creddump7 is a display wrapper (cd + tree + spawns a shell — it hangs non-interactive).
+      // Call the real python scripts directly through the WSL bridge.
+      const loc = await findBinaryLocation('creddump7');
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const script = `/usr/share/creddump7/${action}.py`;
+      const result = await runWsl(distro, ['python3', script, systemHive, samHive], { timeout: 60000 });
+      const ok = result.exitCode === 0 && /:/i.test(result.stdout);
+      return {
+        success: ok,
+        output: result.stdout || result.stderr,
+        error: ok ? undefined : (result.stderr || 'creddump7 returned no credential lines — verify hive paths are WSL-accessible'),
+      };
+    },
+  },
+  {
+    name: 'mimikatz_exec',
+    description: 'Run a mimikatz module command (e.g. sekurlsa::logonpasswords, lsadump::sam). Requires wine in the Kali WSL distro (mimikatz.exe is a Windows PE) — reports the missing runtime honestly instead of pretending.',
+    category: 'cred',
+    parameters: [
+      { name: 'command', type: 'string', description: 'mimikatz module::command (allowlisted charset, e.g. sekurlsa::logonpasswords)', required: true },
+    ],
+    handler: async (context) => {
+      const loc = await findBinaryLocation('mimikatz');
+      if (!loc.available) {
+        return { success: false, error: 'mimikatz is not installed. Install it with: apt install mimikatz (Kali Linux WSL).' };
+      }
+      const command = String(context.parameters.command || '').trim();
+      // Allowlist: module::command shapes only — no quotes/pipes/redirects (the PE gets this as a single argv token).
+      if (!/^[A-Za-z0-9_:.!\- /@]{3,120}$/.test(command) || /['";|&$<>]/.test(command)) {
+        return { success: false, error: 'command must be a plain mimikatz module::command (e.g. sekurlsa::logonpasswords) — quotes/pipes/redirects are rejected' };
+      }
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const exe = '/usr/share/windows-resources/mimikatz/x64/mimikatz.exe';
+      const wineProbe = await runWsl(distro, ['which', 'wine'], { timeout: 15000 });
+      if (!wineProbe.stdout.trim()) {
+        return { success: false, error: `mimikatz.exe is a Windows PE — wine is not installed in WSL ${distro}. Install it with: wsl -d ${distro} apt install wine (or run the exe natively on an admin Windows host).` };
+      }
+      const result = await runWsl(distro, ['wine', exe, command, 'exit'], { timeout: 90000 });
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout,
+        error: result.exitCode !== 0 ? result.stderr : undefined,
+      };
+    },
+  },
+  {
+    name: 'rubeus_exec',
+    description: 'Run a Rubeus Kerberos verb (kerberoast, asreproast, klist, triage). Requires mono in the Kali WSL distro (Rubeus.exe is a .NET assembly) and a reachable domain for ticket abuse.',
+    category: 'cred',
+    parameters: [
+      { name: 'verb', type: 'string', description: 'Rubeus verb: kerberoast | asreproast | klist | triage | dump', required: true },
+      { name: 'args', type: 'string', description: 'Extra Rubeus args, slash-form only (e.g. /nowrap /dc:dc01.corp.local)', required: false },
+    ],
+    handler: async (context) => {
+      const loc = await findBinaryLocation('rubeus');
+      if (!loc.available) {
+        return { success: false, error: 'rubeus is not installed. Install it with: apt install rubeus (Kali Linux WSL).' };
+      }
+      const verb = String(context.parameters.verb || '').toLowerCase();
+      if (!['kerberoast', 'asreproast', 'klist', 'triage', 'dump'].includes(verb)) {
+        return { success: false, error: 'verb must be one of: kerberoast, asreproast, klist, triage, dump' };
+      }
+      const extra = String(context.parameters.args || '').trim();
+      // Slash-form args only — rejects quotes/pipes/redirects and anything not starting with / or a bare flag token.
+      if (extra && !/^[A-Za-z0-9_:./=@\- ,]{1,200}$/.test(extra)) {
+        return { success: false, error: 'args must be Rubeus slash-form flags (e.g. /nowrap /dc:dc01) — quotes/pipes/redirects are rejected' };
+      }
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const exe = '/usr/share/windows-resources/rubeus/Rubeus.exe';
+      const monoProbe = await runWsl(distro, ['which', 'mono'], { timeout: 15000 });
+      if (!monoProbe.stdout.trim()) {
+        return { success: false, error: `Rubeus.exe is a .NET assembly — mono is not installed in WSL ${distro}. Install it with: wsl -d ${distro} apt install mono-complete` };
+      }
+      const argv = extra ? [verb, ...extra.split(/\s+/)] : [verb];
+      const result = await runWsl(distro, ['mono', exe, ...argv], { timeout: 90000 });
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout,
+        error: result.exitCode !== 0 ? result.stderr : undefined,
+      };
+    },
+  },
+  {
+    name: 'xsser_scan',
+    description: 'Run XSSer against a target URL to detect/exploit XSS vectors (reflected, stored, DOM, XST). Mode url audits a single URL; mode all auto-audits the whole target. Active: injects test payloads.',
+    category: 'web',
+    parameters: [
+      { name: 'url', type: 'string', description: 'Target URL (e.g. http://host:8082/page)', required: true },
+      { name: 'mode', type: 'string', description: 'url (single URL, default) | all (auto-audit entire target)', required: false },
+      { name: 'extraArgs', type: 'string', description: 'Extra XSSer dash-form flags only (e.g. -v --Cw 1)', required: false },
+    ],
+    handler: async (context) => {
+      const loc = await findBinaryLocation('xsser');
+      if (!loc.available) {
+        return { success: false, error: 'xsser is not installed. Install it with: apt install xsser (Kali Linux WSL).' };
+      }
+      const url = String(context.parameters.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) {
+        return { success: false, error: 'url must be an absolute http(s) URL' };
+      }
+      // XSSer needs its payload keyword in the URL to know where to inject — auto-append the
+      // standard probe (?xss=XSS) so a bare page URL still produces a meaningful audit.
+      let probeUrl = url;
+      if (!/XSS/i.test(url)) probeUrl = url + (url.includes('?') ? '&' : '?') + 'xss=XSS';
+      const mode = String(context.parameters.mode || 'url').toLowerCase();
+      const flag = mode === 'all' ? '--all' : '-u';
+      const extra = String(context.parameters.extraArgs || '').trim();
+      if (extra && /['";|&$<>]/.test(extra)) {
+        return { success: false, error: 'extraArgs must be plain XSSer dash-form flags — quotes/pipes/redirects are rejected' };
+      }
+      const distro = loc.distro || process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+      const argv = [flag, probeUrl, ...(extra ? extra.split(/\s+/) : [])];
+      const result = await runWsl(distro, ['xsser', ...argv], { timeout: 180000 });
+      const hitCount = (result.stdout.match(/XSS/gi) || []).length;
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout || result.stderr,
+        error: result.exitCode !== 0 ? result.stderr : undefined,
+        findings: (/vulnerab|succeeded/i.test(result.stdout)) ? [{
+          title: 'XSS Candidate Vectors — ' + probeUrl,
+          severity: 'low',
+          details: 'XSSer reported candidate XSS vector hits (' + hitCount + ' XSS mentions in report) — verify manually before treating as confirmed.',
+        }] : undefined,
+      };
     },
   },
 ];

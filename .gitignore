@@ -81,6 +81,41 @@ coverage-pr/
 .codex/
 .agents/
 
+# Local cache & debug artifacts
+.t3mp3st-cache/
+.zcode/
+scratch/
+bash.exe.stackdump
+nul
+# operator settings DB (holds API keys — never publish)
+memory/
+
+# transient probe / harvest detritus (rebuilt from the wire)
+.fp_*
+.b_*
+*.stackdump
+.bounup.html
+.login.html
+.memberlist.html
+.core*.js
 data/
 reports/
 drills/
+
+# session scratch (probe captures, throwaway scripts, daemon logs)
+.sx_*
+.sectest-*
+.probe*
+.p2_*
+.reg_step1.mjs
+.ag3.mjs
+.nmap_domain.txt
+.tor-server.err
+
+# scraped electoral data dumps (PII — local only, never publish)
+trinidad_*.json
+trinidad_index.csv
+trinidad.json
+
+# Cairn upstream reference material (AGPL — local only, techniques reimplemented in src/search/)
+.cairn-ref/

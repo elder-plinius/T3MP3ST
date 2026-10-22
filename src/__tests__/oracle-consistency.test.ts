@@ -60,21 +60,61 @@ const PINNED_DIRS = [
   'whitebox-golden', 'whitebox-golden-v2', 'venice-whitebox',
 ];
 
+/** How many times to retry one artifact read before calling it unreadable. */
+const READ_ATTEMPTS = 3;
+
 function firstVerdict(file: string): Verdict {
-  const d = JSON.parse(fs.readFileSync(file, 'utf8'));
-  return ((d.results || [{}])[0] || {}).verdict || {};
+  // This audit reads 624 committed files. One unguarded readFileSync/JSON.parse
+  // meant that a single transient filesystem blip — and this repo's log records
+  // that its K: drive intermittently serves PARTIAL reads to freshly spawned
+  // processes — turned the whole audit of 588 solves red, with a bare
+  // "Unexpected token" that named no file and no cause. A retry absorbs the
+  // blip; a file that is genuinely unreadable still fails, now naming itself.
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
+    try {
+      const d = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return ((d.results || [{}])[0] || {}).verdict || {};
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(
+    `unreadable committed bench artifact after ${READ_ATTEMPTS} attempts — ${file}: ${String(lastErr)}`,
+  );
 }
 
+let solvesCache: Verdict[] | null = null;
 function committedSolves(): Verdict[] {
+  if (solvesCache) return solvesCache;
   const out: Verdict[] = [];
   for (const dir of PINNED_DIRS) {
     const abs = path.join(XBEN, dir);
     if (!fs.existsSync(abs)) continue;
-    for (const f of fs.readdirSync(abs).filter((n) => /^xben_\d+_24.*\.json$/.test(n))) {
+    // readdirSync can fail on the same transient blips the reads can, so it is
+    // retried on the same terms. A pinned directory that genuinely cannot be
+    // listed is still fatal — silently skipping it would shrink the audit set
+    // and make a later assertion pass over fewer solves than it claims.
+    let names: string[] = [];
+    let listed = false;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
+      try {
+        names = fs.readdirSync(abs);
+        listed = true;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!listed) throw new Error(`unreadable pinned bench directory after ${READ_ATTEMPTS} attempts — ${abs}: ${String(lastErr)}`);
+
+    for (const f of names.filter((n) => /^xben_\d+_24.*\.json$/.test(n))) {
       const v = firstVerdict(path.join(abs, f));
       if (isScoredSolve(v)) out.push(v);
     }
   }
+  solvesCache = out;
   return out;
 }
 
@@ -83,7 +123,7 @@ describe('no phantom pass (scored = oracle-backed)', () => {
     // Guard against the vacuous-green failure mode: if the artifacts moved and we scan
     // nothing, the "0 phantom" assertions below would pass while checking nothing.
     expect(committedSolves().length).toBeGreaterThanOrEqual(100);
-  });
+  }, 120_000); // the sweep reads every committed bench artifact — seconds of real disk I/O, not a hang
 
   it('every committed scored solve is oracle-grounded (self-report ≡ oracle, or auto-detected)', () => {
     const phantoms = committedSolves().filter(isPhantomPass);
@@ -93,7 +133,7 @@ describe('no phantom pass (scored = oracle-backed)', () => {
         .map((v) => `reported=${JSON.stringify(v.reported)} expected=${JSON.stringify(v.expected)}`)
         .join('; ')}`,
     ).toEqual([]);
-  });
+  }, 120_000);
 
   it('no fabricated placeholder flag is credited as a self-reported solve', () => {
     const fabricated = committedSolves().filter(isFabricatedCredit);

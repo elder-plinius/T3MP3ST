@@ -12,10 +12,10 @@
 //     stdout (the model's reply to OUR prompt — not secrets). Everything is local + user-initiated.
 // =============================================================================
 
-import { execFile, execFileSync, spawn } from 'child_process';
-import { accessSync, constants, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'fs';
+import { exec, execFile, execFileSync, spawn } from 'child_process';
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, tmpdir, userInfo } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 // t3mp3st injects its OWN provider keys (from .env) into the server process. If we let those leak into
 // a spawned CLI, the CLI uses t3mp3st's key instead of the user's native login → 401. The entire point
@@ -96,7 +96,8 @@ export function syncLocalAgentSelection<T>(
 }
 
 interface AgentSpec {
-  id: LocalAgentId;
+  /** built-in ids are the LocalAgentId union; operator-defined customs are 'custom-*' slugs */
+  id: string;
   label: string;
   vendor: string;
   bin: string;
@@ -111,6 +112,13 @@ interface AgentSpec {
   keychainService?: string;
   /** build the argv for a headless one-shot prompt */
   oneShot: (prompt: string, model?: string) => string[];
+  // ── operator-defined custom agents (set by customAgentSpec) ──
+  /** true for operator-defined customs (Settings → Add custom agent) */
+  custom?: boolean;
+  /** argv template tokens; '{prompt}' / '{model}' are substituted */
+  customTemplate?: string[];
+  /** prompt is piped via stdin instead of passed as an argv token */
+  customStdin?: boolean;
 }
 
 const SPECS: AgentSpec[] = [
@@ -191,7 +199,116 @@ const SPECS: AgentSpec[] = [
 ];
 
 export function getSpec(id: string): AgentSpec | undefined {
-  return SPECS.find((s) => s.id === id);
+  return SPECS.find((s) => s.id === id) ??
+    loadCustomAgents().map(customAgentSpec).find((s) => s.id === id);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operator-defined custom agents — enlist ANY local CLI as a backbone without a
+// code change. Definitions persist in ~/.t3mp3st/custom-agents.json (outside the
+// repo, so a GitHub push never carries them) and merge into detection exactly
+// like the built-in SPECS: detect → connect → ping → pin as backbone all work.
+//
+// Invocation contract (documented in the Settings form):
+//   args is an argv template. '{prompt}' is replaced with the prompt (or the
+//   prompt is piped via stdin when promptVia='stdin'); '{model}' is replaced
+//   with a model override when one is set and dropped otherwise. Tokens are
+//   whitespace-separated; double/single quotes group a token.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CustomAgentConfig {
+  /** slug; normalized to a 'custom-' prefix so it can never collide with a built-in id */
+  id: string;
+  label: string;
+  vendor?: string;
+  /** executable name (resolved on PATH) or absolute path */
+  bin: string;
+  /** argv template, see contract above */
+  args: string;
+  promptVia: 'arg' | 'stdin';
+  /** default '--version' */
+  versionArgs?: string;
+}
+
+const customAgentsFile = (): string => join(agentHome(), '.t3mp3st', 'custom-agents.json');
+
+export function loadCustomAgents(): CustomAgentConfig[] {
+  try {
+    const parsed = JSON.parse(readFileSync(customAgentsFile(), 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((c): c is CustomAgentConfig =>
+      !!c && typeof c.id === 'string' && typeof c.bin === 'string' && typeof c.args === 'string');
+  } catch { return []; } // missing or corrupt file = no custom agents
+}
+
+export function saveCustomAgents(list: CustomAgentConfig[]): void {
+  const file = customAgentsFile();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(list, null, 2));
+}
+
+/** Whitespace tokenizer honoring "double" and 'single' quotes. */
+function tokenizeTemplate(tpl: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(tpl))) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+export function normalizeCustomAgent(raw: {
+  id?: unknown; label?: unknown; vendor?: unknown; bin?: unknown; args?: unknown;
+  promptVia?: unknown; versionArgs?: unknown;
+}): CustomAgentConfig | { error: string } {
+  const bin = typeof raw.bin === 'string' ? raw.bin.trim() : '';
+  if (!bin) return { error: 'bin (command) is required' };
+  const args = typeof raw.args === 'string' ? raw.args : '{prompt}';
+  const promptVia = raw.promptVia === 'stdin' ? 'stdin' : 'arg';
+  const slug = (typeof raw.id === 'string' && raw.id.trim() ? raw.id : (typeof raw.label === 'string' && raw.label.trim() ? raw.label : 'agent'))
+    .toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  if (!slug) return { error: 'could not derive a usable id from label' };
+  return {
+    id: slug.startsWith('custom-') ? slug : `custom-${slug}`,
+    label: (typeof raw.label === 'string' && raw.label.trim() && raw.label.trim().slice(0, 60)) || slug,
+    vendor: typeof raw.vendor === 'string' && raw.vendor.trim() ? raw.vendor.trim().slice(0, 40) : 'Custom',
+    bin,
+    args,
+    promptVia,
+    versionArgs: typeof raw.versionArgs === 'string' && raw.versionArgs.trim() ? raw.versionArgs : '--version',
+  };
+}
+
+/** Build an AgentSpec that plugs a custom agent into detect/connect/ping/dispatch unchanged. */
+export function customAgentSpec(c: CustomAgentConfig): AgentSpec {
+  const tokens = tokenizeTemplate(c.args);
+  const viaStdin = c.promptVia === 'stdin';
+  return {
+    id: c.id,
+    label: c.label || c.id,
+    vendor: c.vendor || 'Custom',
+    bin: c.bin,
+    blurb: 'Operator-defined local agent',
+    invokeHint: viaStdin
+      ? `${c.bin} ${c.args || '…'} < prompt`.trim()
+      : `${c.bin} ${c.args || '{prompt}'}`.trim(),
+    versionArgs: tokenizeTemplate(c.versionArgs || '--version'),
+    parseVersion: (o) => (o.match(/\d+\.\d+(\.\d+)?/) || ['?'])[0],
+    // Unknown CLI — there is no artifact to check. Installed is the bar; a live
+    // ping (Test button) is the proof the CLI's own account actually works.
+    authArtifacts: [],
+    custom: true,
+    customTemplate: tokens,
+    customStdin: viaStdin,
+    oneShot: (p, m) => {
+      const resolved = tokens
+        .filter((t) => t !== '{prompt}' || !viaStdin)
+        .filter((t) => t !== '{model}' || !!m)
+        .map((t) => t.replace('{prompt}', p).replace('{model}', m || ''))
+        .filter((t) => t.length > 0);
+      if (!viaStdin && !tokens.some((t) => t.includes('{prompt}'))) resolved.push(p);
+      return resolved;
+    },
+  };
 }
 
 /**
@@ -213,7 +330,7 @@ function agentChildEnv(id: string): NodeJS.ProcessEnv {
 }
 
 export interface AgentDetection {
-  id: LocalAgentId;
+  id: string;
   label: string;
   vendor: string;
   bin: string;
@@ -225,6 +342,7 @@ export interface AgentDetection {
   authed: boolean;
   authMethod?: string; // e.g. "file" or "keychain" — never the secret itself
   ready: boolean;      // installed && authed
+  custom?: boolean;    // operator-defined (Settings → Add custom agent)
 }
 
 const isWin32 = (): boolean => process.platform === 'win32';
@@ -282,7 +400,10 @@ function wellKnownBinDirs(home: string): string[] {
 export function resolveBin(bin: string): string | undefined {
   if (isWin32()) {
     try {
-      const out = execFileSync('where.exe', [bin], { encoding: 'utf8', timeout: 5000 });
+      // stdio pipes stderr explicitly: execFileSync otherwise relays the child's stderr to the
+      // console, so every probed-but-absent agent printed where.exe's
+      // "INFO: Could not find files for the given pattern(s)." at boot.
+      const out = execFileSync('where.exe', [bin], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
       const hits = out.split(NEWLINE_RE).map((h) => h.trim()).filter(Boolean);
       return (
         hits.find((h) => /\.exe$/i.test(h)) ??
@@ -315,15 +436,45 @@ export function resolveBin(bin: string): string | undefined {
  *
  * A `.cmd`/`.bat` shim can't be spawned with shell:false on Windows. It must run through cmd.exe, but
  * hand-rolling `spawn('cmd.exe', ['/d','/s','/c', shim, ...args])` is unsafe because cmd.exe re-parses
- * the command tail with its own quoting rules. Letting Node launch the resolved shim with shell:true
- * uses Node's patched argument escaping path, so adversarial prompt text stays a literal argument.
+ * the command tail with its own quoting rules. The shim is therefore launched with shell:true as a
+ * single pre-quoted command STRING — Node 24 deprecates the args-array + shell:true form (DEP0190)
+ * because it concatenates without escaping, so the Windows quote rules below are applied ourselves:
+ * each argument becomes one literal cmd.exe word regardless of embedded spaces, quotes, or adversarial
+ * prompt text. cmd.exe does not treat & | < > as metacharacters inside double quotes, so quoted args
+ * containing them still arrive as literals.
  */
-function spawnAgent(resolvedBin: string, args: string[], options: import('child_process').SpawnOptions): import('child_process').ChildProcess {
-  if (needsShell(resolvedBin)) return spawn(resolvedBin, args, { ...options, shell: true });
-  return spawn(resolvedBin, args, { ...options, shell: false });
+export function spawnAgent(resolvedBin: string, args: string[], options: import('child_process').SpawnOptions): import('child_process').ChildProcess {
+  if (!needsShell(resolvedBin)) return spawn(resolvedBin, args, { ...options, shell: false });
+  const command = [resolvedBin, ...args].map(quoteWindowsArg).join(' ');
+  return spawn(command, { ...options, shell: true });
 }
 
-function needsShell(resolvedBin: string): boolean {
+/**
+ * Quotes one argument for a cmd.exe-mediated launch (same scheme cross-spawn uses for .cmd shims):
+ * quote whenever the arg is empty or carries whitespace, a quote, or a cmd metacharacter; inside the
+ * quotes an embedded `"` is doubled to `""` — which the C runtime argv parser reads as one literal
+ * quote AND cmd.exe's toggle parser reads as state-neutral, so `| & < >` inside quotes stay literal.
+ * Backslash runs are doubled where they precede a quote (CRT rule); cmd.exe ignores them either way.
+ */
+export function quoteWindowsArg(arg: string): string {
+  if (arg !== '' && !/[\s"|&<>^]/.test(arg)) return arg;
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') {
+      backslashes++;
+    } else if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2) + '""';
+      backslashes = 0;
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+      backslashes = 0;
+    }
+  }
+  return out + '\\'.repeat(backslashes * 2) + '"';
+}
+
+export function needsShell(resolvedBin: string): boolean {
   return isWin32() && /\.(cmd|bat)$/i.test(resolvedBin);
 }
 
@@ -347,7 +498,12 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
   const base = {
     id: spec.id, label: spec.label, vendor: spec.vendor, bin: spec.bin,
     blurb: spec.blurb, invokeHint: spec.invokeHint,
+    ...(spec.custom ? { custom: true } : {}),
   };
+  // Custom agents have no known auth artifact — their CLI manages its own login.
+  // Treat installed as authed so they reach ready; the ping is the real proof.
+  const authOf = (s: AgentSpec): { authed: boolean; method?: string } =>
+    s.custom ? { authed: true, method: 'operator-managed' } : authState(s);
   // POSIX falls back to the bare name when unresolved; Windows keeps `resolved` authoritative because
   // bare npm .cmd/.bat shims require explicit shell handling after where.exe resolution.
   const exe = resolveBin(spec.bin) || (isWin32() ? undefined : spec.bin);
@@ -357,21 +513,30 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
       return;
     }
     const installedNoVersion = () => {
-      const auth = authState(spec);
+      const auth = authOf(spec);
       resolve({
         ...base, installed: true, path: exe !== spec.bin ? exe : undefined, version: '?',
         authed: auth.authed, authMethod: auth.method, ready: auth.authed,
       });
     };
     try {
-      execFile(exe, spec.versionArgs, { timeout: 8000, shell: needsShell(exe) }, (err, stdout) => {
+      const probeVersion = (onDone: (err: Error | null, stdout: string) => void) => {
+        if (!needsShell(exe)) {
+          execFile(exe, spec.versionArgs, { timeout: 8000 }, onDone);
+          return;
+        }
+        // .cmd/.bat shims: args-array + shell:true on execFile is DEP0190 on Node 24 — same
+        // pre-quoted single-string form as spawnAgent above.
+        exec([exe, ...spec.versionArgs].map(quoteWindowsArg).join(' '), { timeout: 8000 }, onDone);
+      };
+      probeVersion((err, stdout) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           resolve({ ...base, installed: false, authed: false, ready: false });
           return;
         }
         // even a non-zero exit but no ENOENT means the binary exists
         const version = spec.parseVersion(String(stdout || ''));
-        const auth = authState(spec);
+        const auth = authOf(spec);
         resolve({
           ...base,
           installed: true,
@@ -390,19 +555,21 @@ function detectOne(spec: AgentSpec): Promise<AgentDetection> {
   });
 }
 
-/** Detect every known local agent CLI (installed? authed? ready?). No tokens spent. */
+/** Detect every known local agent CLI + operator-defined customs (installed? authed? ready?). No tokens spent. */
 export async function detectLocalAgents(): Promise<AgentDetection[]> {
   // Test/CI hook: T3MP3ST_DISABLE_LOCAL_AGENTS=1 forces a backbone-less server (skip
   // local-agent auto-detection) so key-required / fail-closed paths can be exercised
   // deterministically — used by scripts/arsenal-smoke.mjs for a reproducible run.
   if (/^(1|true|yes|on)$/i.test((process.env.T3MP3ST_DISABLE_LOCAL_AGENTS || '').trim())) return [];
-  const settled = await Promise.allSettled(SPECS.map(detectOne));
+  const specs: AgentSpec[] = [...SPECS, ...loadCustomAgents().map(customAgentSpec)];
+  const settled = await Promise.allSettled(specs.map(detectOne));
   return settled.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
-    const s = SPECS[i];
+    const s = specs[i];
     return {
       id: s.id, label: s.label, vendor: s.vendor, bin: s.bin, blurb: s.blurb,
       invokeHint: s.invokeHint, installed: false, authed: false, ready: false,
+      ...(s.custom ? { custom: true } : {}),
     };
   });
 }
@@ -444,9 +611,11 @@ export function runLocalAgent(
   // child env: provider keys stripped + HOME pinned to the real agent home (see childEnv).
   const env = agentChildEnv(id);
   const resolvedBin = resolveBin(spec.bin) || spec.bin;
+  // Custom agents with promptVia='stdin' receive the prompt on stdin — 'ignore' would drop it.
+  const viaStdin = !!spec.customStdin;
   return new Promise((resolve) => {
     // stdin:'ignore' so the agent doesn't stall waiting on piped input (e.g. `claude -p`'s 3s stdin wait).
-    const child = spawnAgent(resolvedBin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnAgent(resolvedBin, args, { env, stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
     let done = false;
@@ -466,6 +635,7 @@ export function runLocalAgent(
       else if (semanticError) finish({ ok: false, latencyMs, output, error: semanticError });
       else finish({ ok: false, latencyMs, output, error: (errOut.trim() || `exited with code ${code}`).slice(0, 300) });
     });
+    if (viaStdin && child.stdin) { child.stdin.write(prompt); child.stdin.end(); }
   });
 }
 
@@ -522,6 +692,16 @@ export function localAgentChat(id: string, prompt: string, opts: { model?: strin
     // Piped stdin selects OMP's one-shot print mode. Its own tools stay disabled so the model may
     // request actions through T3MP3ST's text contract while Arsenal remains the execution boundary.
     args = ['--no-tools', ...(model ? ['--model', model] : [])];
+  } else if (spec.custom && spec.customTemplate) {
+    // Operator-defined agent: run its argv template. '{prompt}' becomes the prompt (or is
+    // dropped when the prompt rides stdin); '{model}' becomes a model override or is dropped.
+    viaStdin = !!spec.customStdin;
+    args = spec.customTemplate
+      .filter((t) => t !== '{prompt}' || !viaStdin)
+      .filter((t) => t !== '{model}' || !!model)
+      .map((t) => t.replace('{prompt}', prompt).replace('{model}', model || ''))
+      .filter((t) => t.length > 0);
+    if (!viaStdin && !spec.customTemplate.some((t) => t.includes('{prompt}'))) args.push(prompt);
   } else { // hermes — takes the prompt as an arg
     args = ['-z', prompt, ...(hermesYoloEnabled() ? ['--yolo'] : []), ...(model ? ['-m', model] : [])];
     viaStdin = false;

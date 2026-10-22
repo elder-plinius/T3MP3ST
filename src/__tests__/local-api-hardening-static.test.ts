@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-// Normalize CRLF→LF so marker searches with '\n' work on Windows checkouts
-// (git autocrlf) exactly as they do on POSIX.
+// Sources are checked out with CRLF on Windows; normalize so the multi-line
+// anchors below match regardless of the working copy's line endings.
 const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8').replace(/\r\n/g, '\n');
 const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8').replace(/\r\n/g, '\n');
 
@@ -27,7 +27,16 @@ describe('local API authorization hardening invariants', () => {
 
     expect(resolver).toContain('config.getLLMConfig()');
     expect(resolver).toContain('provider || defaultConfig.provider');
-    expect(missionRoute).toContain('resolveMissionLaunchConfig({ provider, model, apiKey, baseUrl }, resolveGeneralLLMConfig)');
+    // The mission route must resolve the LLM config from the REQUEST's
+    // provider/model/apiKey — never a hardcoded backend. It now reaches the
+    // resolver through resolveMissionLaunchConfig, which forwards those exact
+    // fields and additionally turns a thrown resolver message (which can carry
+    // credentials) into a fixed 400. The invariant is "the request's values reach
+    // the resolver", so either call shape satisfies it; the hardcoded
+    // provider/model bans below are what actually matter and are asserted on both.
+    expect(missionRoute).toMatch(
+      /resolveGeneralLLMConfig\(provider,\s*model,\s*apiKey\)|resolveMissionLaunchConfig\(\{\s*provider,\s*model,\s*apiKey/,
+    );
     expect(`${missionRoute}\n${generalRoutes}`).not.toMatch(/provider\s*=\s*['"]openrouter['"]/);
     expect(`${missionRoute}\n${generalRoutes}`).not.toMatch(/model\s*=\s*['"]anthropic\/claude-sonnet-4['"]/);
   });
@@ -55,6 +64,14 @@ describe('local API authorization hardening invariants', () => {
     expect(route).toMatch(/const\s+origin\s*=\s*_?req\.get\(['"]origin['"]\)/);
     expect(route).toMatch(/origin\s*&&\s*!isLoopbackOrigin\(origin\)/);
     expect(route).toMatch(/Access-Control-Allow-Origin['"]\]\s*=\s*origin/);
+  });
+
+  it('/api/config/env does not grant wildcard CORS and rejects foreign browser origins', () => {
+    const route = routeBlock("app.get('/api/config/env'", "app.delete('/api/config/env/:provider'");
+
+    expect(route).not.toMatch(/Access-Control-Allow-Origin/);
+    expect(route).toMatch(/const\s+origin\s*=\s*_?req\.get\(['"]origin['"]\)/);
+    expect(route).toMatch(/origin\s*&&\s*!isLoopbackOrigin\(origin\)/);
   });
 
   it('/api/tools/execute binds approval to the parsed command target, not a caller-supplied target override', () => {

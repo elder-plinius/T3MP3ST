@@ -1,0 +1,70 @@
+{
+  "schema": "t3mp3st.obsidivm.bench/v1",
+  "timestamp": "2026-09-13T11:17:31.125Z",
+  "hunter": "stub",
+  "model": "stub",
+  "capability_graded": false,
+  "mode": "narrative-simulation — NOT a capability measurement (run with --replay for a real number)",
+  "targets": [
+    {
+      "target": "sqli-basic",
+      "name": "CTF SQLi Basics",
+      "port": 8080,
+      "transcript": "# Stub hunter transcript for CTF SQLi Basics (sqli-basic) at http://localhost:8080\n# This transcript is synthesized — used to test the t3mp3st × OBSIDIVM scoring pipeline.\n\n## SQL Injection (UNION) [critical]\nConfirmed sql injection (union) via probe. Observed sqli union in response.\n\n## Error-based SQL Injection [high]\nConfirmed error-based sql injection via probe. Observed error-based sql error in response.\n",
+      "verdict": null,
+      "error": "score failed: OBSIDIVM POST /api/score/text → 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/score/text</pre>\n</body>\n</html>\n",
+      "duration_sec": 0.04,
+      "probes": null
+    },
+    {
+      "target": "sqli-blind",
+      "name": "CTF Blind SQLi",
+      "port": 8081,
+      "transcript": "# Stub hunter transcript for CTF Blind SQLi (sqli-blind) at http://localhost:8081\n# This transcript is synthesized — used to test the t3mp3st × OBSIDIVM scoring pipeline.\n\n## Boolean-based Blind SQL Injection [high]\nConfirmed boolean-based blind sql injection via probe. Observed blind boolean in response.\n\n## Time-based Blind SQL Injection [high]\nConfirmed time-based blind sql injection via probe. Observed sleep delay in response.\n",
+      "verdict": null,
+      "error": "score failed: OBSIDIVM POST /api/score/text → 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/score/text</pre>\n</body>\n</html>\n",
+      "duration_sec": 0.01,
+      "probes": null
+    },
+    {
+      "target": "ssrf-metadata",
+      "name": "CTF SSRF Metadata",
+      "port": 8083,
+      "transcript": "# Stub hunter transcript for CTF SSRF Metadata (ssrf-metadata) at http://localhost:8083\n# This transcript is synthesized — used to test the t3mp3st × OBSIDIVM scoring pipeline.\n\n## Server-Side Request Forgery [critical]\nConfirmed server-side request forgery via probe. Observed ssrf server-side request in response.\n\n## Internal Metadata / Service Access [high]\nConfirmed internal metadata / service access via probe. Observed metadata internal in response.\n",
+      "verdict": null,
+      "error": "score failed: OBSIDIVM POST /api/score/text → 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/score/text</pre>\n</body>\n</html>\n",
+      "duration_sec": 0.01,
+      "probes": null
+    },
+    {
+      "target": "pwn-bof-basic",
+      "name": "CTF Buffer Overflow (ret2win)",
+      "port": 9001,
+      "transcript": "# Stub hunter transcript for CTF Buffer Overflow (ret2win) (pwn-bof-basic) at http://localhost:9001\n# This transcript is synthesized — used to test the t3mp3st × OBSIDIVM scoring pipeline.\n\n## Stack Buffer Overflow [critical]\nConfirmed stack buffer overflow via probe. Observed buffer overflow overflow in response.\n\n## Return Address Control [high]\nConfirmed return address control via probe. Observed return address eip in response.\n",
+      "verdict": null,
+      "error": "score failed: OBSIDIVM POST /api/score/text → 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/score/text</pre>\n</body>\n</html>\n",
+      "duration_sec": 0.01,
+      "probes": null
+    },
+    {
+      "target": "pwn-format-string",
+      "name": "CTF Format String (GOT Overwrite)",
+      "port": 9002,
+      "transcript": "# Stub hunter transcript for CTF Format String (GOT Overwrite) (pwn-format-string) at http://localhost:9002\n# This transcript is synthesized — used to test the t3mp3st × OBSIDIVM scoring pipeline.\n\n## Format String Arbitrary Read [critical]\nConfirmed format string arbitrary read via probe. Observed format string %s in response.\n\n## Stack / Memory Disclosure [high]\nConfirmed stack / memory disclosure via probe. Observed stack leak in response.\n",
+      "verdict": null,
+      "error": "score failed: OBSIDIVM POST /api/score/text → 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/score/text</pre>\n</body>\n</html>\n",
+      "duration_sec": 0.01,
+      "probes": null
+    }
+  ],
+  "aggregate": {
+    "targets_total": 5,
+    "targets_scored": 0,
+    "found_total": 0,
+    "expected_total": 0,
+    "coverage_percent": 0,
+    "weighted_avg_percent": 0,
+    "suite_grade": "F"
+  },
+  "obsidivm_run_id": null
+}

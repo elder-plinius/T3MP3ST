@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+// (shebang removed: breaks vitest/esbuild transform; invoke via "node scripts/cloud-misconfig-bench.mjs")
 // cloud-misconfig-bench.mjs — the Cloud loadout's IaC-misconfig detection benchmark.
 //
 // Scores an IaC scanner (checkov) against a committed corpus of Terraform fixtures with KNOWN

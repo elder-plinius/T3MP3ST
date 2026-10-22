@@ -7,3 +7,9 @@ When a contributor has substantially completed significant changes requested in 
 This permission is limited to mechanical, low-risk work such as resolving a small conflict with an already-merged change, preserving an established default, or adding narrowly scoped regression coverage for the reviewed behavior. Re-run the applicable review, test, and exact-head merge gates before merging, and tell the contributor what was changed.
 
 If the merge or rebase has a large surface area, changes behavior beyond the reviewed intent, requires product or architectural judgment, or exposes additional substantive defects, do not take over the branch. Ask the contributor to rebase and correct the issues, then re-review their updated head.
+
+## Mandatory AGENTS.md Session Tracking (After Every Step)
+
+- **Rule:** You MUST update `AGENTS.md` after **every completed step**, task, or architectural action without exception.
+- Record all details: root cause analysis, backend route additions, tool engines, frontend layout updates, test results, and build statuses.
+- Keep the session log at the top of `AGENTS.md` fresh and comprehensive so zero context slips between turns or sessions.
