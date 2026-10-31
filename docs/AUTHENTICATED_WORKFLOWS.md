@@ -10,6 +10,24 @@ For an application you are authorized to test, T3MP3ST can attach operator-suppl
 
 If a workflow needs an unsupported interactive step, complete it manually and provide the resulting authorization data through the documented target-header path. Do not paste sensitive values into operative instructions.
 
+### Quick start: testing an app behind a login
+
+T3MP3ST does not submit a username and password for you. You log in once yourself, then hand the resulting session to the arsenal as origin-bound headers:
+
+1. Log in to the target in your browser (or with `curl`) using your own authorized test account.
+2. Copy the session credential — from devtools, the `Authorization: Bearer ...` request header, or the `Session`/`JWT` cookie.
+3. Put it in `~/.t3mp3st/.env` next to the origin it belongs to:
+
+   ```bash
+   TEMPEST_TARGET_ORIGIN=https://app.target.example
+   TEMPEST_TARGET_HEADERS={"Cookie":"session=...","Authorization":"Bearer ..."}
+   ```
+
+4. Restart the server, then verify the session is picked up with a harmless same-origin request (e.g. `curl_request https://app.target.example/me`) — Arsenal redacts the header values in all output.
+5. Re-do this when the session expires; there is no refresh flow by design.
+
+Requests to that exact origin carry the headers; every other origin, subdomain, and redirect destination gets them stripped (details in [Target Header Injection](TARGET_HEADERS.md)). Automated interactive login (form submission, MFA, CAPTCHA) is intentionally not implemented — see the design boundary below.
+
 ## Capability Outcomes
 
 The following stable codes distinguish capability and authorization states in API responses, events, mission feeds, and reports:

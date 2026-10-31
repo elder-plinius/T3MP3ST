@@ -20,7 +20,7 @@ describe('HuggingFace provider wiring', () => {
     const cfg = config.getLLMConfig('huggingface');
     expect(cfg.provider).toBe('huggingface');
     expect(cfg.baseUrl).toBe('https://router.huggingface.co/v1');
-    expect(cfg.model).toBe('meta-llama/Llama-3.3-70B-Instruct');
+    expect(cfg.model).toBe('Qwen/Qwen3.8-27B');
     expect(cfg.apiKey).toBe(KEY);
   });
 
@@ -51,7 +51,7 @@ describe('HuggingFace provider wiring', () => {
     process.env.HF_TOKEN = KEY;
     const ids = AVAILABLE_MODELS.huggingface?.map(m => m.id) ?? [];
     expect(ids.length).toBeGreaterThan(0);
-    expect(ids).toContain('meta-llama/Llama-3.3-70B-Instruct');
+    expect(ids).toContain('Qwen/Qwen3.8-27B');
     // HF ids are the full `org/repo` slug — must carry a slash, unlike bare native ids.
     for (const id of ids) expect(id).toContain('/');
     expect(config.getConfiguredProviders()).toContain('huggingface');

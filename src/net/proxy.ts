@@ -277,6 +277,35 @@ export function getProxyStatus(): ProxyStatus {
 }
 
 /**
+ * Env vars that make SUBPROCESS tools (curl, wget, git, httpie, python-requests, …) honor the
+ * SOCKS proxy. The undici global dispatcher only covers Node's own `fetch` — arsenal CLIs run on
+ * the OS network stack and otherwise leak the operator's real IP to targets (verified live:
+ * `/api/tools/execute` curl egressed from the real residential IP while `/api/net/ip` showed the
+ * proxy exit). `socks5h` keeps DNS inside the tunnel; loopback is exempt so lab targets and the
+ * proxy client itself stay direct. Empty object when the proxy is off.
+ */
+export function proxySubprocessEnv(): Record<string, string> {
+  if (!enabled || !currentUrl) return {};
+  let socks5h: string;
+  try {
+    const u = new URL(currentUrl);
+    u.protocol = 'socks5h:'; // remote DNS — verified live: local-resolved IPs (IPv6) get SOCKS reply 3 from the tunnel upstream
+    socks5h = u.toString();
+  } catch {
+    return {};
+  }
+  const noProxy = 'localhost,127.0.0.1,::1';
+  // Same scheme on every var: curl prefers the per-scheme env over ALL_PROXY, so a scheme
+  // mismatch would send curl down the local-DNS path that breaks above.
+  return {
+    ALL_PROXY: socks5h, all_proxy: socks5h,
+    HTTP_PROXY: socks5h, http_proxy: socks5h,
+    HTTPS_PROXY: socks5h, https_proxy: socks5h,
+    NO_PROXY: noProxy, no_proxy: noProxy,
+  };
+}
+
+/**
  * Read the persisted/env proxy config (TEMPEST_PROXY_URL or saved settings) and
  * install it. Safe to call at startup; a bad/missing URL just leaves us direct.
  * Returns the effective status so the boot log can report it.
@@ -308,12 +337,26 @@ export interface IpCheckResult {
    * or the proxy is not actually changing our egress. Surface this as a leak warning.
    */
   leak: boolean;
+  /**
+   * Can we actually open a connection to the configured SOCKS port? Null when no
+   * proxy is configured. False = the proxy is DOWN: every non-bypassed fetch is
+   * failing right now, which is a different state from "proxied" and must not
+   * render as either a healthy badge or a plain leak.
+   */
+  proxyReachable: boolean | null;
   checkedAt: string;
 }
 
 const IP_TIMEOUT_MS = 12_000;
-// ifconfig.co is the primary (as requested); ipify is a bare-IP fallback if it's down.
+// ifconfig.co is the primary (as requested). The EXIT fallbacks are deliberately NOT
+// api.ipify.org: ipify is on the connector's bypass list, so a fallback to it would
+// measure the REAL IP through the direct path and report it as the proxy exit — the
+// exact lie this check exists to catch. ifconfig.me/ipinfo.io are not bypassed, so a
+// dead proxy makes these fail loudly (exit.ip null) instead of answering with the
+// operator's home IP.
 const IFCONFIG_JSON = 'https://ifconfig.co/json';
+const EXIT_FALLBACKS = ['https://ifconfig.me/all.json', 'https://ipinfo.io/json'];
+// ipify is fine for the DIRECT leg: that leg is SUPPOSED to measure the real IP.
 const IPIFY_FALLBACK = 'https://api.ipify.org?format=json';
 
 /**
@@ -344,14 +387,57 @@ async function fetchIp(direct: boolean): Promise<IpInfo> {
       };
     }
   } catch {
-    /* fall through to fallback */
+    /* fall through to fallbacks */
   }
-  // Fallback: bare IP only.
+  // Exit leg: only non-bypassed hosts (see EXIT_FALLBACKS above) so a dead proxy
+  // can never be reported as a working one.
+  if (!direct) {
+    for (const url of EXIT_FALLBACKS) {
+      try {
+        const res = await undiciFetch(url, { ...opts, signal: AbortSignal.timeout(IP_TIMEOUT_MS) });
+        if (!res.ok) continue;
+        const j: any = await res.json();
+        const ip = j.ip ?? j.ip_addr ?? null;
+        if (!ip) continue;
+        return {
+          ip,
+          country: j.country ?? j.country_code ?? null,
+          city: j.city ?? null,
+          asnOrg: j.asn_org ?? j.org ?? null,
+          source: new URL(url).hostname,
+        };
+      } catch {
+        /* try the next fallback */
+      }
+    }
+  }
+  // Fallback: bare IP only (direct leg — bypassed host is correct here).
   const fbOpts: any = { signal: AbortSignal.timeout(IP_TIMEOUT_MS) };
   if (direct) fbOpts.dispatcher = directDispatcher;
   const res = await undiciFetch(IPIFY_FALLBACK, fbOpts);
   const j: any = await res.json();
   return { ip: j.ip ?? null, source: 'api.ipify.org' };
+}
+
+/**
+ * TCP reachability probe of the configured SOCKS port — the cheap, honest answer to
+ * "is the proxy client actually up?" A configured-but-dead proxy (Tor not running)
+ * previously rendered as a confusing LEAK badge; now it is its own state.
+ */
+async function probeProxyReachable(): Promise<boolean | null> {
+  if (!enabled || !currentUrl) return null;
+  const parsed = parseProxyUrl(currentUrl);
+  if (!parsed) return null;
+  const net = await import('node:net');
+  return new Promise<boolean>((resolve) => {
+    const socket = new net.Socket();
+    const done = (ok: boolean) => { socket.destroy(); resolve(ok); };
+    socket.setTimeout(3000);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+    socket.connect(parsed.port, parsed.host);
+  });
 }
 
 // Short cache so the UI badge can poll cheaply without hammering ifconfig.co.
@@ -370,9 +456,10 @@ export async function checkIp(force = false): Promise<IpCheckResult> {
 
   const proxyOn = enabled;
   // Exit uses the global dispatcher (proxied when on). Direct always bypasses.
-  const [exit, direct] = await Promise.all([
+  const [exit, direct, proxyReachable] = await Promise.all([
     fetchIp(false).catch((e) => ({ ip: null, source: `error: ${String(e?.message || e)}` } as IpInfo)),
     fetchIp(true).catch((e) => ({ ip: null, source: `error: ${String(e?.message || e)}` } as IpInfo)),
+    probeProxyReachable(),
   ]);
 
   const leak = Boolean(exit.ip && direct.ip && exit.ip === direct.ip);
@@ -382,6 +469,7 @@ export async function checkIp(force = false): Promise<IpCheckResult> {
     exit,
     direct,
     leak,
+    proxyReachable,
     checkedAt: new Date().toISOString(),
   };
   cache = { at: now, result };

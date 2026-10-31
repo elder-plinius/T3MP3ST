@@ -1,0 +1,6 @@
+# CVE-2026-109619 consumer lab — diagnostics raised pre-RINIT consume stale worker state.
+php_flag fatal_error_backtraces 1
+php_flag display_errors 1
+php_value error_reporting 32767
+php_value auto_detect_line_endings 1
+php_value session.sid_length 32

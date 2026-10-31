@@ -171,12 +171,16 @@ console.log('\nCLAIM 4 — capability: 111 tools, 8-operator kill-chain');
 // (that double-counts each tool's id+name AND every parameter name).
 const catalogSrc = fs.existsSync(R('src/arsenal/catalog.ts')) ? fs.readFileSync(R('src/arsenal/catalog.ts'), 'utf8') : '';
 const indexSrc = fs.existsSync(R('src/arsenal/index.ts')) ? fs.readFileSync(R('src/arsenal/index.ts'), 'utf8') : '';
+const osintSrc = fs.existsSync(R('src/tools/osint.ts')) ? fs.readFileSync(R('src/tools/osint.ts'), 'utf8') : '';
 const adapters = (catalogSrc.match(/^\s{4}id: '/gm) || []).length;
 const builtinTools = (indexSrc.match(/^    name: '/gm) || []).length;
-const tools = adapters + builtinTools;
+const osintInfraSrc = fs.existsSync(R('src/tools/osint-infra.ts')) ? fs.readFileSync(R('src/tools/osint-infra.ts'), 'utf8') : '';
+const osintGoogleSrc = fs.existsSync(R('src/tools/osint-google.ts')) ? fs.readFileSync(R('src/tools/osint-google.ts'), 'utf8') : '';
+const osintTools = (osintSrc.match(/^    name: '/gm) || []).length + (osintInfraSrc.match(/^    name: '/gm) || []).length + (osintGoogleSrc.match(/^    name: '/gm) || []).length;
+const tools = adapters + builtinTools + osintTools;
 const ops = fs.existsSync(R('src/operators/index.ts'))
   ? (fs.readFileSync(R('src/operators/index.ts'), 'utf8').match(/name: '[^']*(Operator|Scanner|Specialist|Coordinator|Analyst)'/g) || []).length : 0;
-check('arsenal tool count ≥ 80 (adapters + built-ins)', tools >= 80, `${tools} tools (${adapters} adapters + ${builtinTools} built-in)`);
+check('arsenal tool count ≥ 80 (adapters + built-ins + osint)', tools >= 80, `${tools} tools (${adapters} adapters + ${builtinTools} built-in + ${osintTools} osint)`);
 check('kill-chain operators ≥ 8 (recon→exfil→persistence)', ops >= 8, `${ops} operators`);
 
 // ── CLAIM 5: CVE-Zero — real post-cutoff CVE discovery ──────────────────────

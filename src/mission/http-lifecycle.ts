@@ -7,6 +7,13 @@ interface MissionBackendSelection {
   baseUrl?: string;
 }
 
+/** Fixed diagnostic for a failed LLM backend resolution. Exported so the HTTP
+ *  route and resolveMissionLaunchConfig cannot drift into two different strings.
+ *  A provider error can carry credentials or internal configuration, so the raw
+ *  message must never reach the client. */
+export const LLM_BACKEND_UNCONFIGURED =
+  'LLM backend not configured — configure a provider or connect a supported local agent';
+
 /** Resolve before creating a command; configuration failures must produce an HTTP response. */
 export function resolveMissionLaunchConfig<T>(
   selection: MissionBackendSelection,
@@ -20,7 +27,7 @@ export function resolveMissionLaunchConfig<T>(
     return { ok: true, config };
   } catch {
     // Provider errors can contain credentials or internal configuration; expose a fixed diagnostic.
-    return { ok: false, error: 'LLM backend not configured — configure a provider or connect a supported local agent' };
+    return { ok: false, error: LLM_BACKEND_UNCONFIGURED };
   }
 }
 

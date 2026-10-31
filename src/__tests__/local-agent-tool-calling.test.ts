@@ -8,7 +8,12 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 // Mock the local-agent CLI bridge (LocalAgentAdapter) and the codex spawn/file read (CodexAdapter).
-vi.mock('../agent/local-agents.js', () => ({ localAgentChat: vi.fn() }));
+// Partial mock: CodexAdapter.chat resolves bins + spawns through the REAL resolveBin/spawnAgent
+// (child_process itself is mocked below), while localAgentChat is faked.
+vi.mock('../agent/local-agents.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent/local-agents.js')>();
+  return { ...actual, localAgentChat: vi.fn() };
+});
 vi.mock('child_process', () => ({
   spawn: vi.fn(() => {
     const child = new EventEmitter() as EventEmitter & { stdin: { end: () => void }; stdout: EventEmitter; stderr: EventEmitter };

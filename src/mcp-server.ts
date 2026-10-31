@@ -64,6 +64,131 @@ Requires: Target hostname or IP.`,
       },
       required: ['target']
     }
+  },
+  {
+    name: 'cve_lookup',
+    description: `Look up a single CVE record from the T3MP3ST threat-intel feed (CISA KEV + curated vendor catalogs + EPSS).
+
+Use when: You have a CVE id and need severity, EPSS, ransomware association, and whether an active probe/payload exists.
+Requires: CVE id (e.g. CVE-2021-44228).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cveId: { type: 'string', description: 'CVE identifier, e.g. CVE-2021-44228' }
+      },
+      required: ['cveId']
+    }
+  },
+  {
+    name: 'cve_feed_query',
+    description: `Query the T3MP3ST CVE feed (1,700+ KEV entries + curated vendor catalogs) by vendor or keyword.
+
+Use when: Fingerprinting a product and wanting its known-exploited vulnerabilities.
+Requires: Nothing (vendor optional).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vendor: { type: 'string', description: 'Vendor/product filter, e.g. WoltLab, Tomcat, Ivanti' },
+        limit: { type: 'number', description: 'Max results (default 15)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'payloads_for_cve',
+    description: `Fetch operator exploit payloads for a KEV CVE from the T3MP3ST payload catalog (inert/canary variants included where out-of-band proof suffices).
+
+Use when: A correlated CVE node needs its actual exploit input instead of "run a scan".
+Requires: CVE id present in the catalog.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cveId: { type: 'string', description: 'CVE identifier, e.g. CVE-2024-4577' }
+      },
+      required: ['cveId']
+    }
+  },
+  {
+    name: 'rapid_response_check',
+    description: `Run one T3MP3ST rapid-response KEV probe (inert/canary by design — version gates and passive verifiers, never a live gadget) against a target through the platform's receipt guard.
+
+Use when: A target matches a KEV entry and you need a fast non-destructive verdict.
+Requires: checkId from the probe catalog and a target URL. External targets require the platform's operator approval.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        checkId: { type: 'string', description: 'Probe id, e.g. log4shell-jndi-probe, mirth-connect-xstream, tomcat-clear-session' },
+        target: { type: 'string', description: 'Target base URL, e.g. http://host:port' },
+        timeoutMs: { type: 'number', description: 'Probe timeout in ms (default 8000)' }
+      },
+      required: ['checkId', 'target']
+    }
+  },
+  {
+    name: 'learning_distill',
+    description: `Distill facts from recent runs into inspectable memory proposals (T3MP3ST Agent Memory).
+
+Runs POST /api/learning/run-review on the platform — it scans evidence/findings/retests and mints proposal(s) you must explicitly accept before they become memory. Human-gated by design; proposals are inspectable before promotion. Also callable by humans as the "Run a review pass" button in Self-Improve → no new process window is spawned (in-process, windowsHide:true on any child).
+
+Use when: A run produced evidence/findings and you want durable lessons. Safe to call repeatedly — duplicate content reinforces observationCount instead of creating new pending proposals.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        missionId: { type: 'string', description: 'Optional scope: only distill this mission' },
+        operationId: { type: 'string', description: 'Optional scope: only distill this operation' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'learning_proposals',
+    description: `List T3MP3ST memory proposals (pending/accepted/rejected) or a single capsule entry.
+
+Use when: You need to inspect what learning_distill proposed before accepting, or audit the accepted memory capsule.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['pending', 'accepted', 'rejected', ''], description: 'Filter by status; empty = all' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'memory_capsule',
+    description: `Read the accepted T3MP3ST memory capsule — durable facts already promoted from proposals.
+
+Use when: You need context from previously accepted lessons.`,
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: 'memory_accept',
+    description: `Accept (promote) a single memory proposal into the capsule. Human-gated; records provenance.
+
+Use when: You have inspected a proposal and want to promote it. Requires proposal id.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalId: { type: 'string', description: 'Proposal id, e.g. memprop_abc123' }
+      },
+      required: ['proposalId']
+    }
+  },
+  {
+    name: 'memory_reject',
+    description: `Reject a single memory proposal (does not delete, marks rejected and auditable).
+
+Use when: A proposal is inaccurate or premature. Requires proposal id.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalId: { type: 'string', description: 'Proposal id' }
+      },
+      required: ['proposalId']
+    }
   }
 ];
 
@@ -105,6 +230,29 @@ async function runTool(
 }
 
 
+
+// The CVE/probe tools proxy the RUNNING T3MP3ST platform (its caches, EPSS state, and
+// receipt guard live there). Configurable for non-default installs via T3MP3ST_API_URL.
+const PLATFORM_URL = (process.env.T3MP3ST_API_URL || 'http://127.0.0.1:3333').replace(/\/$/, '');
+
+async function platformApi(method: string, path: string, body?: unknown): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`${PLATFORM_URL}${path}`, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    return JSON.stringify({
+      error: `T3MP3ST platform is not reachable at ${PLATFORM_URL}.`,
+      hint: 'Start it with: T3MP3ST_FULL_ARSENAL=1 node dist/server.js  (or set T3MP3ST_API_URL to a running instance)',
+    }, null, 2);
+  }
+  const text = await res.text();
+  return text;
+}
 
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
@@ -177,6 +325,73 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       }, null, 2);
     }
 
+    // =========================================================================
+    // PLATFORM-BACKED THREAT INTEL + PROBES (read-only intel; probes go through
+    // the platform's receipt guard — external targets need operator approval there)
+    // =========================================================================
+    case 'cve_lookup': {
+      const cveId = String(args.cveId || '').trim();
+      if (!/^CVE-\d{4}-\d{4,}$/i.test(cveId)) {
+        return JSON.stringify({ error: 'cveId must look like CVE-YYYY-NNNN' }, null, 2);
+      }
+      return platformApi('GET', `/api/cves/${encodeURIComponent(cveId.toUpperCase())}`);
+    }
+    case 'cve_feed_query': {
+      const vendor = String(args.vendor || '').trim();
+      const limit = Math.min(Math.max(Number(args.limit) || 15, 1), 100);
+      const q = vendor ? `?vendor=${encodeURIComponent(vendor)}&limit=${limit}` : `?limit=${limit}`;
+      return platformApi('GET', `/api/cves/feed${q}`);
+    }
+    case 'payloads_for_cve': {
+      const cveId = String(args.cveId || '').trim();
+      if (!/^CVE-\d{4}-\d{4,}$/i.test(cveId)) {
+        return JSON.stringify({ error: 'cveId must look like CVE-YYYY-NNNN' }, null, 2);
+      }
+      return platformApi('GET', `/api/cves/payloads?cveId=${encodeURIComponent(cveId.toUpperCase())}`);
+    }
+    case 'rapid_response_check': {
+      const checkId = String(args.checkId || '').trim();
+      const target = String(args.target || '').trim();
+      if (!checkId || !target) {
+        return JSON.stringify({ error: 'checkId and target are required' }, null, 2);
+      }
+      if (typeof target !== 'string' || !TARGET_RE.test(target.replace(/^https?:\/\//, '').replace(/\/.*$/, ''))) {
+        return JSON.stringify({ error: 'Invalid target: only hostnames / IPv4 / IPv6 are allowed' }, null, 2);
+      }
+      const timeoutMs = Math.min(Math.max(Number(args.timeoutMs) || 8000, 1000), 20000);
+      return platformApi('POST', '/api/tools/rapid-response/check', { checkId, target, timeoutMs });
+    }
+
+    // =========================================================================
+    // LEARNING / MEMORY (bot can trigger the same "Run a review pass" as the UI button — in-process, no window)
+    // =========================================================================
+    case 'learning_distill': {
+      const missionId = String((args as any).missionId || '').trim() || undefined;
+      const operationId = String((args as any).operationId || '').trim() || undefined;
+      const body: any = {};
+      if (missionId) body.missionId = missionId;
+      if (operationId) body.operationId = operationId;
+      return platformApi('POST', '/api/learning/run-review', body);
+    }
+    case 'learning_proposals': {
+      const status = String((args as any).status || '').trim();
+      const q = status ? `?status=${encodeURIComponent(status)}` : '';
+      return platformApi('GET', `/api/memory/proposals${q}`);
+    }
+    case 'memory_capsule': {
+      return platformApi('GET', '/api/memory/capsule');
+    }
+    case 'memory_accept': {
+      const proposalId = String((args as any).proposalId || '').trim();
+      if (!proposalId) return JSON.stringify({ error: 'proposalId is required' }, null, 2);
+      return platformApi('POST', `/api/memory/proposals/${encodeURIComponent(proposalId)}/accept`, {});
+    }
+    case 'memory_reject': {
+      const proposalId = String((args as any).proposalId || '').trim();
+      if (!proposalId) return JSON.stringify({ error: 'proposalId is required' }, null, 2);
+      return platformApi('POST', `/api/memory/proposals/${encodeURIComponent(proposalId)}/reject`, {});
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -208,7 +423,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('[T3MP3ST MCP] server running — security_recon (nmap/DNS recon)');
+  console.error('[T3MP3ST MCP] server running — security_recon (nmap/DNS recon) + cve_lookup / cve_feed_query / payloads_for_cve / rapid_response_check (via ' + PLATFORM_URL + ')');
 }
 
 main().catch(console.error);

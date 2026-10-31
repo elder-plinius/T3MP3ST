@@ -55,6 +55,18 @@ Every selected model receives the same classes, five-rung corpus, sample count,
 judge, and concurrency settings. JSON output retains raw responses and judge
 rationales; Markdown output renders model-by-model and cross-model deltas.
 
+## Local models (Ollama) in comparisons
+
+Benchmarks are provider-agnostic: any harness that talks to an LLM backbone
+accepts the named `ollama` provider alongside the hosted ones. Point it at a
+pulled tag with `OLLAMA_BASE_URL` / `OLLAMA_MODEL` (see
+[Getting Started](GETTING_STARTED.md#ollama-as-a-named-provider)), then run the
+offline harnesses (`--dry-run`) to reproduce the exact corpus and call count
+without API quota, or a live run to produce receipts under the same artifact
+schema as hosted models. A local-model row in a comparison table means exactly
+what a hosted row means: same task IDs, harness label, oracle, and pass@1
+policy — model, provider, and runtime still differ between rows.
+
 Use the fields in [CONTRIBUTION_RECEIPTS](CONTRIBUTION_RECEIPTS.md) when adding
 new results. Never commit credentials or private target data, and never present
 live external runs without a target-specific authorization receipt.
