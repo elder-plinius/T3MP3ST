@@ -165,7 +165,7 @@ const DEFAULT_SETTINGS: TempestSettings = {
 
   openai: {
     baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4-turbo-preview',
+    defaultModel: 'gpt-5.6-sol',
   },
 
   xai: {

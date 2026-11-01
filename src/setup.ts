@@ -174,7 +174,7 @@ async function setupAnthropicKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'anthropic',
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-5-5',
       apiKey,
       maxTokens: 10,
       temperature: 0,
@@ -408,7 +408,7 @@ async function setupOpenAIKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'openai',
-      model: 'gpt-4-turbo-preview',
+      model: 'gpt-5.6-sol',
       apiKey,
       maxTokens: 10,
       temperature: 0,
