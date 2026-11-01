@@ -562,11 +562,13 @@ class AnthropicAdapter implements LLMProviderAdapter {
     // Separate system message from other messages
     const systemMessage = messages.find(m => m.role === 'system');
 
+    // temperature/top_p/top_k are removed in API version 2026-10-21 and rejected
+    // (400) as non-default values on Claude 4.7+ models on earlier versions, so we
+    // don't send them: https://platform.claude.com/docs/en/docs/about-claude/model-deprecations#api-parameter-deprecations
     const requestBody: Record<string, unknown> = {
       model: this.config.model,
       messages: this.formatMessages(messages),
       max_tokens: options?.maxTokens || this.config.maxTokens || 4096,
-      temperature: options?.temperature ?? this.config.temperature ?? 0.7,
     };
 
     if (systemMessage) {
