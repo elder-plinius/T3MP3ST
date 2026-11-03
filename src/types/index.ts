@@ -342,6 +342,8 @@ export interface Task {
   createdAt: number;
   startedAt?: number;
   completedAt?: number;
+  /** How many times a failed task has been explicitly re-queued via TaskQueue.retry(). */
+  retryCount?: number;
 }
 
 export interface TaskResult {

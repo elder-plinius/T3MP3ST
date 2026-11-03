@@ -897,6 +897,22 @@ export class TempestCommand extends EventEmitter<CommandEvents> {
   }
 
   /**
+   * Explicitly re-queue a failed task so a stalled mission can recover.
+   *
+   * A failed required task is terminal, so `resume()` alone re-stalls on the
+   * next tick. Retrying resets the task to pending (bounded by
+   * MAX_TASK_RETRIES in TaskQueue); when the mission is paused because of
+   * that stall, the stall is cleared so the next tick dispatches the task.
+   * A mission the operator paused manually is left paused. Returns true when
+   * the task was re-queued.
+   */
+  public retryTask(taskId: string): boolean {
+    if (!this.mission.getTaskQueue().retry(taskId)) return false;
+    if (this.stallReason) this.resume();
+    return true;
+  }
+
+  /**
    * Check if running
    */
   public isRunning(): boolean {
