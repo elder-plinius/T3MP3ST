@@ -84,7 +84,7 @@ export class MissionRecoveryCoordinator {
     if (!await this.store.compareAndSwap(missionId, snapshot.revision, claimed)) return { outcome: 'concurrent', executed: [] };
     if (signal?.aborted) {
       const cancelled = this.next(claimed, claimed.actions.map(action => action.id === pending.id ? { ...action, status: 'cancelled' as const } : action), 'cancelled');
-      await this.store.compareAndSwap(missionId, claimed.revision, cancelled);
+      if (!await this.store.compareAndSwap(missionId, claimed.revision, cancelled)) return { outcome: 'concurrent', executed: [] };
       return { outcome: 'cancelled', snapshot: cancelled, executed: [] };
     }
     try {
@@ -95,7 +95,7 @@ export class MissionRecoveryCoordinator {
       return { outcome: 'recovered', snapshot: completed, executed: [pending.id] };
     } catch {
       const failed = this.next(claimed, claimed.actions.map(action => action.id === pending.id ? { ...action, status: action.attempts >= action.maxAttempts ? 'blocked' as const : 'failed' as const, error: 'execution-failed' } : action), 'paused');
-      await this.store.compareAndSwap(missionId, claimed.revision, failed);
+      if (!await this.store.compareAndSwap(missionId, claimed.revision, failed)) return { outcome: 'concurrent', executed: [pending.id] };
       return { outcome: failed.actions.find(action => action.id === pending.id)?.status === 'blocked' ? 'blocked' : 'recovered', snapshot: failed, executed: [pending.id] };
     }
   }

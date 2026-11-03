@@ -73,6 +73,43 @@ describe('mission recovery schema and fail-closed boundaries', () => {
   });
 });
 
+describe('compare-and-swap losses on the later recovery writes', () => {
+  // A store where the claim (first CAS) lands but every later write loses the
+  // revision race to a concurrent writer.
+  function firstCasOnlyStore(initial: unknown, onFirstCas?: () => void) {
+    const inner = memoryStore(initial);
+    const real = inner.store.compareAndSwap;
+    let calls = 0;
+    inner.store.compareAndSwap = vi.fn(async (id: string, revision: number, next: MissionRecoverySnapshot) => {
+      calls++;
+      if (calls > 1) return false;
+      const landed = await real(id, revision, next);
+      if (landed) onFirstCas?.();
+      return landed;
+    });
+    return inner;
+  }
+
+  it('reports concurrent instead of a failed transition that was never persisted', async () => {
+    const state = firstCasOnlyStore(snapshot());
+    const executor = { execute: vi.fn().mockRejectedValue(new Error('boom')) };
+    const result = await new MissionRecoveryCoordinator(state.store, () => 2).recover('mission-1', executor);
+    expect(result).toEqual({ outcome: 'concurrent', executed: ['action-1'] });
+    // The claim persisted; the failure write did not, so the store still shows the claim.
+    expect(parseRecoverySnapshot(state.read())?.actions[0]).toMatchObject({ status: 'in_progress', attempts: 1 });
+  });
+
+  it('reports concurrent instead of a cancellation that was never persisted', async () => {
+    const controller = new AbortController();
+    const state = firstCasOnlyStore(snapshot(), () => controller.abort());
+    const executor = { execute: vi.fn() };
+    const result = await new MissionRecoveryCoordinator(state.store, () => 2).recover('mission-1', executor, controller.signal);
+    expect(result).toEqual({ outcome: 'concurrent', executed: [] });
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(parseRecoverySnapshot(state.read())?.actions[0]).toMatchObject({ status: 'in_progress', attempts: 1 });
+  });
+});
+
 describe('contextual exposure scoring', () => {
   it('documents weighting through deterministic score, confidence, and unknowns', () => {
     expect(scoreExposure({ internetExposure: { value: 1, confidence: 1 }, exploitableFinding: { value: 0.5, confidence: 0.8 }, credentialExposure: { value: 0, confidence: 1 } })).toEqual({ score: 53, confidence: 0.79, coverage: 0.85, disposition: 'scored', unknown: ['businessCriticality'] });
