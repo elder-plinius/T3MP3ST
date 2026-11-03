@@ -6663,6 +6663,35 @@ app.post('/api/mission/resume', (_req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/tasks/:id/retry — Re-queue a failed task of the active mission
+ *
+ * Failed tasks are terminal, so a mission stalled on a failed required task
+ * cannot recover through /api/mission/resume alone. This operator-gated
+ * endpoint resets the failed task to pending (bounded retries, see
+ * TaskQueue.retry) and clears the stall so the phase can advance.
+ */
+app.post('/api/tasks/:id/retry', (req: Request, res: Response) => {
+  const cmd = getTempestCommand();
+  if (!cmd) {
+    res.status(404).json({ error: 'No active mission' });
+    return;
+  }
+
+  const task = cmd.mission.getTaskQueue().getTask(req.params.id);
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  if (!cmd.retryTask(task.id)) {
+    res.status(409).json({ error: 'Task is not retryable: only failed tasks can be retried, up to the retry limit', task });
+    return;
+  }
+
+  broadcastEvent('task:retried', { taskId: task.id, retryCount: task.retryCount, timestamp: Date.now() });
+  res.json({ success: true, task });
+});
+
+/**
  * GET /api/mission/status — Get full mission status
  */
 app.get('/api/mission/status', (req: Request, res: Response) => {
@@ -8231,6 +8260,7 @@ async function startServer() {
     console.log('  POST /api/mission/stop               - Stop active mission');
     console.log('  POST /api/mission/pause              - Pause mission');
     console.log('  POST /api/mission/resume             - Resume mission');
+    console.log('  POST /api/tasks/:id/retry            - Re-queue a failed task (un-stall mission)');
     console.log('  GET  /api/mission/status             - Mission status + operator states');
     console.log('  GET  /api/mission/findings           - All findings from mission');
     console.log('  POST /api/pressure-paths             - Plan receipt-gated offensive pressure paths');

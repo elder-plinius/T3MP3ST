@@ -32,11 +32,13 @@ export interface MissionEvents {
   'task:assigned': { task: Task; operatorId: string };
   'task:completed': { task: Task; result: TaskResult };
   'task:failed': { task: Task; error: string };
+  'task:retried': Task;
 }
 
 export interface TaskQueueEvents {
   'task:added': Task;
   'task:removed': Task;
+  'task:retried': Task;
   'queue:empty': void;
 }
 
@@ -74,6 +76,14 @@ export function createStrictRoE(): RulesOfEngagement {
 // =============================================================================
 // TASK QUEUE
 // =============================================================================
+
+/**
+ * Maximum number of times a failed task may be explicitly re-queued.
+ * Mirrors the bounded-retry philosophy in docs/MISSION_RECOVERY.md:
+ * a failed task is never replayed automatically — only an operator's
+ * explicit retry resets it, and only up to this bound.
+ */
+export const MAX_TASK_RETRIES = 3;
 
 export class TaskQueue extends EventEmitter<TaskQueueEvents> {
   private tasks: Task[] = [];
@@ -174,6 +184,32 @@ export class TaskQueue extends EventEmitter<TaskQueueEvents> {
   }
 
   /**
+   * Explicitly re-queue a failed task so it can be dispatched again.
+   *
+   * Failed tasks are terminal by design (the engine stalls a mission rather
+   * than advancing past a failed required task), so without this transition a
+   * stalled mission could never recover: `resume` alone re-stalls on the same
+   * failed task. Only `failed` tasks may be retried, at most MAX_TASK_RETRIES
+   * times; the failure result, assignee, and run timestamps are cleared and
+   * the retry is counted on the task. Returns true when the task was reset
+   * to `pending`.
+   */
+  retry(taskId: string): boolean {
+    const task = this.tasks.find(t => t.id === taskId);
+    if (!task || task.status !== 'failed') return false;
+    if ((task.retryCount ?? 0) >= MAX_TASK_RETRIES) return false;
+    task.retryCount = (task.retryCount ?? 0) + 1;
+    task.status = 'pending';
+    task.result = undefined;
+    task.assignedTo = undefined;
+    task.startedAt = undefined;
+    task.completedAt = undefined;
+    this.sortByPriority();
+    this.emit('task:retried', task);
+    return true;
+  }
+
+  /**
    * Remove a task
    */
   remove(taskId: string): Task | undefined {
@@ -233,6 +269,7 @@ export class MissionControl extends EventEmitter<MissionEvents> {
 
     // Forward task queue events
     this.taskQueue.on('task:added', task => this.emit('task:created', task));
+    this.taskQueue.on('task:retried', task => this.emit('task:retried', task));
   }
 
   /**
@@ -493,6 +530,14 @@ export class MissionControl extends EventEmitter<MissionEvents> {
    */
   getTaskQueue(): TaskQueue {
     return this.taskQueue;
+  }
+
+  /**
+   * Explicitly re-queue a failed task (see TaskQueue.retry). Returns true
+   * when the task was reset to `pending`.
+   */
+  retryTask(taskId: string): boolean {
+    return this.taskQueue.retry(taskId);
   }
 
   /**
