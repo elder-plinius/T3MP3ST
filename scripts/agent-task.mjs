@@ -20,8 +20,9 @@
 import process from 'node:process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const TASKS_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'bench', 'tasks');
+const TASKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bench', 'tasks');
 
 async function loadHarness() {
   try {
@@ -104,8 +105,8 @@ async function main() {
   }
 
   if (args.includes('--list')) {
+    const { loadAgentTask } = await loadHarness();
     for (const id of listTaskDirs()) {
-      const { loadAgentTask } = await loadHarness();
       const task = loadAgentTask(path.join(TASKS_DIR, id, 'task.json'));
       console.log(`${id}  [${task.family}] ${task.title} — grader: ${task.grader.kind}${task.stub ? ', stub: yes' : ''}`);
     }

@@ -382,6 +382,11 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     toolName: string,
     context: ToolContext
   ): Promise<ToolResult> {
+    // Event payload prep: redacted call arguments, computed once and only when something is
+    // listening (zero cost for the common no-subscriber execute path).
+    const redactedParameters = (this.listenerCount('tool:executed') > 0 || this.listenerCount('tool:error') > 0)
+      ? redactConfiguredSecretsDeep(context.parameters ?? {})
+      : undefined;
     const tool = this.tools.get(toolName);
     if (!tool) {
       const err = new ToolError(
@@ -389,7 +394,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         `Tool "${toolName}" not found`,
         toolName,
       );
-      this.emit('tool:error', { tool: { name: toolName } as CustomTool, error: err, parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+      this.emit('tool:error', { tool: { name: toolName } as CustomTool, error: err, parameters: redactedParameters });
       throw err;
     }
 
@@ -401,7 +406,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         success: false,
         error: `SCOPE DENIED: target '${blockedHost}' is not in the authorized scope — ${toolName} refused before execution. Only authorized / loopback / lab targets are permitted.`,
       };
-      this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName), parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+      this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName), parameters: redactedParameters });
       return denied;
     }
 
@@ -420,7 +425,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       const decision = await this.approval.gate(request);
       if (!decision.allowed) {
         const denied: ToolResult = { success: false, error: `APPROVAL REQUIRED: ${decision.reason}` };
-        this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName), parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+        this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName), parameters: redactedParameters });
         return denied;
       }
     }
@@ -435,7 +440,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
           `Validation failed for "${toolName}": ${fieldErrors}`,
           toolName,
         );
-        this.emit('tool:error', { tool, error: err, parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+        this.emit('tool:error', { tool, error: err, parameters: redactedParameters });
         throw err;
       }
     }
@@ -456,7 +461,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       execution.completedAt = Date.now();
       execution.result = result;
 
-      this.emit('tool:executed', { tool, result, durationMs, parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+      this.emit('tool:executed', { tool, result, durationMs, parameters: redactedParameters });
 
       return result;
     } catch (error) {
@@ -468,7 +473,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
 
       // If already a ToolError, re-throw as-is; otherwise wrap as ExecutionError
       if (error instanceof ToolError) {
-        this.emit('tool:error', { tool, error, parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+        this.emit('tool:error', { tool, error, parameters: redactedParameters });
         throw error;
       }
 
@@ -477,7 +482,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         `Tool "${toolName}" execution failed: ${execution.error}`,
         toolName,
       );
-      this.emit('tool:error', { tool, error: wrappedErr, parameters: redactConfiguredSecretsDeep(context.parameters ?? {}) });
+      this.emit('tool:error', { tool, error: wrappedErr, parameters: redactedParameters });
       throw wrappedErr;
     }
   }

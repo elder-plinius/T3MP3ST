@@ -8,7 +8,7 @@
  * `tapArsenal`, so graded streams are comparable across backends.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import type { Arsenal } from '../arsenal/index.js';
@@ -101,6 +101,13 @@ function stubStep(step: StubStep, log: TaskEventLog, workspaceDir: string): void
  * Run a task to a graded verdict. The workspace directory always receives the
  * full run bundle: events.jsonl (ordered event stream) and verdict.json (named
  * pass/fail checks + outcome).
+ *
+ * A provided workspaceDir must be EMPTY (or nonexistent): a leftover artifact from an
+ * earlier run could satisfy an artifact check and produce a false pass.
+ *
+ * A backend that throws still gets a persisted bundle — the runner appends a
+ * task_finished(infrastructureError) event, grades, and returns an
+ * infrastructure_error verdict so the partial evidence is diagnosable.
  */
 export async function runAgentTask(
   task: AgentTaskSpec,
@@ -108,11 +115,22 @@ export async function runAgentTask(
   opts: RunAgentTaskOptions = {},
 ): Promise<AgentTaskRun> {
   const workspaceDir = opts.workspaceDir ?? mkdtempSync(join(tmpdir(), `t3mp3st-agent-task-${task.id}-`));
+  if (existsSync(workspaceDir)) {
+    const existing = readdirSync(workspaceDir);
+    if (existing.length > 0) {
+      throw new Error(`agent-task: workspace '${workspaceDir}' is not empty — refusing to grade into a possibly contaminated directory (use a fresh directory)`);
+    }
+  }
   mkdirSync(workspaceDir, { recursive: true });
   const log = new TaskEventLog(task.id, backend.id, opts.now);
   log.append({ kind: 'task_started', detail: AGENT_TASK_RUNNER_VERSION });
 
-  await backend.run(task, log, workspaceDir);
+  try {
+    await backend.run(task, log, workspaceDir);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.append({ kind: 'task_finished', infrastructureError: message.slice(0, 512) || 'backend threw' });
+  }
 
   const eventsPath = join(workspaceDir, 'events.jsonl');
   const verdictPath = join(workspaceDir, 'verdict.json');
@@ -136,8 +154,19 @@ export function loadAgentTask(path: string): AgentTaskSpec {
  * (scope/approval). Returns an unsubscribe function.
  */
 export function tapArsenal(arsenal: Arsenal, log: TaskEventLog): () => void {
+  // Instrumentation MUST NOT change what execute() returns: a throwing subscriber inside
+  // Arsenal's 'tool:executed' emit would flip a success into an ExecutionError, and inside a
+  // denial emit would replace the SCOPE DENIED result with an exception. Swallow logging
+  // faults here (the event is dropped, the tool result is untouched).
+  const guarded = (record: () => void): void => {
+    try {
+      record();
+    } catch {
+      /* drop the event, never the tool result */
+    }
+  };
   const onExecuted = (e: { tool: { name: string }; result: { success: boolean; output?: string; error?: string }; durationMs: number; parameters?: Record<string, unknown> }): void => {
-    log.append({
+    guarded(() => log.append({
       kind: 'tool_call',
       tool: e.tool.name,
       ...(e.parameters ? { parameters: e.parameters } : {}),
@@ -145,19 +174,21 @@ export function tapArsenal(arsenal: Arsenal, log: TaskEventLog): () => void {
       durationMs: e.durationMs,
       ...(e.result.output !== undefined ? { resultPreview: preview(e.result.output) } : {}),
       ...(e.result.error !== undefined ? { errorPreview: preview(e.result.error) } : {}),
-    });
+    }));
   };
   const onError = (e: { tool: { name: string }; error: Error; parameters?: Record<string, unknown> }): void => {
-    const reason = classifyDenial(e.error.message);
-    const shared = {
-      tool: e.tool.name,
-      ...(e.parameters ? { parameters: e.parameters } : {}),
-    };
-    if (reason === 'other') {
-      log.append({ kind: 'tool_call', ...shared, success: false, errorPreview: preview(e.error.message) });
-    } else {
-      log.append({ kind: 'tool_denied', ...shared, reason, detail: preview(e.error.message) });
-    }
+    guarded(() => {
+      const reason = classifyDenial(e.error.message);
+      const shared = {
+        tool: e.tool.name,
+        ...(e.parameters ? { parameters: e.parameters } : {}),
+      };
+      if (reason === 'other') {
+        log.append({ kind: 'tool_call', ...shared, success: false, errorPreview: preview(e.error.message) });
+      } else {
+        log.append({ kind: 'tool_denied', ...shared, reason, detail: preview(e.error.message) });
+      }
+    });
   };
   arsenal.on('tool:executed', onExecuted);
   arsenal.on('tool:error', onError);

@@ -3,8 +3,7 @@
   "expectedOutcome": "fail",
   "expectFailingCheck": "flag",
   "steps": [
-    { "kind": "tool_call", "tool": "bash", "parameters": { "command": "ls /challenge" }, "durationMs": 30, "result": "note.txt" },
-    { "kind": "tool_call", "tool": "bash", "parameters": { "command": "cat /challenge/note.txt" }, "durationMs": 15, "result": "flag is T3MP3ST{stub_oracle_demo}" },
+    { "kind": "tool_call", "tool": "hash_crack", "parameters": { "hash": "5f4d3c2b1a0987f6e5d4c3b2a1908776", "type": "md5" }, "durationMs": 250, "result": "cracked: T3MP3ST{stub_oracle_demo}" },
     { "kind": "finish", "answer": "T3MP3ST{almost_the_right_flag}" }
   ]
 }

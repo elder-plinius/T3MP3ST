@@ -135,6 +135,14 @@ export function isSafeRelPath(p: unknown): p is string {
   return parts.every(part => part.length >= 1 && part !== '.' && part !== '..');
 }
 
+/** Written by the runner itself — a task/stub may not collide with the run bundle. */
+export const RESERVED_BUNDLE_FILES = new Set(['events.jsonl', 'verdict.json']);
+
+/** A stub or grader artifact path that is safe AND does not shadow the run bundle. */
+export function isReservedBundlePath(p: string): boolean {
+  return RESERVED_BUNDLE_FILES.has(p) || RESERVED_BUNDLE_FILES.has(p.split('/').pop() ?? p);
+}
+
 function parseArgsChecks(v: unknown): { key: string; contains: string }[] | undefined {
   if (v === undefined) return [];
   if (!Array.isArray(v) || v.length > 8) return undefined;
@@ -185,6 +193,7 @@ function parseGrader(v: unknown): TaskGraderSpec | undefined {
       artifacts = [];
       for (const raw of v.artifacts) {
         if (!isRecord(raw) || !isSafeRelPath(raw.path)) return undefined;
+        if (typeof raw.path === 'string' && isReservedBundlePath(raw.path)) return undefined;
         if (typeof raw.sha256 !== 'string' || !sha256Pattern.test(raw.sha256)) return undefined;
         artifacts.push({ path: raw.path, sha256: raw.sha256 });
       }
@@ -238,6 +247,7 @@ function parseStub(v: unknown): StubScript | undefined {
       }
       case 'write_artifact': {
         if (!isSafeRelPath(raw.path)) return undefined;
+        if (isReservedBundlePath(raw.path as string)) return undefined;
         const content = str(raw.content, 0, 65_536);
         if (content === undefined) return undefined;
         steps.push({ kind: 'write_artifact', path: raw.path, content });

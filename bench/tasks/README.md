@@ -23,7 +23,7 @@ bench/tasks/<id>/
 npm run build                                   # harness modules load from dist/
 node scripts/agent-task.mjs --list
 node scripts/agent-task.mjs --task egress-receipt-check
-node scripts/agent-task.mjs --self-test         # all tasks + negative fixtures
+npm run test:agent-task                          # all tasks + negative fixtures
 ```
 
 The default backend is `stub`: it replays the committed script — zero network,
@@ -62,13 +62,36 @@ just the end state.
 One JSON object per line, schema `t3mp3st_agent_task_event/v1`. The log assigns
 `seq` (1..n, never edited) and a logical `ts`. Kinds:
 
-- `task_started` — taskId, backend, runner version
-- `tool_call` — tool, parameters (secret-redacted), success, durationMs, result/error preview (capped; full output stays in the evidence vault)
+- `task_started` — taskId, backend, runner version (exactly one; must be first)
+- `tool_call` — tool, parameters (secret-redacted), success, durationMs, result/error preview (capped; full output stays in the evidence vault). A successful tool with **empty output** logs an empty preview — empties are valid.
 - `tool_denied` — tool, parameters, reason (`scope` | `approval`), detail
 - `note` — free text from the backend
-- `task_finished` — answer / abstained / infrastructureError
+- `task_finished` — answer / abstained / infrastructureError (exactly one)
 
-Lines are strictly validated on parse (fail closed on tampered logs).
+Lines are strictly validated on parse (fail closed on tampered logs), and the
+log enforces the lifecycle invariants: one `task_started` first, one
+`task_finished` — a backend that double-finishes violates the contract instead
+of silently re-grading.
+
+**Redaction scope, honestly:** event `parameters` pass through Arsenal's
+configured-secret scrubbing (the same path as tool results). That scrubber only
+masks *configured target-header secrets*. A credential the model itself pastes
+into an ordinary parameter value is recorded as-is — treat `events.jsonl` as
+operator-private and redact before sharing.
+
+## Runner guarantees
+
+- **Fresh workspace or refusal.** The runner writes each bundle into a fresh
+  temp dir; a provided `--out`/`workspaceDir` must be empty or nonexistent. A
+  leftover artifact from an earlier run can never satisfy an artifact check.
+- **Reserved names.** `events.jsonl` and `verdict.json` belong to the runner; a
+  stub or grader artifact path may not shadow them (rejected at validation).
+- **Crashes still leave evidence.** A backend that throws gets a
+  `task_finished(infrastructureError)` appended, and the partial `events.jsonl`
+  plus an `infrastructure_error` verdict are persisted — the bundle is always
+  diagnosable.
+- **Instrumentation never changes results.** `tapArsenal` subscribers are
+  fault-isolated: a logging failure drops the event, never the tool result.
 
 ## Adding a task
 
@@ -78,8 +101,12 @@ Lines are strictly validated on parse (fail closed on tampered logs).
 2. Add a `stub` script and pin `expectedOutcome`.
 3. Add at least one **negative fixture** under `negatives/` with the check it
    must fail (`expectFailingCheck`) — failure criteria are part of the contract.
-4. `node scripts/agent-task.mjs --self-test` must be green; the vitest suite in
-   `src/__tests__/agent-task.test.ts` re-grades the committed fixtures.
+4. Only name tools that are actually registered in the Arsenal (or mintable
+   adapters) — the test suite enforces "advertised = wired" over every
+   `allowedTools` / `requiredCalls[].tool` in `bench/tasks/`, the same discipline
+   as `no-phantom-tools`.
+5. `npm run test:agent-task` (and the vitest suite) must be green; both re-grade
+   the committed fixtures.
 
 ## Live backends (roadmap)
 

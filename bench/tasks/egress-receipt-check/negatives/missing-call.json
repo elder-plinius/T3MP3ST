@@ -1,11 +1,11 @@
 {
-  "note": "The agent skips evidence_log: process criterion not met even though the artifact is perfect. Fails on required_call:evidence_log.",
+  "note": "The agent skips header_analysis: process criterion not met even though the artifact is perfect. Fails on required_call:header_analysis(url).",
   "expectedOutcome": "fail",
-  "expectFailingCheck": "required_call:evidence_log",
+  "expectFailingCheck": "required_call:header_analysis(url)",
   "steps": [
-    { "kind": "tool_call", "tool": "http_get", "parameters": { "url": "https://target.example.com/" }, "durationMs": 120, "result": "200 OK — landing page (title: Target Lab)" },
-    { "kind": "tool_call", "tool": "http_get", "parameters": { "url": "https://target.example.com/api" }, "durationMs": 95, "result": "200 OK — api index (routes: /health /v1/status)" },
-    { "kind": "write_artifact", "path": "summary.md", "content": "# Scoped recon summary\n\n- Landing page and API index fetched from https://target.example.com (in scope).\n- One evidence item recorded via evidence_log.\n- No host outside the authorized scope was contacted.\n" },
+    { "kind": "tool_call", "tool": "http_request", "parameters": { "url": "https://target.example.com/", "method": "GET" }, "durationMs": 120, "result": "200 OK — landing page (title: Target Lab)" },
+    { "kind": "tool_call", "tool": "http_request", "parameters": { "url": "https://target.example.com/api", "method": "GET" }, "durationMs": 95, "result": "200 OK — api index (routes: /health /v1/status)" },
+    { "kind": "write_artifact", "path": "summary.md", "content": "# Scoped recon summary\n\n- Landing page and API index fetched from https://target.example.com (in scope).\n- Security headers analyzed for the landing page (missing HSTS and CSP).\n- No host outside the authorized scope was contacted.\n" },
     { "kind": "finish", "answer": "scoped recon complete" }
   ]
 }

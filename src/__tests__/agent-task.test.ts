@@ -6,7 +6,7 @@
  * criteria actually bite), and Arsenal tap observability (args on executed calls, scope denials).
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -17,9 +17,11 @@ import {
 } from '../benchmark/task-contract.js';
 import { classifyDenial, preview, TaskEventLog } from '../benchmark/task-events.js';
 import { gradeAgentTask } from '../benchmark/task-grader.js';
-import { runAgentTask, StubBackend, tapArsenal, loadAgentTask } from '../benchmark/task-runner.js';
-import { Arsenal } from '../arsenal/index.js';
+import { runAgentTask, StubBackend, tapArsenal, loadAgentTask, type TaskBackend } from '../benchmark/task-runner.js';
+import { Arsenal, BUILTIN_TOOLS, EXTERNAL_TOOLS } from '../arsenal/index.js';
 import type { ArsenalScope } from '../arsenal/index.js';
+import { buildAdapterTools } from '../arsenal/adapter-tools.js';
+import { TOOL_ADAPTERS } from '../arsenal/catalog.js';
 import type { CustomTool } from '../types/index.js';
 
 const TASKS_DIR = join(import.meta.dirname, '..', '..', 'bench', 'tasks');
@@ -148,8 +150,8 @@ describe('agent task runner — committed event-policy task', () => {
     expect(run.verdict.checks.every(c => c.passed)).toBe(true);
     expect(run.verdict.checks.map(c => c.name)).toEqual([
       'task_completed',
-      'required_call:http_get(url)',
-      'required_call:evidence_log',
+      'required_call:http_request(url)',
+      'required_call:header_analysis(url)',
       'denied_calls_within_budget',
       'artifact:summary.md',
     ]);
@@ -168,16 +170,16 @@ describe('agent task runner — committed event-policy task', () => {
 
   it('required-call matching is argument-aware (url must contain the scoped host)', async () => {
     const steps: StubStep[] = [
-      { kind: 'tool_call', tool: 'http_get', parameters: { url: 'https://elsewhere.example.org/' }, durationMs: 10, result: '200' },
-      { kind: 'tool_call', tool: 'http_get', parameters: { url: 'https://target.example.com/' }, durationMs: 10, result: '200' },
-      { kind: 'tool_call', tool: 'evidence_log', parameters: {}, result: 'ok' },
+      { kind: 'tool_call', tool: 'http_request', parameters: { url: 'https://elsewhere.example.org/' }, durationMs: 10, result: '200' },
+      { kind: 'tool_call', tool: 'http_request', parameters: { url: 'https://target.example.com/' }, durationMs: 10, result: '200' },
+      { kind: 'tool_call', tool: 'header_analysis', parameters: { url: 'https://target.example.com/' }, durationMs: 5, result: 'ok' },
       { kind: 'write_artifact', path: 'summary.md', content: committedSummary() },
       { kind: 'finish', answer: 'x' },
     ];
     const run = await runAgentTask(task, new StubBackend({ steps }));
-    // only ONE of two http_get calls matches the scoped-host arg constraint → required count unmet
+    // only ONE of two http_request calls matches the scoped-host arg constraint → required count unmet
     expect(run.verdict.outcome).toBe('fail');
-    expect(run.verdict.checks.find(c => c.name === 'required_call:http_get(url)')?.passed).toBe(false);
+    expect(run.verdict.checks.find(c => c.name === 'required_call:http_request(url)')?.passed).toBe(false);
   });
 
   it('committed negative fixtures fail on exactly their pinned check', async () => {
@@ -197,6 +199,101 @@ function committedSummary(): string {
   if (!step?.content) throw new Error('committed summary.md content missing');
   return step.content;
 }
+
+describe('review fixes — workspace freshness, crash persistence, lifecycle, reserved names, phantom tools', () => {
+  const task = loadCommittedTask('egress-receipt-check');
+  const taskStub = task.stub;
+  if (!taskStub) throw new Error('egress-receipt-check must carry a stub script');
+
+  it('REVIEW FIX #2: refuses a contaminated workspace — a stale artifact can never re-pass', async () => {
+    const stale = mkdtempSync(join(tmpdir(), 't3mp3st-stale-ws-'));
+    writeFileSync(join(stale, 'summary.md'), 'leftover from an earlier run');
+    await expect(runAgentTask(task, new StubBackend(taskStub), { workspaceDir: stale }))
+      .rejects.toThrow(/not empty/);
+    // and a completed run's own bundle directory is non-empty, so a rerun into it refuses too
+    const run = await runAgentTask(task, new StubBackend(taskStub));
+    await expect(runAgentTask(task, new StubBackend({ steps: taskStub.steps.filter(s => s.kind !== 'write_artifact') }), { workspaceDir: run.workspaceDir }))
+      .rejects.toThrow(/not empty/);
+  });
+
+  it('REVIEW FIX #3: a backend exception still persists the partial log and an infrastructure verdict', async () => {
+    const exploding: TaskBackend = {
+      id: 'boom',
+      run: async (_t, log) => {
+        log.append({ kind: 'note', text: 'about to explode' });
+        throw new Error('backend exploded');
+      },
+    };
+    const run = await runAgentTask(task, exploding);
+    expect(run.verdict.outcome).toBe('infrastructure_error');
+    expect(run.verdict.checks.find(c => c.name === 'no_infrastructure_error')?.detail).toContain('backend exploded');
+    expect(existsSync(run.eventsPath)).toBe(true);
+    expect(existsSync(run.verdictPath)).toBe(true);
+    expect(run.log.all.some(e => e.kind === 'note')).toBe(true);
+    expect(run.log.all.at(-1)).toMatchObject({ kind: 'task_finished', infrastructureError: 'backend exploded' });
+  });
+
+  it('REVIEW NIT: exactly one task_started (first) and one task_finished per stream', () => {
+    const log = new TaskEventLog('lifecycle-task', 'stub');
+    log.append({ kind: 'task_started', detail: 'x' });
+    expect(() => log.append({ kind: 'task_started', detail: 'again' })).toThrow(/first event/);
+    log.append({ kind: 'task_finished', answer: 'done' });
+    expect(() => log.append({ kind: 'task_finished', answer: 'twice' })).toThrow(/once/);
+    // mid-stream task_started is also rejected
+    const log2 = new TaskEventLog('lifecycle-task', 'stub');
+    log2.append({ kind: 'task_started', detail: 'x' });
+    expect(() => TaskEventLog.fromJsonl([JSON.stringify({ schemaVersion: 't3mp3st_agent_task_event/v1', seq: 2, ts: 2, kind: 'task_started', taskId: 'lifecycle-task', backend: 'stub', detail: 'x' }), JSON.stringify({ schemaVersion: 't3mp3st_agent_task_event/v1', seq: 1, ts: 1, kind: 'task_started', taskId: 'lifecycle-task', backend: 'stub', detail: 'x' })].join('\n'), 'lifecycle-task', 'stub')).toThrow();
+  });
+
+  it('REVIEW FIX: empty answers/results flow end-to-end instead of crashing the logger', async () => {
+    const flagTask = loadCommittedTask('flag-oracle-demo');
+    const empty: StubStep[] = [
+      { kind: 'tool_call', tool: 'hash_crack', parameters: { hash: 'abc' }, durationMs: 1, result: '' },
+      { kind: 'finish', answer: '' },
+    ];
+    const run = await runAgentTask(flagTask, new StubBackend({ steps: empty }));
+    expect(run.verdict.outcome).toBe('fail'); // empty answer ≠ the committed flag
+    expect(run.log.all[1]).toMatchObject({ kind: 'tool_call', resultPreview: '' });
+  });
+
+  it('REVIEW FIX: stub/grader paths may not shadow the run bundle (events.jsonl / verdict.json)', () => {
+    const good = JSON.parse(readFileSync(join(TASKS_DIR, 'egress-receipt-check', 'task.json'), 'utf8'));
+    const shadowStub = structuredClone(good);
+    (shadowStub.stub.steps as { kind: string; path?: string }[]).find(s => s.kind === 'write_artifact')!.path = 'events.jsonl';
+    expect(parseAgentTask(shadowStub)).toBeUndefined();
+    const shadowGrader = structuredClone(good);
+    shadowGrader.grader.artifacts[0].path = 'verdict.json';
+    expect(parseAgentTask(shadowGrader)).toBeUndefined();
+  });
+
+  it('REVIEW FIX #2 (phantom tools): every tool named by a committed task is registered/mintable', () => {
+    const registered = new Set([...BUILTIN_TOOLS, ...EXTERNAL_TOOLS].map(t => t.name));
+    const minted = new Set(
+      buildAdapterTools(TOOL_ADAPTERS, {
+        runSubprocess: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+        isToolAvailable: async () => true,
+        scopeOk: () => true,
+        createReportWorkspace: async () => ({ reportBase: '', cleanup: () => Promise.resolve() }),
+        readToolReport: async () => '',
+      }, new Set()).map(t => t.name),
+    );
+    const phantoms: string[] = [];
+    for (const id of readdirSync(TASKS_DIR)) {
+      const taskJson = join(TASKS_DIR, id, 'task.json');
+      if (!existsSync(taskJson)) continue;
+      const spec = loadAgentTask(taskJson);
+      for (const tool of spec.allowedTools ?? []) {
+        if (!registered.has(tool) && !minted.has(tool)) phantoms.push(`${id}: allowedTools → ${tool}`);
+      }
+      if (spec.grader.kind === 'event-policy') {
+        for (const req of spec.grader.requiredCalls) {
+          if (!registered.has(req.tool) && !minted.has(req.tool)) phantoms.push(`${id}: requiredCalls → ${req.tool}`);
+        }
+      }
+    }
+    expect(phantoms, `bench/tasks reference phantom tools: ${phantoms.join(', ')}`).toEqual([]);
+  });
+});
 
 describe('arsenal tap — observable tool calls from the live gate path', () => {
   const scope: ArsenalScope = { allowedHosts: ['target.example.com'], allowLoopback: true, allowPrivate: true };
@@ -243,5 +340,39 @@ describe('arsenal tap — observable tool calls from the live gate path', () => 
     const verdict = gradeAgentTask({ ...task, grader: { kind: 'event-policy', requiredCalls: [{ tool: 'probe', minCount: 1 }] } }, log.all);
     expect(verdict.outcome).toBe('fail');
     expect(verdict.checks.find(c => c.name === 'denied_calls_within_budget')?.passed).toBe(false);
+  });
+
+  it('REVIEW FIX #1: a successful tool with EMPTY output stays a success — instrumentation never flips the result', async () => {
+    const ars = new Arsenal();
+    const silent: CustomTool = {
+      name: 'silent_ok', description: 'succeeds with no output', category: 'web', parameters: [],
+      handler: async () => ({ success: true, output: '' }),
+    };
+    ars.register(silent);
+    const log = new TaskEventLog('empty-output-task', 'stub');
+    const untap = tapArsenal(ars, log);
+    let result;
+    try {
+      result = await ars.execute('silent_ok', { parameters: { url: 'https://target.example.com/' } });
+    } finally {
+      untap();
+    }
+    expect(result.success).toBe(true); // execute() result untouched by the logging subscriber
+    const evt = log.all.find(e => e.kind === 'tool_call');
+    expect(evt).toMatchObject({ tool: 'silent_ok', success: true, resultPreview: '' });
+  });
+
+  it('REVIEW FIX #1: an over-long (unrecordable) tool name cannot break execute()', async () => {
+    const ars = new Arsenal();
+    const longName = 'x'.repeat(80); // > 64-char tool names are rejected by the event schema
+    const log = new TaskEventLog('long-name-task', 'stub');
+    const untap = tapArsenal(ars, log);
+    try {
+      await expect(ars.execute(longName, { parameters: {} })).rejects.toThrow(/not found/i);
+    } finally {
+      untap();
+    }
+    // the tap dropped the unrecordable event instead of throwing out of execute()
+    expect(log.all.filter(e => e.tool === longName)).toEqual([]);
   });
 });

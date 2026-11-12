@@ -34,7 +34,7 @@ export interface TaskEvent {
   parameters?: Record<string, unknown>;
   success?: boolean;
   durationMs?: number;
-  /** Capped preview of the tool result (full output belongs to the evidence vault, not the log). */
+  /** Capped preview of a tool result (full output belongs to the evidence vault, not the log). May be empty — a successful tool can return no output. */
   resultPreview?: string;
   errorPreview?: string;
   reason?: DenialReason;
@@ -84,7 +84,7 @@ export function parseTaskEvent(value: unknown): TaskEvent | undefined {
     backend: value.backend,
   };
   const optStr = (v: unknown, max: number): string | undefined =>
-    (typeof v === 'string' && v.length >= 1 && v.length <= max ? v : undefined);
+    (typeof v === 'string' && v.length <= max ? v : undefined); // empty strings are valid (e.g. a success with no output)
   if (value.tool !== undefined) {
     const tool = optStr(value.tool, 64);
     if (!tool) return undefined;
@@ -147,6 +147,14 @@ export class TaskEventLog {
   }
 
   append(input: TaskEventInput): TaskEvent {
+    // Lifecycle invariants: exactly one task_started (first) and one task_finished — a backend
+    // that double-finishes or injects its own start is a contract violation, not a grading input.
+    if (input.kind === 'task_started' && this.events.length > 0) {
+      throw new Error('task-events: task_started may only be the first event');
+    }
+    if (input.kind === 'task_finished' && this.events.some(e => e.kind === 'task_finished')) {
+      throw new Error('task-events: task_finished may only be appended once');
+    }
     const seq = this.events.length + 1;
     const ts = this.now(seq);
     if (!Number.isInteger(ts) || ts < (this.events[this.events.length - 1]?.ts ?? 0)) {
@@ -185,6 +193,8 @@ export class TaskEventLog {
       if (!evt) throw new Error(`task-events: line ${i + 1} failed validation`);
       if (evt.seq !== i + 1) throw new Error(`task-events: line ${i + 1} has seq ${evt.seq}, expected ${i + 1}`);
       if (evt.taskId !== taskId || evt.backend !== backend) throw new Error(`task-events: line ${i + 1} task/backend mismatch`);
+      if (evt.kind === 'task_started' && i !== 0) throw new Error(`task-events: line ${i + 1} task_started must be the first event`);
+      if (evt.kind === 'task_finished' && log.events.some(e => e.kind === 'task_finished')) throw new Error(`task-events: line ${i + 1} duplicate task_finished`);
       log.events.push(evt);
     });
     return log;
