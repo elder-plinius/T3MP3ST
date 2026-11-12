@@ -356,7 +356,7 @@ describe('arsenal tap — observable tool calls from the live gate path', () => 
     log.append({ kind: 'task_finished', answer: 'done' });
     untap();
     const task = loadCommittedTask('egress-receipt-check');
-    const verdict = gradeAgentTask({ ...task, grader: { kind: 'event-policy', requiredCalls: [{ tool: 'probe', minCount: 1 }] } }, log.all);
+    const verdict = gradeAgentTask({ ...task, grader: { kind: 'event-policy', requiredCalls: [{ tool: 'probe', minCount: 1 }] } }, log);
     expect(verdict.outcome).toBe('fail');
     expect(verdict.checks.find(c => c.name === 'denied_calls_within_budget')?.passed).toBe(false);
   });

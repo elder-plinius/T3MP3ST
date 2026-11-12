@@ -11,7 +11,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTaskSpec, TaskOutcome } from './task-contract.js';
 import { sha256Hex } from './task-contract.js';
-import type { TaskEvent } from './task-events.js';
+import { TaskEventLog, type TaskEvent } from './task-events.js';
 
 export const AGENT_TASK_VERDICT_SCHEMA = 't3mp3st_agent_task_verdict/v1';
 
@@ -46,14 +46,19 @@ function callMatches(event: TaskEvent, tool: string, args?: { key: string; conta
 }
 
 /**
- * Grade a finished run. `workspaceDir` (optional) is where the backend wrote
- * artifacts; artifact checks read files from it and compare pinned sha256s.
- * `droppedEvents` (default 0) is the count of events instrumentation could not
- * log: a run with dropped events has incomplete evidence and grades
- * infrastructure_error no matter what the visible stream says (fail closed —
- * e.g. a dropped scope denial must never let an off-scope run pass).
+ * Grade a finished run. `source` is either the TaskEventLog (preferred — it carries its
+ * own dropped-event count, so a drop-aware grading can never forget it) or a plain
+ * event array (for re-deriving complete streams; assumed to have no drops).
+ * `workspaceDir` (optional) is where the backend wrote artifacts; artifact checks read
+ * files from it and compare pinned sha256s.
+ *
+ * A run with dropped events has incomplete evidence and grades infrastructure_error
+ * no matter what the visible stream says (fail closed — e.g. a dropped scope denial
+ * must never let an off-scope run pass).
  */
-export function gradeAgentTask(task: AgentTaskSpec, events: readonly TaskEvent[], workspaceDir?: string, droppedEvents = 0): TaskVerdict {
+export function gradeAgentTask(task: AgentTaskSpec, source: TaskEventLog | readonly TaskEvent[], workspaceDir?: string): TaskVerdict {
+  const events = source instanceof TaskEventLog ? source.all : source;
+  const droppedEvents = source instanceof TaskEventLog ? source.dropped : 0;
   const checks: GraderCheck[] = [];
   if (droppedEvents > 0) {
     checks.push({ name: 'no_dropped_events', passed: false, detail: `instrumentation dropped ${droppedEvents} event(s) — evidence incomplete, refusing to grade` });

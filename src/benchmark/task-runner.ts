@@ -144,7 +144,7 @@ export async function runAgentTask(
   const eventsPath = join(workspaceDir, 'events.jsonl');
   const verdictPath = join(workspaceDir, 'verdict.json');
   writeFileSync(eventsPath, log.toJsonl());
-  const verdict = gradeAgentTask(task, log.all, workspaceDir, log.dropped);
+  const verdict = gradeAgentTask(task, log, workspaceDir);
   writeFileSync(verdictPath, JSON.stringify(verdict, null, 2) + '\n');
   return { verdict, log, workspaceDir, eventsPath, verdictPath };
 }
