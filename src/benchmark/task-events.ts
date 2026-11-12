@@ -90,12 +90,18 @@ export function parseTaskEvent(value: unknown): TaskEvent | undefined {
     if (!tool) return undefined;
     evt.tool = tool;
   }
-  if (value.parameters !== undefined && !isRecord(value.parameters)) return undefined;
-  else if (value.parameters !== undefined) evt.parameters = value.parameters;
-  if (value.success !== undefined && typeof value.success !== 'boolean') return undefined;
-  else if (value.success !== undefined) evt.success = value.success;
-  if (value.durationMs !== undefined && (!Number.isInteger(value.durationMs) || (value.durationMs as number) < 0)) return undefined;
-  else if (value.durationMs !== undefined) evt.durationMs = value.durationMs as number;
+  if (value.parameters !== undefined) {
+    if (!isRecord(value.parameters)) return undefined;
+    evt.parameters = value.parameters;
+  }
+  if (value.success !== undefined) {
+    if (typeof value.success !== 'boolean') return undefined;
+    evt.success = value.success;
+  }
+  if (value.durationMs !== undefined) {
+    if (typeof value.durationMs !== 'number' || !Number.isInteger(value.durationMs) || value.durationMs < 0) return undefined;
+    evt.durationMs = value.durationMs;
+  }
   for (const key of ['resultPreview', 'errorPreview', 'detail', 'text', 'answer', 'infrastructureError'] as const) {
     const v = value[key];
     if (v !== undefined) {
@@ -108,8 +114,10 @@ export function parseTaskEvent(value: unknown): TaskEvent | undefined {
     if (!REASONS.includes(value.reason as DenialReason)) return undefined;
     evt.reason = value.reason as DenialReason;
   }
-  if (value.abstained !== undefined && typeof value.abstained !== 'boolean') return undefined;
-  else if (value.abstained !== undefined) evt.abstained = value.abstained;
+  if (value.abstained !== undefined) {
+    if (typeof value.abstained !== 'boolean') return undefined;
+    evt.abstained = value.abstained;
+  }
   // Per-kind contracts.
   if ((kind === 'tool_call' || kind === 'tool_denied') && evt.tool === undefined) return undefined;
   if (kind === 'tool_denied' && evt.reason === undefined) return undefined;

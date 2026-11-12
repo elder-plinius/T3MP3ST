@@ -13,7 +13,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import type { Arsenal } from '../arsenal/index.js';
 import type { AgentTaskSpec, StubScript, StubStep } from './task-contract.js';
-import { parseAgentTask } from './task-contract.js';
+import { AGENT_TASK_SCHEMA, parseAgentTask } from './task-contract.js';
 import { classifyDenial, preview, TaskEventLog, type TaskEvent } from './task-events.js';
 import { gradeAgentTask, type TaskVerdict } from './task-grader.js';
 
@@ -125,7 +125,7 @@ export async function runAgentTask(
 /** Load + strictly validate a task.json from disk (fail closed on malformed files). */
 export function loadAgentTask(path: string): AgentTaskSpec {
   const task = parseAgentTask(JSON.parse(readFileSync(path, 'utf8')));
-  if (!task) throw new Error(`agent-task: ${path} is not a valid ${'t3mp3st_agent_task/v1'} task`);
+  if (!task) throw new Error(`agent-task: ${path} is not a valid ${AGENT_TASK_SCHEMA} task`);
   return task;
 }
 

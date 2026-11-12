@@ -171,7 +171,7 @@ describe('agent task runner — committed event-policy task', () => {
       { kind: 'tool_call', tool: 'http_get', parameters: { url: 'https://elsewhere.example.org/' }, durationMs: 10, result: '200' },
       { kind: 'tool_call', tool: 'http_get', parameters: { url: 'https://target.example.com/' }, durationMs: 10, result: '200' },
       { kind: 'tool_call', tool: 'evidence_log', parameters: {}, result: 'ok' },
-      { kind: 'write_artifact', path: 'summary.md', content: readFileSync(join(TASKS_DIR, 'egress-receipt-check', 'task.json'), 'utf8') && committedSummary() },
+      { kind: 'write_artifact', path: 'summary.md', content: committedSummary() },
       { kind: 'finish', answer: 'x' },
     ];
     const run = await runAgentTask(task, new StubBackend({ steps }));

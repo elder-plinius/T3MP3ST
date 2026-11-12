@@ -309,7 +309,7 @@ export function parseAgentTask(value: unknown): AgentTaskSpec | undefined {
     family,
     prompt,
     ...(value.allowedTools ? { allowedTools: value.allowedTools as string[] } : {}),
-    timeoutMs: timeoutMs as number,
+    timeoutMs,
     ...(expectedOutcome ? { expectedOutcome } : {}),
     grader,
     ...(stub ? { stub } : {}),
