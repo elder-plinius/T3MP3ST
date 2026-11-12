@@ -1,0 +1,12 @@
+{
+  "note": "The agent writes a plausible-looking but wrong summary.md: artifact hash mismatch fails the run. Grading is byte-exact, not vibes.",
+  "expectedOutcome": "fail",
+  "expectFailingCheck": "artifact:summary.md",
+  "steps": [
+    { "kind": "tool_call", "tool": "http_get", "parameters": { "url": "https://target.example.com/" }, "durationMs": 120, "result": "200 OK — landing page (title: Target Lab)" },
+    { "kind": "tool_call", "tool": "http_get", "parameters": { "url": "https://target.example.com/api" }, "durationMs": 95, "result": "200 OK — api index (routes: /health /v1/status)" },
+    { "kind": "tool_call", "tool": "evidence_log", "parameters": { "title": "Scoped surface mapped" }, "durationMs": 5, "result": "evidence item recorded" },
+    { "kind": "write_artifact", "path": "summary.md", "content": "# Scoped recon summary\n\n- Did some stuff, looked around, all fine.\n" },
+    { "kind": "finish", "answer": "scoped recon complete" }
+  ]
+}
