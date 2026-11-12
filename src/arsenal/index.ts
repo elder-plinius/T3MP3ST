@@ -131,10 +131,10 @@ function targetHeadersForUrl(url: string | URL, explicit?: RequestInit['headers'
   return merged.keys().next().done ? undefined : merged;
 }
 
-function redactConfiguredSecrets(result: ToolResult): ToolResult {
+function redactConfiguredSecretsDeep<T>(value: T): T {
   const config = parseTargetHeaderConfig();
   const secrets = config ? [...config.headers.values()].filter(Boolean) : [];
-  if (secrets.length === 0) return result;
+  if (secrets.length === 0) return value;
 
   const redact = (value: unknown): unknown => {
     if (typeof value === 'string') {
@@ -146,7 +146,11 @@ function redactConfiguredSecrets(result: ToolResult): ToolResult {
     }
     return value;
   };
-  return redact(result) as ToolResult;
+  return redact(value) as T;
+}
+
+function redactConfiguredSecrets(result: ToolResult): ToolResult {
+  return redactConfiguredSecretsDeep(result);
 }
 
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
@@ -190,8 +194,8 @@ async function targetFetch(url: string | URL, init: RequestInit = {}): Promise<R
 
 export interface ArsenalEvents {
   'tool:registered': CustomTool;
-  'tool:executed': { tool: CustomTool; result: ToolResult; durationMs: number };
-  'tool:error': { tool: CustomTool; error: Error };
+  'tool:executed': { tool: CustomTool; result: ToolResult; durationMs: number; /** Model-supplied call arguments (secret-redacted) — lets event subscribers log WHAT was called, not just the result. */ parameters?: Record<string, unknown> };
+  'tool:error': { tool: CustomTool; error: Error; /** Model-supplied call arguments (secret-redacted), when the failing call had a context. */ parameters?: Record<string, unknown> };
 }
 
 export interface ToolExecution {
@@ -378,6 +382,11 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
     toolName: string,
     context: ToolContext
   ): Promise<ToolResult> {
+    // Event payload prep: redacted call arguments, computed once and only when something is
+    // listening (zero cost for the common no-subscriber execute path).
+    const redactedParameters = (this.listenerCount('tool:executed') > 0 || this.listenerCount('tool:error') > 0)
+      ? redactConfiguredSecretsDeep(context.parameters ?? {})
+      : undefined;
     const tool = this.tools.get(toolName);
     if (!tool) {
       const err = new ToolError(
@@ -385,7 +394,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         `Tool "${toolName}" not found`,
         toolName,
       );
-      this.emit('tool:error', { tool: { name: toolName } as CustomTool, error: err });
+      this.emit('tool:error', { tool: { name: toolName } as CustomTool, error: err, parameters: redactedParameters });
       throw err;
     }
 
@@ -397,7 +406,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         success: false,
         error: `SCOPE DENIED: target '${blockedHost}' is not in the authorized scope — ${toolName} refused before execution. Only authorized / loopback / lab targets are permitted.`,
       };
-      this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName) });
+      this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName), parameters: redactedParameters });
       return denied;
     }
 
@@ -416,7 +425,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       const decision = await this.approval.gate(request);
       if (!decision.allowed) {
         const denied: ToolResult = { success: false, error: `APPROVAL REQUIRED: ${decision.reason}` };
-        this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName) });
+        this.emit('tool:error', { tool, error: new ToolError(ToolErrorCategory.ScopeDenied, denied.error!, toolName), parameters: redactedParameters });
         return denied;
       }
     }
@@ -431,7 +440,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
           `Validation failed for "${toolName}": ${fieldErrors}`,
           toolName,
         );
-        this.emit('tool:error', { tool, error: err });
+        this.emit('tool:error', { tool, error: err, parameters: redactedParameters });
         throw err;
       }
     }
@@ -452,7 +461,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
       execution.completedAt = Date.now();
       execution.result = result;
 
-      this.emit('tool:executed', { tool, result, durationMs });
+      this.emit('tool:executed', { tool, result, durationMs, parameters: redactedParameters });
 
       return result;
     } catch (error) {
@@ -464,7 +473,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
 
       // If already a ToolError, re-throw as-is; otherwise wrap as ExecutionError
       if (error instanceof ToolError) {
-        this.emit('tool:error', { tool, error });
+        this.emit('tool:error', { tool, error, parameters: redactedParameters });
         throw error;
       }
 
@@ -473,7 +482,7 @@ export class Arsenal extends EventEmitter<ArsenalEvents> {
         `Tool "${toolName}" execution failed: ${execution.error}`,
         toolName,
       );
-      this.emit('tool:error', { tool, error: wrappedErr });
+      this.emit('tool:error', { tool, error: wrappedErr, parameters: redactedParameters });
       throw wrappedErr;
     }
   }

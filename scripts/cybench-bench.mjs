@@ -259,6 +259,7 @@ function parseArgs(argv) {
     else if (k === '--specialists') a.specialists = '1';
     else if (k === '--black-box') a.blackBox = true;
     else if (k === '--report')    a.report = argv[++i];
+    else if (k === '--events-out') a.eventsOut = argv[++i];   // opt-in per-run tool-call event logs (events.jsonl)
     else if (k === '--temp')      a.temp = parseFloat(argv[++i]);   // sampling temperature (creativity↔precision)
     else if (k === '--effort')    a.effort = argv[++i];             // reasoning effort: low|medium|high|xhigh (overrides env)
     else if (k === '-v' || k === '--verbose') a.verbose = true;
@@ -276,6 +277,7 @@ function help() {
   --timeout <ms>        per-challenge LLM timeout (default 180000)
   --repeat <N>          run each challenge N times; report mean + Wilson 95% CI (default 1)
   --report <path>       write JSON report
+  --events-out <dir>    write one ordered tool-call event log per run (<id>.events.jsonl; needs npm run build)
   -v, --verbose
 
 Challenges live under bench/cybench/challenges/<id>/
@@ -326,6 +328,51 @@ function loadChallenges(filter, prefix) {
     out.push(challenge);
   }
   return out;
+}
+
+// ----- per-run tool-call event log (opt-in: --events-out) ------------------
+// Every run can emit the SAME ordered event stream the agent-task harness grades
+// (src/benchmark/task-events.ts, schema t3mp3st_agent_task_event/v1): task_started, one
+// tool_call per dispatched command (tool, arguments, duration, capped result preview), a
+// tool_denied for each integrity-gate refusal, and task_finished. OFF by default: without
+// --events-out nothing is loaded, no opts are added, and the report is byte-identical.
+// Logging never changes a run: an event the log rejects is counted as dropped, not thrown.
+async function loadEventLogModule() {
+  try {
+    return await import('../dist/benchmark/task-events.js');
+  } catch (e) {
+    throw new Error(`--events-out needs the built harness (run: npm run build) — ${e.message}`);
+  }
+}
+
+function recordToolEvent(eventLog, { tool, parameters, output, durationMs }) {
+  if (!eventLog) return;
+  try {
+    const text = String(output ?? '');
+    const preview = text.length <= 512 ? text : `${text.slice(0, 512)}…[truncated ${text.length - 512} chars]`;
+    if (text.startsWith('[integrity-blocked]')) {
+      eventLog.append({ kind: 'tool_denied', tool, parameters, reason: 'other', detail: preview });
+    } else {
+      eventLog.append({ kind: 'tool_call', tool, parameters, durationMs: Math.max(0, Math.round(durationMs)), resultPreview: preview });
+    }
+  } catch {
+    eventLog.noteDropped();
+  }
+}
+
+// Close the stream with the run's outcome and write it. Returns the report pointer
+// { path, count, dropped } — dropped > 0 means the stream is incomplete evidence.
+function finishRunEvents(eventLog, file, { error, targetBroken, verdict }) {
+  try {
+    if (error) eventLog.append({ kind: 'task_finished', infrastructureError: String(error).slice(0, 512) || 'run failed' });
+    else if (targetBroken) eventLog.append({ kind: 'task_finished', abstained: true, detail: String(targetBroken).slice(0, 64) });
+    else eventLog.append({ kind: 'task_finished', answer: String(verdict?.reported ?? '').slice(0, 512) });
+  } catch {
+    eventLog.noteDropped();
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, eventLog.toJsonl());
+  return { path: file, count: eventLog.length, dropped: eventLog.dropped };
 }
 
 // ----- hunters ------------------------------------------------------------
@@ -1458,7 +1505,9 @@ async function liveToolsHunter(challenge, opts) {
         const cmd = (builder ? builder(args || {}) : (args && args.command)) || '';
         transcript.push(`\n--- iter ${i} ${name} ---`);
         transcript.push(`$ ${cmd}`);
+        const toolT0 = Date.now();
         const output = await bashTool(taskDir, cmd, 240000, toolsCid);
+        recordToolEvent(opts.eventLog, { tool: name, parameters: builder ? { ...(args || {}), command: cmd } : { command: cmd }, output, durationMs: Date.now() - toolT0 });
         transcript.push(output);
         toolOut.push(output);   // provenance: real tool RESULT, scannable by the grader
         messages.push({
@@ -1872,6 +1921,12 @@ async function main() {
   // challenge hits the same wall, so we record the current one as ∅ provider_exhausted and abort —
   // a relaunch with a working key/provider resumes cleanly. Honest failure, never a silent miss-run.
   let providerExhausted = null;
+  // Opt-in event logs: load the built log class once; a missing build is a usage error, not a silent skip.
+  let TaskEventLog = null;
+  if (args.eventsOut) {
+    try { ({ TaskEventLog } = await loadEventLogModule()); }
+    catch (e) { console.error(e.message); process.exit(2); }
+  }
   for (const c of challenges) {
     const weight = CATEGORY_WEIGHT[(c.category || '').toLowerCase()] || 1;
     const runs = [];
@@ -1882,11 +1937,15 @@ async function main() {
       let targetBroken = null; // honest abstain marker (decoy/dead/misprovisioned)
       let ensemble = null;     // phone-a-friend attribution (null on the single-model path)
       let error = null;
+      // One fresh log per run; hunters only see it when --events-out is set (default opts untouched).
+      const eventLog = TaskEventLog ? new TaskEventLog(String(c.id).slice(0, 64).padEnd(3, '_'), `cybench-${args.hunter}`.slice(0, 64)) : null;
+      const hunterArgs = eventLog ? { ...args, eventLog } : args;
+      if (eventLog) eventLog.append({ kind: 'task_started', detail: 'cybench-bench' });
       try {
         // live-tools routes through ensembleHunt — a no-op passthrough unless HUNTER_PHONE_A_FRIEND.
-        const hres = args.hunter === 'live'          ? await liveHunter(c, args)
-                   : args.hunter === 'live-tools'    ? await ensembleHunt(c, args)
-                   : args.hunter === 'direct-claude' ? await directClaudeHunter(c, args)
+        const hres = args.hunter === 'live'          ? await liveHunter(c, hunterArgs)
+                   : args.hunter === 'live-tools'    ? await ensembleHunt(c, hunterArgs)
+                   : args.hunter === 'direct-claude' ? await directClaudeHunter(c, hunterArgs)
                    :                                    stubHunter(c);
         // Hunters return either a plain string or { text, toolOutput, targetBroken, ensemble? }.
         // The provenance-strict grader only auto-credits a flag seen in toolOutput.
@@ -1903,7 +1962,10 @@ async function main() {
       }
       const dur = (Date.now() - t0) / 1000;
       const verdict = error ? null : scoreChallenge(c, transcript, toolOutput);
-      runs.push({ run, verdict, duration_sec: round(dur, 2), error, transcript, toolOutput, ensemble, target_broken: targetBroken });
+      const events = eventLog
+        ? finishRunEvents(eventLog, path.join(args.eventsOut, `${String(c.id).replace(/[^A-Za-z0-9._-]/g, '_')}${args.repeat > 1 ? `.run${run}` : ''}.events.jsonl`), { error, targetBroken, verdict })
+        : null;
+      runs.push({ run, verdict, duration_sec: round(dur, 2), error, transcript, toolOutput, ensemble, target_broken: targetBroken, ...(events ? { events } : {}) });
     }
 
     if (args.repeat === 1) {
@@ -1916,13 +1978,14 @@ async function main() {
                      tool_output: capEnds(r0.toolOutput, 200000),
                      verdict: r0.verdict, weight, duration_sec: r0.duration_sec, error: r0.error,
                      ensemble: r0.ensemble || null,   // phone-a-friend attribution (who solved it)
-                     target_broken: r0.target_broken || null });
+                     target_broken: r0.target_broken || null,
+                     ...(r0.events ? { events: r0.events } : {}) });
       const mark = r0.target_broken ? '∅' : (r0.verdict?.detected ? '✓' : (r0.verdict?.semantic ? '~' : '·'));
       console.log(`  [${mark}] ${c.id.padEnd(28)} ${(c.category || '').padEnd(10)} (${r0.duration_sec.toFixed(1)}s)${r0.error ? '  ERR: ' + r0.error : ''}${r0.verdict ? '  reported=' + (r0.verdict.reported || 'none') : ''}`);
     } else {
       const aggregate = aggregateRuns(runs.map(r => r.verdict));
       results.push({ id: c.id, category: c.category, title: c.title, weight,
-                     runs: runs.map(r => ({ run: r.run, verdict: r.verdict, duration_sec: r.duration_sec, error: r.error, ensemble: r.ensemble || null })),
+                     runs: runs.map(r => ({ run: r.run, verdict: r.verdict, duration_sec: r.duration_sec, error: r.error, ensemble: r.ensemble || null, ...(r.events ? { events: r.events } : {}) })),
                      aggregate,
                      transcript: capEnds(runs[0]?.transcript, 120000),
                      tool_output: capEnds(runs[0]?.toolOutput, 200000) });
@@ -2072,4 +2135,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   main().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
 }
 
-export { execCapped, scoreChallenge, normalizeWrapper, extractFlag, unwrapFlag, wilsonInterval, aggregateRuns, selectWebPlaybooks, VULN_CLASS_PLAYBOOKS, routeModel, effectiveModel, CATEGORY_MODEL, DEFAULT_ROUTE_MODEL, distillHandoffBrief, ensembleHunt };
+export { execCapped, scoreChallenge, normalizeWrapper, extractFlag, unwrapFlag, wilsonInterval, aggregateRuns, selectWebPlaybooks, VULN_CLASS_PLAYBOOKS, routeModel, effectiveModel, CATEGORY_MODEL, DEFAULT_ROUTE_MODEL, distillHandoffBrief, ensembleHunt, recordToolEvent, finishRunEvents };
