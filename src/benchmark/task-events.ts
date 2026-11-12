@@ -131,6 +131,7 @@ export function parseTaskEvent(value: unknown): TaskEvent | undefined {
  */
 export class TaskEventLog {
   private readonly events: TaskEvent[] = [];
+  private droppedCount = 0;
 
   constructor(
     public readonly taskId: string,
@@ -144,6 +145,16 @@ export class TaskEventLog {
 
   get all(): readonly TaskEvent[] {
     return this.events;
+  }
+
+  /** Events instrumentation dropped because they could not be logged. Never throws. */
+  get dropped(): number {
+    return this.droppedCount;
+  }
+
+  /** Record one dropped event — the stream is incomplete; graders must fail closed. Never throws. */
+  noteDropped(): void {
+    this.droppedCount += 1;
   }
 
   append(input: TaskEventInput): TaskEvent {

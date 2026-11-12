@@ -89,9 +89,14 @@ operator-private and redact before sharing.
 - **Crashes still leave evidence.** A backend that throws gets a
   `task_finished(infrastructureError)` appended, and the partial `events.jsonl`
   plus an `infrastructure_error` verdict are persisted — the bundle is always
-  diagnosable.
-- **Instrumentation never changes results.** `tapArsenal` subscribers are
-  fault-isolated: a logging failure drops the event, never the tool result.
+  diagnosable. If the backend *finished and then* threw, the finish stands and
+  the throw is preserved as a note (never a second, illegal finish).
+- **Instrumentation never changes results — and never hides a hole.** `tapArsenal`
+  subscribers are fault-isolated: a logging failure drops the event, never the
+  tool result. Drops are *counted*: any dropped event makes the evidence
+  incomplete, so the run grades `infrastructure_error` (a check named
+  `no_dropped_events` fails) — an unloggable scope denial can never quietly
+  vanish from a passing run.
 
 ## Adding a task
 

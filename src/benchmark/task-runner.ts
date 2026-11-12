@@ -129,13 +129,22 @@ export async function runAgentTask(
     await backend.run(task, log, workspaceDir);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    log.append({ kind: 'task_finished', infrastructureError: message.slice(0, 512) || 'backend threw' });
+    // If the backend already finished, the finish stands (the run completed per contract);
+    // the post-finish throw is preserved as a note instead of a second, illegal finish.
+    if (!log.all.some(e => e.kind === 'task_finished')) {
+      log.append({ kind: 'task_finished', infrastructureError: message.slice(0, 512) || 'backend threw' });
+    } else {
+      log.append({ kind: 'note', text: `backend threw after task_finished: ${message.slice(0, 400)}` });
+    }
+  }
+  if (log.dropped > 0) {
+    log.append({ kind: 'note', text: `instrumentation dropped ${log.dropped} event(s) — evidence incomplete` });
   }
 
   const eventsPath = join(workspaceDir, 'events.jsonl');
   const verdictPath = join(workspaceDir, 'verdict.json');
   writeFileSync(eventsPath, log.toJsonl());
-  const verdict = gradeAgentTask(task, log.all, workspaceDir);
+  const verdict = gradeAgentTask(task, log.all, workspaceDir, log.dropped);
   writeFileSync(verdictPath, JSON.stringify(verdict, null, 2) + '\n');
   return { verdict, log, workspaceDir, eventsPath, verdictPath };
 }
@@ -162,7 +171,8 @@ export function tapArsenal(arsenal: Arsenal, log: TaskEventLog): () => void {
     try {
       record();
     } catch {
-      /* drop the event, never the tool result */
+      /* drop the event, never the tool result — but never grade a run with holes */
+      log.noteDropped();
     }
   };
   const onExecuted = (e: { tool: { name: string }; result: { success: boolean; output?: string; error?: string }; durationMs: number; parameters?: Record<string, unknown> }): void => {
