@@ -48,4 +48,13 @@ is negative unless hop 1 emits genuine CRLF into a two-token line (`8d5ff1f2` as
 - `row.py` - the driver (one run folder, all its cells).
 - `harness.py` - peer, proxy, framing parser, config renderer.
 - `poc_r15_E_chain.py` - shim for the lane-E two-hop chain cell.
-- `ev_*.py`, `cspace.py` - the original per-lane probes these cells were distilled from.
+- `ev_*.py`, `cspace.py` - the original per-lane probes these cells were distilled from. These are
+  provenance, not the graded PoC: they take a binary and ports directly and print observations, so use
+  `row.py` when you want the pass/fail verdict. Two take a docroot or a writable `cfgs/` dir:
+
+  ```
+  # lane R (1xx): binary, listen port, upstream port, tag, config dialect
+  python3 ev_r11_R_exp100.py <bin> 18081 18082 mytag flat
+  # lane A (framing): binary, docroot holding hello.txt/ten.txt/big.txt
+  python3 ev_r6_A_frame.py <bin> /tmp/docroot
+  ```
