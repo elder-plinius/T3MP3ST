@@ -63,7 +63,7 @@ describe('API key environment handling hardening', () => {
   it('exportConfig redacts every supported provider key slot', () => {
     const block = exportConfigBlock();
 
-    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'deepseek', 'huggingface', 'nanogpt', 'novita', 'litellm']) {
+    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'deepseek', 'huggingface', 'nanogpt', 'novita', 'abliteratedllm', 'litellm']) {
       expect(block).toContain(`${provider}: settings.apiKeys.${provider} ? '***REDACTED***' : undefined`);
     }
   });
@@ -79,6 +79,10 @@ describe('API key environment handling hardening', () => {
     expect(setupSource).toContain("setApiKey('nanogpt', apiKey)");
     expect(uiSource).toContain('<option value="nanogpt">NanoGPT · OpenAI-compatible</option>');
     expect(uiSource).toContain("nanogpt: 'https://nano-gpt.com/api/v1'");
+  });
+
+  it('strips the AbliteratedLLM key before spawning local agent CLIs', () => {
+    expect(localAgentsSource).toContain("'ABLITERATEDLLM_API_KEY'");
   });
 
   it('ConfigManager uses env keys in-memory and does not persist imported env keys', () => {

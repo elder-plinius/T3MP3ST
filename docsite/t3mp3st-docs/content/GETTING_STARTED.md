@@ -56,6 +56,7 @@ export ANTHROPIC_API_KEY=...
 export OPENAI_API_KEY=...
 export DEEPSEEK_API_KEY=...
 export NOVITA_API_KEY=...         # third-party hosted OpenAI-compatible API
+export ABLITERATEDLLM_API_KEY=... # third-party hosted OpenAI-compatible API
 export LITELLM_BASE_URL=http://localhost:4000/v1
 export LITELLM_API_KEY=...        # only if your LiteLLM proxy requires one
 ```
@@ -65,6 +66,18 @@ request metadata needed to serve the request. For Novita, review the current
 [privacy policy](https://novita.ai/legal/privacy-policy) and
 [terms](https://novita.ai/legal/terms-of-service) before sending sensitive
 target data; T3MP3ST does not independently certify it for sensitive workloads.
+
+For AbliteratedLLM, the default model is `glm-5.3-cyber-abliterated` (GLM-5.3
+with refusals removed by a weight edit aimed at cybersecurity work);
+`glm-5.3-flash-abliterated` is the lower-cost option for lower-stakes agent
+roles. Requests go to AbliteratedLLM's API, which runs these models on
+dedicated GPUs operated by Fireworks AI. Its current
+[privacy policy](https://abliteratedllm.dev/privacy) states that
+prompts and outputs are not written to its database, logs or disk, except in
+sealed incident records, and that per-request metadata is kept for 30 days;
+review it and the [terms](https://abliteratedllm.dev/terms) before sending
+sensitive target data. T3MP3ST does not independently certify it for sensitive
+workloads.
 
 Local/offline example with Ollama:
 
