@@ -382,6 +382,54 @@ async function setupNovitaKey(): Promise<boolean> {
   }
 }
 
+async function setupAbliteratedLLMKey(): Promise<boolean> {
+  console.log('');
+  showInfo('AbliteratedLLM provides an OpenAI-compatible API serving abliterated open-weight models.');
+  showInfo('Prompts and outputs are sent to its hosted API. Privacy policy: ' + chalk.underline('https://abliteratedllm.dev/privacy'));
+  showInfo('Docs: ' + chalk.underline('https://abliteratedllm.dev/docs'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your AbliteratedLLM API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'abliteratedllm',
+      model: 'glm-5.3-cyber-abliterated',
+      baseUrl: 'https://api.abliteratedllm.dev/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('abliteratedllm', apiKey);
+    showSuccess('AbliteratedLLM API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 async function setupOpenAIKey(): Promise<boolean> {
   console.log('');
   showInfo('OpenAI provides access to GPT models.');
@@ -679,6 +727,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'novita',
         },
         {
+          name: `AbliteratedLLM ${hasApiKey('abliteratedllm') ? chalk.green('(configured)') : chalk.gray('(direct OpenAI-compatible API)')}`,
+          value: 'abliteratedllm',
+        },
+        {
           name: `LiteLLM Proxy ${config.hasLiteLLMProxy() ? chalk.green('(configured)') : chalk.gray('(100+ providers via gateway)')}`,
           value: 'litellm',
         },
@@ -712,6 +764,9 @@ async function setupApiKeys(): Promise<void> {
       case 'novita':
         await setupNovitaKey();
         break;
+      case 'abliteratedllm':
+        await setupAbliteratedLLMKey();
+        break;
       case 'litellm':
         await setupLiteLLMProxy();
         break;
@@ -731,6 +786,7 @@ async function setupProvider(): Promise<void> {
   if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
   if (hasApiKey('nanogpt')) configuredProviders.push({ name: 'NanoGPT', value: 'nanogpt' });
   if (hasApiKey('novita')) configuredProviders.push({ name: 'Novita AI', value: 'novita' });
+  if (hasApiKey('abliteratedllm')) configuredProviders.push({ name: 'AbliteratedLLM', value: 'abliteratedllm' });
   if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   const { provider } = await inquirer.prompt([
