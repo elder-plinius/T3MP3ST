@@ -76,6 +76,7 @@ Prefer to bring a key? Set one and skip the connect step:
 export OPENROUTER_API_KEY=...     # or VENICE_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
 export XAI_API_KEY=...            # Grok Build (grok-build-0.1) — xAI's coding model, native tool-calling
 export NOVITA_API_KEY=...         # Novita AI's hosted OpenAI-compatible API
+export ABLITERATEDLLM_API_KEY=... # AbliteratedLLM's hosted OpenAI-compatible API
 ```
 
 Novita AI is an opt-in third-party hosted provider. Requests send the selected
@@ -83,6 +84,17 @@ model id, prompts/context, generated output, and request metadata to Novita;
 your API key authenticates those requests. Review Novita's current
 [privacy policy](https://novita.ai/legal/privacy-policy) and
 [terms](https://novita.ai/legal/terms-of-service) before using sensitive target
+data. T3MP3ST does not claim independent assurance for sensitive workloads.
+
+AbliteratedLLM is an opt-in third-party hosted provider (default model
+`glm-5.3-cyber-abliterated`; `glm-5.3-flash-abliterated` costs less). Requests
+send the selected model id, prompts/context, generated output, and request
+metadata to AbliteratedLLM's API, which runs its abliterated models on dedicated
+GPUs operated by Fireworks AI; your API key authenticates those requests. Its
+[privacy policy](https://abliteratedllm.dev/privacy) states that prompts and
+outputs are not written to its database, logs or disk, except in sealed
+incident records, and that per-request metadata is kept for 30 days. Review it
+and the [terms](https://abliteratedllm.dev/terms) before using sensitive target
 data. T3MP3ST does not claim independent assurance for sensitive workloads.
 
 Slow local agents can be given more room with `T3MP3ST_LOCAL_AGENT_TIMEOUT_MS`

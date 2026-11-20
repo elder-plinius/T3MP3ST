@@ -73,6 +73,20 @@ describe('listProviderModels — OpenAI-compatible providers', () => {
     expect((init as { headers: Record<string, string> }).headers.Authorization)
       .toBe('Bearer sk_novita-test-key');
   });
+
+  it('uses AbliteratedLLM canonical /v1/models with Bearer authentication', async () => {
+    const f = fakeFetch({ data: [{ id: 'glm-5.3-cyber-abliterated' }, { id: 'glm-5.3-flash-abliterated' }] });
+    const models = await listProviderModels('abliteratedllm', {
+      baseUrl: 'https://api.abliteratedllm.dev/v1',
+      apiKey: 'abliteratedllm-test-key',
+      fetchImpl: f,
+    });
+
+    expect(models.map((m) => m.id)).toEqual(['glm-5.3-cyber-abliterated', 'glm-5.3-flash-abliterated']);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://api.abliteratedllm.dev/v1/models');
+    expect(init).toMatchObject({ headers: { Authorization: 'Bearer abliteratedllm-test-key' } });
+  });
 });
 
 describe('listProviderModels — Anthropic wire', () => {

@@ -11,7 +11,7 @@ import { isAbsolute, join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'abliteratedllm' | 'local';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -31,6 +31,7 @@ export interface TempestSettings {
     nanogpt?: string;
     litellm?: string;
     novita?: string;
+    abliteratedllm?: string;
     local?: string;
   };
 
@@ -102,6 +103,12 @@ export interface TempestSettings {
 
   // Novita AI — OpenAI-compatible API serving open-source and frontier models
   novita: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
+  // AbliteratedLLM — OpenAI-compatible API serving abliterated open-weight models
+  abliteratedllm: {
     baseUrl: string;
     defaultModel: string;
   };
@@ -213,6 +220,15 @@ const DEFAULT_SETTINGS: TempestSettings = {
   novita: {
     baseUrl: 'https://api.novita.ai/openai/v1',
     defaultModel: 'zai-org/glm-5.2',
+  },
+
+  // AbliteratedLLM's OpenAI-compatible surface. The OpenAIAdapter appends
+  // /chat/completions and provider-models appends /models. The default is GLM-5.3
+  // with refusals removed by a weight edit aimed at cybersecurity work;
+  // glm-5.3-flash-abliterated is the lower-cost option.
+  abliteratedllm: {
+    baseUrl: 'https://api.abliteratedllm.dev/v1',
+    defaultModel: 'glm-5.3-cyber-abliterated',
   },
 
   codex: {
@@ -659,6 +675,26 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
     },
   ],
+  // Ids and limits from GET https://api.abliteratedllm.dev/v1/models (2026-11-19).
+  abliteratedllm: [
+    {
+      id: 'glm-5.3-cyber-abliterated',
+      name: 'GLM-5.3 Cyber Abliterated (AbliteratedLLM)',
+      provider: 'AbliteratedLLM',
+      contextWindow: 1048576,
+      maxOutput: 131072,
+      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
+    },
+    {
+      // Lower-cost option for lower-stakes agent roles.
+      id: 'glm-5.3-flash-abliterated',
+      name: 'GLM-5.3 Flash Abliterated (AbliteratedLLM)',
+      provider: 'AbliteratedLLM',
+      contextWindow: 1048576,
+      maxOutput: 131072,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
@@ -768,7 +804,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'abliteratedllm', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -872,6 +908,7 @@ class ConfigManager {
       huggingface: 'HF_TOKEN',
       nanogpt: 'NANOGPT_API_KEY',
       novita: 'NOVITA_API_KEY',
+      abliteratedllm: 'ABLITERATEDLLM_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -942,6 +979,7 @@ class ConfigManager {
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
     if (this.hasApiKey('nanogpt')) providers.push('nanogpt');
     if (this.hasApiKey('novita')) providers.push('novita');
+    if (this.hasApiKey('abliteratedllm')) providers.push('abliteratedllm');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
@@ -1033,6 +1071,12 @@ class ConfigManager {
         baseUrl = this.config.get('novita').baseUrl;
         actualModel = model || this.config.get('novita').defaultModel;
         break;
+      case 'abliteratedllm':
+        // AbliteratedLLM's OpenAI-compatible surface.
+        apiKey = this.getApiKey('abliteratedllm');
+        baseUrl = this.config.get('abliteratedllm').baseUrl;
+        actualModel = model || this.config.get('abliteratedllm').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -1099,7 +1143,7 @@ class ConfigManager {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'abliteratedllm') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1120,6 +1164,7 @@ class ConfigManager {
     add('huggingface');
     add('nanogpt');
     add('novita');
+    add('abliteratedllm');
     return chain;
   }
 
@@ -1151,6 +1196,9 @@ class ConfigManager {
         break;
       case 'nanogpt':
         this.config.set('defaultModel', this.config.get('nanogpt').defaultModel);
+        break;
+      case 'abliteratedllm':
+        this.config.set('defaultModel', this.config.get('abliteratedllm').defaultModel);
         break;
       case 'xai':
         this.config.set('defaultModel', this.config.get('xai').defaultModel);
@@ -1195,6 +1243,9 @@ class ConfigManager {
         break;
       case 'nanogpt':
         this.config.set('nanogpt', { ...this.config.get('nanogpt'), defaultModel: model });
+        break;
+      case 'abliteratedllm':
+        this.config.set('abliteratedllm', { ...this.config.get('abliteratedllm'), defaultModel: model });
         break;
       case 'xai':
         this.config.set('xai', { ...this.config.get('xai'), defaultModel: model });
@@ -1248,6 +1299,7 @@ class ConfigManager {
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
         nanogpt: settings.apiKeys.nanogpt ? '***REDACTED***' : undefined,
         novita: settings.apiKeys.novita ? '***REDACTED***' : undefined,
+        abliteratedllm: settings.apiKeys.abliteratedllm ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1308,6 +1360,10 @@ NANOGPT_API_KEY=
 # Novita AI API Key (OpenAI-compatible API serving open-source and frontier models)
 # Get your key at: https://novita.ai/settings/key-management
 NOVITA_API_KEY=
+
+# AbliteratedLLM API Key (OpenAI-compatible API; default model glm-5.3-cyber-abliterated)
+# Docs: https://abliteratedllm.dev/docs
+ABLITERATEDLLM_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).
