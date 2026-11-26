@@ -48,7 +48,7 @@ import { resolveMissionLaunchConfig, resolveMissionStatus } from './mission/http
 import { getPayloadsForCve, CVE_PAYLOAD_CATALOG } from './tools/cve-payloads.js';
 import { runWoltlabChain, breakoutPayload } from './tools/cve-woltlab-rce.js';
 import { getMalwarePackages, getMalwarePackageForCve, t3kWebshellSource, fullShellSource } from './tools/cve-malware.js';
-import { solveFormatString, solveRsaWeak } from './tools/ctf-classics.js';
+import { solveFormatString, solveRsaWeak, rsaSubmitUrlFor } from './tools/ctf-classics.js';
 import { fireOomExhaust, runUafAttempt, php85ConsumerWindow } from './tools/php-src-oct26.js';
 import { INFRA_TOOLS, classifyTarget, domainInfraScan, ipInfraScan, circlHash } from './tools/osint-infra.js';
 import {
@@ -13455,24 +13455,7 @@ async function ctfRangeContainersFromDocker(): Promise<CtfRangeContainer[]> {
         'ps', '-a',
         '--format', '{{.Names}}\t{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'
       ], { timeout: 8000 });
-
-      const containers: CtfRangeContainer[] = [];
-      for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
-        const [name, service, state, status, ports] = line.split('\t');
-        const isCtf = String(name || '').startsWith('ctf_') || String(service || '').startsWith('ctf-');
-        const isPentAGI = String(name || '').includes('pentagi') || String(service || '').includes('pentagi');
-        if (!isCtf && !isPentAGI) continue;
-        if (CTF_NON_CHALLENGE_SERVICES.has(String(service || ''))) continue;
-        const hostPorts = [...String(ports || '').matchAll(/:(\d+)->/g)].map((m) => parseInt(m[1], 10));
-        containers.push({
-          name,
-          service: service || (isPentAGI ? (name.includes('pentagi-1') ? 'pentagi' : name) : name),
-          state,
-          health: /unhealthy/.test(status) ? 'unhealthy' : /healthy/.test(status) ? 'healthy' : 'none',
-          hostPorts,
-          reachable: false
-        });
-      }
+      const containers = ctfRangeContainersFromPs(stdout);
       ctfContainersCache = { at: Date.now(), list: containers };
       return containers;
     } catch (e) {
@@ -13481,14 +13464,95 @@ async function ctfRangeContainersFromDocker(): Promise<CtfRangeContainer[]> {
         console.warn('[ctf] docker ps failed twice, serving stale cache:', (e as Error).message?.slice(0, 300));
         return ctfContainersCache.list;
       }
-      // Docker down / pipe unavailable is an EXPECTED state (Docker Desktop not started yet),
-      // not a server error — degrade to an empty range instead of 500-ing the dashboard.
-      console.warn('[ctf] docker ps unavailable — serving empty range:', (e as Error).message?.slice(0, 200));
-      ctfContainersCache = { at: Date.now(), list: [] };
-      return [];
+      // No docker CLI here (this process may run INSIDE a container — ctf_t3mp3st has
+      // no docker binary) or Docker Desktop is down. Before degrading to an empty
+      // range, ask the daemon over its socket/pipe directly — the container API
+      // needs no CLI and answers the same question in the shape we parse below.
+      try {
+        const stdout = await dockerPsViaSocket();
+        const containers = ctfRangeContainersFromPs(stdout);
+        ctfContainersCache = { at: Date.now(), list: containers };
+        console.warn('[ctf] docker CLI unavailable — enumerated', containers.length, 'range container(s) via the docker socket');
+        return containers;
+      } catch (sockErr) {
+        console.warn('[ctf] docker ps unavailable — serving empty range:', (e as Error).message?.slice(0, 200), '| socket:', (sockErr as Error).message?.slice(0, 120));
+        ctfContainersCache = { at: Date.now(), list: [] };
+        return [];
+      }
     }
   }
   throw new Error('unreachable');
+}
+
+/** Parse the exact `docker ps` line format this module queries with. */
+function ctfRangeContainersFromPs(stdout: string): CtfRangeContainer[] {
+  const containers: CtfRangeContainer[] = [];
+  for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+    const [name, service, state, status, ports] = line.split('\t');
+    const isCtf = String(name || '').startsWith('ctf_') || String(service || '').startsWith('ctf-');
+    const isPentAGI = String(name || '').includes('pentagi') || String(service || '').includes('pentagi');
+    if (!isCtf && !isPentAGI) continue;
+    if (CTF_NON_CHALLENGE_SERVICES.has(String(service || ''))) continue;
+    const hostPorts = [...String(ports || '').matchAll(/:(\d+)->/g)].map((m) => parseInt(m[1], 10));
+    containers.push({
+      name,
+      service: service || (isPentAGI ? (name.includes('pentagi-1') ? 'pentagi' : name) : name),
+      state,
+      health: /unhealthy/.test(status) ? 'unhealthy' : /healthy/.test(status) ? 'healthy' : 'none',
+      hostPorts,
+      reachable: false
+    });
+  }
+  return containers;
+}
+
+/**
+ * `docker ps -a` equivalent over the docker engine API, with NO docker CLI.
+ * Speaks HTTP over the local daemon endpoint (npipe on Windows hosts, the
+ * unix socket inside Linux containers) and emits the same tab-separated shape
+ * `docker ps --format` produces, so ctfRangeContainersFromPs parses both.
+ */
+async function dockerPsViaSocket(): Promise<string> {
+  const candidates: Array<() => import('http').RequestOptions> = [];
+  if (process.platform === 'win32') {
+    candidates.push(() => ({ socketPath: '\\\\.\\pipe\\docker_engine', path: '/containers/json?all=1', method: 'GET' }));
+  } else {
+    for (const sock of ['/var/run/docker.sock', '/run/docker.sock']) {
+      candidates.push(() => ({ socketPath: sock, path: '/containers/json?all=1', method: 'GET' }));
+    }
+  }
+  const options = candidates.map((f) => f());
+  const http = await import('http');
+  const raw: string = await new Promise((resolve, reject) => {
+    let settled = false;
+    let lastErr: Error | null = null;
+    for (const opts of options) {
+      const req = http.request(opts, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          if (settled) return;
+          settled = true;
+          if ((res.statusCode || 500) >= 400) { reject(new Error(`daemon answered ${res.statusCode}`)); return; }
+          resolve(Buffer.concat(chunks).toString('utf8'));
+        });
+      });
+      req.on('error', (err) => { lastErr = err; });
+      req.end();
+      if (settled) break;
+    }
+    setTimeout(() => { if (!settled) reject(lastErr || new Error('all docker endpoints failed')); }, 5000);
+  });
+  const list = JSON.parse(raw) as Array<{
+    Names?: string[]; State?: string; Status?: string;
+    Labels?: Record<string, string>; Ports?: Array<{ PublicPort?: number; IP?: string }>;
+  }>;
+  return list.map((c) => {
+    const name = (c.Names?.[0] || '').replace(/^\//, '');
+    const service = c.Labels?.['com.docker.compose.service'] || '';
+    const ports = (c.Ports || []).filter((p) => p.PublicPort).map((p) => `0.0.0.0:${p.PublicPort}->${p.PublicPort}/tcp`).join(', ');
+    return [name, service, c.State || '', c.Status || '', ports].join('\t');
+  }).join('\n');
 }
 
 // GET /api/ctf/range/status — live container states for the ctf compose project,
@@ -13565,12 +13629,20 @@ app.post('/api/ctf/rsa/solve', async (req: Request, res: Response): Promise<void
     console.log(`[T3MP3ST][CTF] rsa-weak n=${n} → p=${solved.p} q=${solved.q} method=${solved.method} (${solved.ms}ms)`);
     let flag: string | null = null;
     let submitStatus: number | null = null;
-    if (solved.m !== undefined && typeof b.submitUrl === 'string' && b.submitUrl.trim()) {
-      const url = new URL(b.submitUrl.trim());
+    let submittedTo: string | null = null;
+    // Explicit submitUrl wins; otherwise derive it from the challenge URL rather
+    // than making the caller guess (the lab's sibling path is /solve, and the
+    // obvious guess /submit 404s).
+    const submitTarget = typeof b.submitUrl === 'string' && b.submitUrl.trim()
+      ? b.submitUrl.trim()
+      : fetched ? rsaSubmitUrlFor(fetched) : '';
+    if (solved.m !== undefined && submitTarget) {
+      const url = new URL(submitTarget);
       if (!isPrivateCtfTarget(url.hostname)) {
         res.status(400).json({ success: false, error: `refused: ${url.hostname} is a public host — submitUrl is for the CTF range / lab targets only` });
         return;
       }
+      submittedTo = url.toString();
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8000);
       const sub = await fetch(url, {
@@ -13596,6 +13668,7 @@ app.post('/api/ctf/rsa/solve', async (req: Request, res: Response): Promise<void
       m: solved.m?.toString(),
       method: solved.method, ms: solved.ms,
       fetchedFrom: fetched,
+      submittedTo,
       flag,
       submitStatus,
       note: 'weak-prime construction — trial division (tiny p) or Fermat (p≈q). Never valid against properly generated moduli.',
@@ -13740,6 +13813,40 @@ function ctfTcpRoundtrip(port: number, data: string, maxMs = 6000): Promise<stri
   });
 }
 
+// Loopback first; when nothing answers there (this process runs INSIDE a
+// container), retry via the docker host gateway. Empty first answer loses.
+function ctfTcpRoundtripAnyHost(port: number, data: string, maxMs = 6000): Promise<string> {
+  return ctfTcpRoundtrip(port, data, maxMs).then((out) =>
+    out ? out : ctfTcpRoundtripHost(port, data, maxMs)
+  );
+}
+
+function ctfTcpRoundtripHost(port: number, data: string, maxMs = 6000): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    const sock = tcpConnect({ host: 'host.docker.internal', port });
+    const finish = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      clearTimeout(hardTimer);
+      sock.destroy();
+      resolve(Buffer.concat(chunks).toString('utf8').slice(0, 8192));
+    };
+    let quietTimer: NodeJS.Timeout | null = null;
+    const armQuiet = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, 1500);
+    };
+    const hardTimer = setTimeout(finish, maxMs);
+    sock.setTimeout(3000, () => {
+      if (!chunks.length) finish(); else armQuiet();
+    });
+    sock.once('connect', () => { sock.write(data); });
+    sock.on('data', (b: Buffer) => { chunks.push(b); armQuiet(); });
+    sock.once('close', finish);
+    sock.once('error', finish);
+  });
+}
+
 // POST /api/ctf/range/probe — one live interaction with a target, executed
 // server-side so the browser agent can drive the real containers:
 //   { kind:'http', method?, url, headers?, body? }  — HTTP request
@@ -13826,7 +13933,11 @@ app.post('/api/ctf/range/probe', async (req: Request, res: Response): Promise<vo
         res.status(403).json({ error: `port must be a running range port (allowed: ${[...allowed].sort((a, b) => a - b).join(', ')})` });
         return;
       }
-      const out = await ctfTcpRoundtrip(port, String(body.data ?? ''));
+      // This process may itself run INSIDE a container (ctf_t3mp3st): 127.0.0.1 is
+      // the container's own loopback and the challenge containers' published ports
+      // live on the HOST. Only fall back to host.docker.internal when loopback
+      // refuses — a challenge listening inside the same container network still wins.
+      const out = await ctfTcpRoundtripAnyHost(port, String(body.data ?? ''));
       res.json({ ok: true, kind: 'tcp', body: out });
       return;
     }

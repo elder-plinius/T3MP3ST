@@ -97,6 +97,22 @@ export interface RsaWeakSolve {
     ms: number;
 }
 
+/**
+ * Derive the answer-submission URL from a challenge-parameters URL.
+ *
+ * The training lab serves the parameters at `/challenge` and takes the answer
+ * at `/solve` on the SAME origin — but the two are not related by any rule a
+ * caller can infer (guessing `/submit` is the obvious wrong guess and 404s).
+ * So derive it here instead of making every caller rediscover it: sibling
+ * paths map to `/solve`, and anything else keeps its own directory. The
+ * challenge URL's query and hash are dropped — they belong to the GET.
+ */
+export function rsaSubmitUrlFor(challengeUrl: string): string {
+    const u = new URL(challengeUrl);
+    const base = u.pathname.replace(/\/[^/]*$/, '/');
+    return `${u.origin}${base}solve`;
+}
+
 /** Factor n and, when a ciphertext is given, decrypt it. */
 export function solveRsaWeak(n: bigint, e: bigint, c?: bigint): RsaWeakSolve {
     const started = Date.now();

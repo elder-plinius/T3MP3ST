@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     factorModulus, modInverse, powMod, solveRsaWeak,
-    parseLeak, findCounterArg, buildCounterWrite,
+    parseLeak, findCounterArg, buildCounterWrite, rsaSubmitUrlFor,
 } from '../tools/ctf-classics.js';
 
 // The live challenge values (ctf_rsa_weak /challenge — deterministic training values)
@@ -42,6 +42,25 @@ describe('RSA weak-prime solver (values captured live from ctf_rsa_weak)', () =>
 
     it('modInverse rejects non-coprime pairs instead of returning garbage', () => {
         expect(() => modInverse(4n, 8n)).toThrow(/no modular inverse/);
+    });
+});
+
+describe('rsaSubmitUrlFor — the submit endpoint is derived, not guessed', () => {
+    // The training lab serves parameters at /challenge and takes the answer at
+    // /solve on the same origin; /submit (the obvious guess) 404s.
+    it('maps the lab challenge path to its sibling /solve', () => {
+        expect(rsaSubmitUrlFor('http://127.0.0.1:9102/challenge'))
+            .toBe('http://127.0.0.1:9102/solve');
+    });
+
+    it('keeps a directory prefix and drops the query/hash, which belong to the GET', () => {
+        expect(rsaSubmitUrlFor('http://10.0.0.5:8080/rsa/challenge?x=1#frag'))
+            .toBe('http://10.0.0.5:8080/rsa/solve');
+    });
+
+    it('handles a root-level challenge path', () => {
+        expect(rsaSubmitUrlFor('http://localhost:9000/challenge'))
+            .toBe('http://localhost:9000/solve');
     });
 });
 
