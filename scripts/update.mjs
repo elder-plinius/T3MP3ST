@@ -16,10 +16,12 @@ const args = process.argv.slice(2);
 
 function commandExists(name) {
   if (platform() === 'win32') {
-    const result = spawnSync('where', [name], { shell: true, stdio: 'pipe' });
+    // where.exe is a real executable — no shell needed (args-array + shell:true is DEP0190 on Node 24).
+    const result = spawnSync('where.exe', [name], { stdio: 'pipe' });
     return result.status === 0;
   }
-  const result = spawnSync('command', ['-v', name], { shell: true, stdio: 'pipe' });
+  // `command` is a shell builtin, so a shell is required; positional "$1" keeps it injection-safe.
+  const result = spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { stdio: 'pipe' });
   return result.status === 0;
 }
 

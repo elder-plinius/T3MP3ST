@@ -11,7 +11,7 @@ import { isAbsolute, join } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { LLMProvider, LLMConfig, FallbackEntry, OpsecLevel } from '../types/index.js';
 
-type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'local';
+type ApiKeyProvider = 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'refuseless' | 'local' | 'ollama';
 
 // =============================================================================
 // CONFIGURATION SCHEMA
@@ -31,7 +31,9 @@ export interface TempestSettings {
     nanogpt?: string;
     litellm?: string;
     novita?: string;
+    refuseless?: string;
     local?: string;
+    ollama?: string;
   };
 
   // Default LLM settings
@@ -106,6 +108,13 @@ export interface TempestSettings {
     defaultModel: string;
   };
 
+  // Refuseless — OpenAI-compatible abliterated-model API (GLM / Qwen / DeepSeek
+  // abliterated builds, 1M context). Wire shape is plain OpenAI, keyed by bearer.
+  refuseless: {
+    baseUrl: string;
+    defaultModel: string;
+  };
+
   // Codex CLI/account subscription backend
   codex: {
     command: string;
@@ -144,18 +153,18 @@ const DEFAULT_SETTINGS: TempestSettings = {
   apiKeys: {},
 
   defaultProvider: 'openrouter',
-  defaultModel: 'anthropic/claude-opus-4.8',
+  defaultModel: 'z-ai/glm-5.3-flash',
 
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'anthropic/claude-opus-4.8',
+    defaultModel: 'z-ai/glm-5.3-flash',
     siteUrl: 'https://github.com/tempest',
     siteName: 'T3MP3ST',
   },
 
   venice: {
     baseUrl: 'https://api.venice.ai/api/v1',
-    defaultModel: 'llama-3.3-70b',
+    defaultModel: 'qwen-3-8-27b',
   },
 
   anthropic: {
@@ -183,7 +192,7 @@ const DEFAULT_SETTINGS: TempestSettings = {
   // requests hit /v1beta/chat/completions, which is not a valid Gemini endpoint.
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: 'gemini-3.1-pro-preview',
   },
 
   deepseek: {
@@ -194,11 +203,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
   // Hugging Face Inference Providers expose a unified OpenAI-compatible router at
   // /v1. The OpenAIAdapter posts to `${baseUrl}/chat/completions`, so the base URL
   // ends at /v1 → https://router.huggingface.co/v1/chat/completions. Model ids are
-  // the full HF repo id (e.g. meta-llama/Llama-3.3-70B-Instruct), optionally with a
+  // the full HF repo id (e.g. Qwen/Qwen3.8-27B), optionally with a
   // `:provider` suffix to pin a specific inference backend.
   huggingface: {
     baseUrl: 'https://router.huggingface.co/v1',
-    defaultModel: 'meta-llama/Llama-3.3-70B-Instruct',
+    defaultModel: 'Qwen/Qwen3.8-27B',
   },
 
   // NanoGPT's canonical OpenAI-compatible base. The OpenAIAdapter appends
@@ -215,6 +224,15 @@ const DEFAULT_SETTINGS: TempestSettings = {
     defaultModel: 'zai-org/glm-5.2',
   },
 
+  // Refuseless' OpenAI-compatible surface — the base ends at /v1 and the
+  // OpenAIAdapter appends /chat/completions (probed live 2026-10-31: an unkeyed
+  // request answers {"error":{"code":"invalid_key"}} in OpenAI shape, so the API
+  // itself sits in front of the Cloudflare wall the marketing pages have).
+  refuseless: {
+    baseUrl: 'https://refuseless.com/v1',
+    defaultModel: 'glm-5.3-abliterated',
+  },
+
   codex: {
     command: 'codex',
     defaultModel: 'codex-default',
@@ -222,7 +240,11 @@ const DEFAULT_SETTINGS: TempestSettings = {
 
   maxTokens: 4096,
   temperature: 0.7,
-  timeout: 60000,
+  // Hard total cap for NON-streamed completions. Frontier models routed via
+  // OpenRouter routinely need >60s (and sometimes >120s) for a single agent
+  // turn — a 60s cap aborted legitimately-working requests, which surfaced to
+  // the operator as "internal processing timeout" during recon.
+  timeout: 300000,
 
   opsec: {
     level: 'covert',
@@ -279,167 +301,380 @@ export interface ModelInfo {
 export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   venice: [
     {
-      id: 'llama-3.3-70b',
-      name: 'Llama 3.3 70B (Venice)',
+      id: 'qwen-3-8-27b',
+      name: 'Qwen 3.8 27B (Venice)',
       provider: 'Venice',
       contextWindow: 65536,
       maxOutput: 8192,
       capabilities: ['reasoning', 'code', 'analysis', 'uncensored', 'tools'],
     },
     {
-      id: 'venice-uncensored',
-      name: 'Venice Uncensored',
+      // NOTE: the bare id `venice-uncensored` was here for months and is NOT a real Venice model
+      // tag — the live catalog serves `venice-uncensored-1-2` and `venice-uncensored-role-play`.
+      // A retired id in the static list is worse than a missing one: it is offered as a choice
+      // and then fails at call time. These ids are verified against a live /models response.
+      id: 'venice-uncensored-1-2',
+      name: 'Venice Uncensored 1.2',
       provider: 'Venice',
-      contextWindow: 32768,
+      contextWindow: 128000,
       maxOutput: 8192,
       capabilities: ['reasoning', 'uncensored'],
+    },
+    {
+      id: 'venice-uncensored-role-play',
+      name: 'Venice Uncensored (Role-Play)',
+      provider: 'Venice',
+      contextWindow: 128000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'uncensored'],
+    },
+    {
+      // Known limitation, documented rather than hidden: this tag accepts a `tools` array but
+      // answers in prose with an EMPTY tool_calls array despite the catalog claiming
+      // function-calling — it is chat-only. For agentic work use e2ee-glm-5-3-flash below.
+      id: 'e2ee-glm-5-3-flash',
+      name: 'E2EE GLM 5.3 Flash (1M · tool-calling)',
+      provider: 'Venice',
+      contextWindow: 1000000,
+      maxOutput: 32000,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
     },
   ],
 
   openrouter: [
-    // Anthropic (Feb 2026)
+    // ═══ CHINA — prioritized ═══
     {
-      id: 'anthropic/claude-opus-4.8',
-      name: 'Claude Opus 4.8',
-      provider: 'Anthropic',
-      contextWindow: 200000,
+      id: "z-ai/glm-5.3-flash",
+      name: "GLM 5.3 Flash",
+      provider: "Z.AI",
+      contextWindow: 203000,
       maxOutput: 32000,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'complex-tasks', 'agents', 'tools'],
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools", "fast"],
     },
     {
-      id: 'anthropic/claude-sonnet-4.5',
-      name: 'Claude Sonnet 4.5',
-      provider: 'Anthropic',
-      contextWindow: 200000,
+      id: "z-ai/glm-5.3",
+      name: "GLM 5.3",
+      provider: "Z.AI",
+      contextWindow: 203000,
+      maxOutput: 32000,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "deepseek/deepseek-v4-pro",
+      name: "DeepSeek V4 Pro",
+      provider: "DeepSeek",
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ["reasoning", "code", "analysis", "complex-tasks", "agents", "tools"],
+    },
+    {
+      id: "deepseek/deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
+      provider: "DeepSeek",
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ["reasoning", "code", "analysis", "tools"],
+    },
+    {
+      id: "qwen/qwen3.8-max",
+      name: "Qwen3.8 Max",
+      provider: "Alibaba Qwen",
+      contextWindow: 262144,
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "qwen/qwen3.8-flash",
+      name: "Qwen3.8 Flash",
+      provider: "Alibaba Qwen",
+      contextWindow: 262144,
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "fast", "tools"],
+    },
+    {
+      id: "moonshotai/kimi-k3",
+      name: "Kimi K3",
+      provider: "Moonshot",
+      contextWindow: 262144,
       maxOutput: 16384,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'agents', 'tools'],
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
     },
     {
-      id: 'anthropic/claude-haiku-4.5',
-      name: 'Claude Haiku 4.5',
-      provider: 'Anthropic',
-      contextWindow: 200000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'fast', 'tools'],
-    },
-    {
-      id: 'anthropic/claude-sonnet-4',
-      name: 'Claude Sonnet 4',
-      provider: 'Anthropic',
-      contextWindow: 200000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    // OpenAI
-    {
-      id: 'openai/gpt-4o',
-      name: 'GPT-4o',
-      provider: 'OpenAI',
-      contextWindow: 128000,
-      maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast'],
-    },
-    {
-      id: 'openai/o1',
-      name: 'o1',
-      provider: 'OpenAI',
-      contextWindow: 200000,
-      maxOutput: 100000,
-      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks'],
-    },
-    // Google (Dec 2025)
-    {
-      id: 'google/gemini-3.1-pro-preview',
-      name: 'Gemini 3 Pro',
-      provider: 'Google',
+      id: "minimax/minimax-m3",
+      name: "MiniMax M3",
+      provider: "MiniMax",
       contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'multimodal'],
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
     },
     {
-      id: 'google/gemini-3-flash-preview',
-      name: 'Gemini 3 Flash',
-      provider: 'Google',
-      contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast'],
+      id: "tencent/hy4-preview",
+      name: "Hunyuan 4",
+      provider: "Tencent",
+      contextWindow: 262144,
+      maxOutput: 16384,
+      capabilities: ["reasoning", "code", "analysis", "tools"],
     },
     {
-      id: 'google/gemini-2.5-flash',
-      name: 'Gemini 2.5 Flash',
-      provider: 'Google',
-      contextWindow: 1000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    // xAI (Dec 2025)
-    {
-      id: 'x-ai/grok-4',
-      name: 'Grok 4',
-      provider: 'xAI',
-      contextWindow: 256000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision'],
-    },
-    {
-      id: 'x-ai/grok-4-fast',
-      name: 'Grok 4 Fast',
-      provider: 'xAI',
-      contextWindow: 2000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'fast'],
-    },
-    {
-      id: 'x-ai/grok-4.1-fast',
-      name: 'Grok 4.1 Fast',
-      provider: 'xAI',
-      contextWindow: 2000000,
-      maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
-    },
-    // Z.AI (Dec 2025)
-    {
-      id: 'z-ai/glm-4.7',
-      name: 'GLM 4.7',
-      provider: 'Z.AI',
+      id: "z-ai/glm-4.7",
+      name: "GLM 4.7",
+      provider: "Z.AI",
       contextWindow: 203000,
       maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'agents'],
+      capabilities: ["reasoning", "code", "analysis", "agents"],
     },
-    // Meta
+    // ═══ FREE — no cost via OpenRouter (China first) ═══
     {
-      id: 'meta-llama/llama-3.3-70b',
-      name: 'Llama 3.3 70B',
-      provider: 'Meta',
+      id: "z-ai/glm-5.2:free",
+      name: "GLM 5.2 · Free",
+      provider: "Z.AI",
+      contextWindow: 203000,
+      maxOutput: 32000,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools", "free"],
+    },
+    {
+      id: "minimax/minimax-m3:free",
+      name: "MiniMax M3 · Free",
+      provider: "MiniMax",
+      contextWindow: 1000000,
+      maxOutput: 32768,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools", "free"],
+    },
+    {
+      id: "inclusionai/ling-3.0-flash-fin:free",
+      name: "Ling 3.0 Flash · Free",
+      provider: "InclusionAI",
       contextWindow: 131072,
-      maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'analysis'],
-    },
-    // DeepSeek (Jul 2026 — V4)
-    {
-      id: 'deepseek/deepseek-v4-pro',
-      name: 'DeepSeek V4 Pro',
-      provider: 'DeepSeek',
-      contextWindow: 1000000,
-      maxOutput: 384000,
-      capabilities: ['reasoning', 'code', 'analysis', 'complex-tasks', 'agents', 'tools'],
+      maxOutput: 16384,
+      capabilities: ["reasoning", "code", "analysis", "fast", "free"],
     },
     {
-      id: 'deepseek/deepseek-v4-flash',
-      name: 'DeepSeek V4 Flash',
-      provider: 'DeepSeek',
-      contextWindow: 1000000,
-      maxOutput: 384000,
-      capabilities: ['reasoning', 'code', 'analysis', 'tools'],
+      id: "google/gemma-4-31b-it:free",
+      name: "Gemma 4 31B · Free",
+      provider: "Google",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "free"],
     },
-    // Mistral
     {
-      id: 'mistralai/mistral-large',
-      name: 'Mistral Large',
-      provider: 'Mistral',
+      id: "nvidia/nemotron-3-super-120b-a12b:free",
+      name: "Nemotron 3 Super · Free",
+      provider: "NVIDIA",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "free"],
+    },
+    // ═══ USA ═══
+    {
+      id: "anthropic/claude-opus-4.8",
+      name: "Claude Opus 4.8",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 32000,
+      capabilities: ["reasoning", "code", "analysis", "vision", "complex-tasks", "agents", "tools"],
+    },
+    {
+      id: "anthropic/claude-sonnet-4.5",
+      name: "Claude Sonnet 4.5",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 16384,
+      capabilities: ["reasoning", "code", "analysis", "vision", "agents", "tools"],
+    },
+    {
+      id: "anthropic/claude-haiku-4.5",
+      name: "Claude Haiku 4.5",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "fast", "tools"],
+    },
+    {
+      id: "anthropic/claude-sonnet-4",
+      name: "Claude Sonnet 4",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "openai/gpt-4o",
+      name: "GPT-4o",
+      provider: "OpenAI",
       contextWindow: 128000,
       maxOutput: 4096,
-      capabilities: ['reasoning', 'code', 'analysis'],
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
+    },
+    {
+      id: "openai/o1",
+      name: "o1",
+      provider: "OpenAI",
+      contextWindow: 200000,
+      maxOutput: 100000,
+      capabilities: ["reasoning", "code", "analysis", "complex-tasks"],
+    },
+    {
+      id: "google/gemini-3.1-pro-preview",
+      name: "Gemini 3 Pro",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "multimodal"],
+    },
+    {
+      id: "google/gemini-3-flash-preview",
+      name: "Gemini 3 Flash",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
+    },
+    {
+      id: "google/gemini-2.5-flash",
+      name: "Gemini 2.5 Flash",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "x-ai/grok-4.3",
+      name: "Grok 4.3",
+      provider: "xAI",
+      contextWindow: 256000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "x-ai/grok-4.7",
+      name: "Grok 4.7",
+      provider: "xAI",
+      contextWindow: 256000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "qwen/qwen3.8-27b",
+      name: "Qwen 3.8 27B",
+      provider: "Meta",
+      contextWindow: 131072,
+      maxOutput: 4096,
+      capabilities: ["reasoning", "code", "analysis"],
+    },
+    // ═══ EUROPE / OTHER ═══
+    {
+      id: "mistralai/mistral-large",
+      name: "Mistral Large",
+      provider: "Mistral",
+      contextWindow: 128000,
+      maxOutput: 4096,
+      capabilities: ["reasoning", "code", "analysis"],
+    },
+    // ═══ VISION — extra OpenRouter vision models for Geospy — ids verified against the LIVE OpenRouter catalog 2026-10-29 (grok-4/4.1, qwen-2-vl, llama-3.2-vision, pixtral, claude-3.5, gemini-2.0 all dead) ═══
+    // Hermes on OpenRouter is TEXT-ONLY (input_modalities:["text"] — measured) — no vision tag so it never lands in the Geospy vision selector; local Hermes rides the Ollama branch
+    {
+      id: "nousresearch/hermes-3-llama-3.1-405b",
+      name: "Hermes 3 405B (Nous, text-only)",
+      provider: "NousResearch",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "nousresearch/hermes-4-405b",
+      name: "Hermes 4 405B (Nous, text-only)",
+      provider: "NousResearch",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "agents", "tools"],
+    },
+    {
+      id: "x-ai/grok-4.3",
+      name: "Grok 4.3",
+      provider: "xAI",
+      contextWindow: 256000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "qwen/qwen3-vl-235b-a22b-instruct",
+      name: "Qwen3 VL 235B",
+      provider: "Alibaba Qwen",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "vision", "multimodal"],
+    },
+    {
+      id: "qwen/qwen2.5-vl-72b-instruct",
+      name: "Qwen2.5 VL 72B",
+      provider: "Alibaba Qwen",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "vision", "multimodal"],
+    },
+    {
+      id: "meta-llama/llama-4-maverick",
+      name: "Llama 4 Maverick (vision)",
+      provider: "Meta",
+      contextWindow: 1048576,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "vision", "multimodal"],
+    },
+    {
+      id: "meta-llama/llama-4-scout",
+      name: "Llama 4 Scout (vision)",
+      provider: "Meta",
+      contextWindow: 327680,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "vision", "multimodal"],
+    },
+    {
+      id: "mistralai/mistral-medium-3.5",
+      name: "Mistral Medium 3.5 (vision)",
+      provider: "Mistral",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "vision", "multimodal"],
+    },
+    {
+      id: "nvidia/nemotron-3.5-super-vl:free",
+      name: "Nemotron 3.5 Super VL (FREE vision)",
+      provider: "NVIDIA",
+      contextWindow: 131072,
+      maxOutput: 8192,
+      capabilities: ["vision", "multimodal", "free"],
+    },
+    {
+      id: "openai/gpt-4o",
+      name: "GPT-4o (vision)",
+      provider: "OpenAI",
+      contextWindow: 128000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision"],
+    },
+    {
+      id: "openai/gpt-4o-mini",
+      name: "GPT-4o mini (vision)",
+      provider: "OpenAI",
+      contextWindow: 128000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
+    },
+    {
+      id: "google/gemini-2.5-flash",
+      name: "Gemini 2.5 Flash",
+      provider: "Google",
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
+    },
+    {
+      id: "anthropic/claude-haiku-5.5",
+      name: "Claude Haiku 5.5 (vision)",
+      provider: "Anthropic",
+      contextWindow: 200000,
+      maxOutput: 8192,
+      capabilities: ["reasoning", "code", "analysis", "vision", "fast"],
     },
   ],
   anthropic: [
@@ -549,12 +784,20 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   // Distinct from the `google/gemini-*` ids under `openrouter`, which route through OpenRouter.
   gemini: [
     {
-      id: 'gemini-2.5-flash',
-      name: 'Gemini 2.5 Flash (native)',
+      id: 'gemini-3.1-pro-preview',
+      name: 'Gemini 3.1 Pro (native · highest accuracy)',
+      provider: 'Google',
+      contextWindow: 1000000,
+      maxOutput: 32768,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'multimodal', 'tools', 'grounding', 'thinking'],
+    },
+    {
+      id: 'gemini-3-flash-preview',
+      name: 'Gemini 3 Flash (native · fast)',
       provider: 'Google',
       contextWindow: 1000000,
       maxOutput: 8192,
-      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast', 'tools'],
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast', 'tools', 'grounding'],
     },
     {
       id: 'gemini-2.5-pro',
@@ -563,6 +806,14 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       contextWindow: 1000000,
       maxOutput: 8192,
       capabilities: ['reasoning', 'code', 'analysis', 'vision', 'multimodal', 'tools'],
+    },
+    {
+      id: 'gemini-2.5-flash',
+      name: 'Gemini 2.5 Flash (native)',
+      provider: 'Google',
+      contextWindow: 1000000,
+      maxOutput: 8192,
+      capabilities: ['reasoning', 'code', 'analysis', 'vision', 'fast', 'tools'],
     },
     {
       id: 'gemini-2.0-flash',
@@ -596,8 +847,8 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
   // are just curated, tool-capable defaults.
   huggingface: [
     {
-      id: 'meta-llama/Llama-3.3-70B-Instruct',
-      name: 'Llama 3.3 70B Instruct (Hugging Face)',
+      id: 'Qwen/Qwen3.8-27B',
+      name: 'Qwen 3.8 27B (Hugging Face)',
       provider: 'HuggingFace',
       contextWindow: 131072,
       maxOutput: 8192,
@@ -659,11 +910,51 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
       capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools'],
     },
   ],
+  // Refuseless serves abliterated builds of these open models. The ids are the ones its own
+  // toolkit documents (glm-5.3-abliterated / qwen3.8-flash-next-abliterated /
+  // deepseek-v4.1-flash-abliterated); "Fetch models" replaces this list with the live catalog,
+  // so a renamed tag here degrades to a visible fetch, not a silent dead choice.
+  refuseless: [
+    {
+      id: 'glm-5.3-abliterated',
+      name: 'GLM 5.3 Abliterated (Refuseless)',
+      provider: 'Refuseless',
+      contextWindow: 1000000,
+      maxOutput: 32000,
+      capabilities: ['reasoning', 'code', 'analysis', 'agents', 'tools', 'uncensored'],
+    },
+    {
+      id: 'qwen3.8-flash-next-abliterated',
+      name: 'Qwen 3.8 Flash Next Abliterated (Refuseless)',
+      provider: 'Refuseless',
+      contextWindow: 1000000,
+      maxOutput: 32000,
+      capabilities: ['reasoning', 'code', 'analysis', 'fast', 'tools', 'uncensored'],
+    },
+    {
+      id: 'deepseek-v4.1-flash-abliterated',
+      name: 'DeepSeek V4.1 Flash Abliterated (Refuseless)',
+      provider: 'Refuseless',
+      contextWindow: 1000000,
+      maxOutput: 384000,
+      capabilities: ['reasoning', 'code', 'analysis', 'tools', 'uncensored'],
+    },
+  ],
   local: [
     {
       id: 'local-model',
       name: 'Local model (Ollama / LM Studio / vLLM — set TEMPEST_LOCAL_MODEL)',
       provider: 'Local',
+      contextWindow: 32000,
+      maxOutput: 4096,
+      capabilities: ['reasoning', 'code', 'tools'],
+    },
+  ],
+  ollama: [
+    {
+      id: 'local/ollama',
+      name: 'Ollama model (served tag — set OLLAMA_MODEL, or pick from Fetch models)',
+      provider: 'Ollama',
       contextWindow: 32000,
       maxOutput: 4096,
       capabilities: ['reasoning', 'code', 'tools'],
@@ -719,20 +1010,57 @@ export const AVAILABLE_MODELS: Record<LLMProvider, ModelInfo[]> = {
 // CONFIGURATION MANAGER
 // =============================================================================
 
+// =============================================================================
+// EXPLICIT CONFIGURATION DIRECTORY
+// =============================================================================
+// T3MP3ST_CONFIG_DIR pins every piece of on-disk state — the Conf store and the
+// .env it reads — to one absolute directory. This exists so an operator can run
+// several isolated instances (or a hardened throwaway profile) without one
+// reading another's keys, and WITHOUT the usual home-directory fallback that
+// would otherwise leak the operator's own ~/.t3mp3st/.env into the run.
+//
+// It is a hard isolation boundary, not a preference:
+//   • a relative path is rejected outright (it would resolve against whatever
+//     cwd a task happened to be running in — i.e. a hunt target);
+//   • the repo cwd .env, ~/.t3mp3st/.env and ~/.env are ALL skipped, so a
+//     pinned directory can never silently inherit the operator's real keys;
+//   • only real process env vars and the pinned directory's own .env are read.
+export function resolveConfigDir(): string | undefined {
+  const raw = (process.env.T3MP3ST_CONFIG_DIR || '').trim();
+  if (!raw) return undefined;
+  if (!isAbsolute(raw)) {
+    // Fail loudly and early: a silently-relativised path is a security bug,
+    // not a convenience.
+    throw new Error(
+      `T3MP3ST_CONFIG_DIR must be an absolute path (got "${raw}"). ` +
+      `A relative path would resolve against whatever directory a task runs in — including a hunt target.`,
+    );
+  }
+  return raw;
+}
+
+/** True when the operator pinned an explicit config directory. */
+export function hasExplicitConfigDir(): boolean {
+  return Boolean((process.env.T3MP3ST_CONFIG_DIR || '').trim());
+}
+
 class ConfigManager {
   private config: Conf<TempestSettings>;
   private envLoaded: boolean = false;
-  private configDirectory: string | undefined;
+  /** Set once in the constructor — see T3MP3ST_CONFIG_DIR above. */
+  private readonly explicitDir?: string;
 
   constructor() {
-    this.configDirectory = process.env.T3MP3ST_CONFIG_DIR;
-    if (this.configDirectory !== undefined && !isAbsolute(this.configDirectory)) {
-      throw new Error('T3MP3ST_CONFIG_DIR must be an absolute path');
-    }
+    // Read BEFORE the store is constructed: an invalid path must fail here,
+    // not on the first getApiKey() call deep inside a mission.
+    this.explicitDir = resolveConfigDir();
+
     this.config = new Conf<TempestSettings>({
       projectName: 't3mp3st',
+      // With a pinned directory, `cwd` makes Conf write config.json exactly
+      // there instead of under the OS config dir.
+      ...(this.explicitDir ? { cwd: this.explicitDir } : {}),
       defaults: DEFAULT_SETTINGS,
-      ...(this.configDirectory ? { cwd: this.configDirectory } : {}),
     });
 
     const deepseek = this.config.get('deepseek');
@@ -753,13 +1081,38 @@ class ConfigManager {
   private loadEnvVariables(): void {
     if (this.envLoaded) return;
 
-    // Load only T3MP3ST-owned/home env files. Do NOT read process.cwd()/.env:
-    // operators often run T3MP3ST inside target repos, and importing that repo's
-    // secrets would contaminate this process with unrelated credentials.
-    const envPaths = this.configDirectory ? [join(this.configDirectory, '.env')] : [
-      join(homedir(), '.t3mp3st', '.env'),
-      join(homedir(), '.env'),
-    ];
+    // Load T3MP3ST-owned env files. In dev the repo's .env is the file the
+    // Settings page writes (so a just-saved key is visible without chasing
+    // homedir). In prod / installed use, the homedir file wins — same
+    // locations the Settings→.env bridge writes to. Never read a target repo's
+    // .env when cwd is a hunt target; the guard is: repo .env only if CWD
+    // positively identifies as the T3MP3ST package checkout (package.json name === 't3mp3st').
+    //
+    // T3MP3ST_CONFIG_DIR short-circuits ALL of that: a pinned directory reads
+    // its own .env and nothing else — no repo cwd file, no ~/.t3mp3st/.env, no
+    // ~/.env. That is the whole point of the override.
+    const repoEnv = join(process.cwd(), '.env');
+    const homedirEnv = join(homedir(), '.t3mp3st', '.env');
+    const homeEnv = join(homedir(), '.env');
+    // Order: repo .env first in dev (authoritative for Settings), then
+    // homedir fallbacks. Real env vars still win (process.env[key]===undefined gate).
+    const envPaths: string[] = [];
+    if (this.explicitDir) {
+      envPaths.push(join(this.explicitDir, '.env'));
+    } else {
+      try {
+        if (process.env.T3MP3ST_DEV === '1') {
+          envPaths.push(repoEnv);
+        } else {
+          const pkgPath = join(process.cwd(), 'package.json');
+          if (existsSync(pkgPath)) {
+            const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+            if (pkg?.name === 't3mp3st') envPaths.push(repoEnv);
+          }
+        }
+      } catch { /* ignore package.json read failure */ }
+      envPaths.push(homedirEnv, homeEnv);
+    }
 
     let envProvider: string | undefined;
 
@@ -768,7 +1121,7 @@ class ConfigManager {
         const envContent = readFileSync(envPath, 'utf-8');
         const lines = envContent.split('\n');
         // Validation variables added
-        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'local'];
+        const VALID_PROVIDERS = ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'litellm', 'deepseek', 'huggingface', 'nanogpt', 'novita', 'refuseless', 'local'];
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -861,6 +1214,12 @@ class ConfigManager {
       if (localKey) return localKey;
       return this.config.get('apiKeys')[provider];
     }
+    // ollama provider: keyless by default; OLLAMA_API_KEY only for auth-fronted Ollama proxies.
+    if (provider === 'ollama') {
+      const ollamaKey = process.env.OLLAMA_API_KEY?.trim() || process.env.TEMPEST_LOCAL_API_KEY?.trim();
+      if (ollamaKey) return ollamaKey;
+      return this.config.get('apiKeys')[provider];
+    }
     const envVarMap = {
       openrouter: 'OPENROUTER_API_KEY',
       venice: 'VENICE_API_KEY',
@@ -872,6 +1231,7 @@ class ConfigManager {
       huggingface: 'HF_TOKEN',
       nanogpt: 'NANOGPT_API_KEY',
       novita: 'NOVITA_API_KEY',
+      refuseless: 'REFUSELESS_API_KEY',
       litellm: 'LITELLM_API_KEY',
     };
 
@@ -942,12 +1302,17 @@ class ConfigManager {
     if (this.hasApiKey('huggingface')) providers.push('huggingface');
     if (this.hasApiKey('nanogpt')) providers.push('nanogpt');
     if (this.hasApiKey('novita')) providers.push('novita');
+    if (this.hasApiKey('refuseless')) providers.push('refuseless');
 
     // Codex uses the local Codex CLI/account auth instead of API-key storage.
     providers.push('codex');
 
     // Mock and local are always available
     providers.push('mock', 'local');
+
+    // Named Ollama provider (issue #164) — keyless and available whenever an Ollama
+    // server is reachable; missions pre-verify the served model before launch.
+    providers.push('ollama');
 
     return providers;
   }
@@ -1033,6 +1398,12 @@ class ConfigManager {
         baseUrl = this.config.get('novita').baseUrl;
         actualModel = model || this.config.get('novita').defaultModel;
         break;
+      case 'refuseless':
+        // Refuseless' OpenAI-compatible surface (abliterated open models).
+        apiKey = this.getApiKey('refuseless');
+        baseUrl = this.config.get('refuseless').baseUrl;
+        actualModel = model || this.config.get('refuseless').defaultModel;
+        break;
       case 'codex':
         actualModel = model || this.config.get('codex').defaultModel;
         break;
@@ -1052,12 +1423,21 @@ class ConfigManager {
         // /api/paas/v4) and TEMPEST_LOCAL_MODEL at the model tag you're serving.
         // Some OpenAI-compatible servers require a real bearer (Zhipu, Together, etc.) —
         // TEMPEST_LOCAL_API_KEY (or a provider-specific env like ZAI_API_KEY) provides it.
-        baseUrl = process.env.TEMPEST_LOCAL_BASE_URL?.trim() || 'http://localhost:11434/api';
+        baseUrl = process.env.TEMPEST_LOCAL_BASE_URL?.trim() || process.env.OLLAMA_BASE_URL?.trim() || 'http://localhost:11434/api';
         // Placeholder ids from AVAILABLE_MODELS / the static UI are not real served model tags.
         // Treat them as unset so TEMPEST_LOCAL_MODEL (or the llama3 default) wins; a real tag
         // passed in still takes priority.
-        actualModel = (model && !['local-model', 'local/ollama'].includes(model) ? model : undefined) || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3';
-        apiKey = process.env.TEMPEST_LOCAL_API_KEY?.trim() || process.env.ZAI_API_KEY?.trim() || process.env.ZHIPUAI_API_KEY?.trim();
+        actualModel = (model && !['local-model', 'local/ollama'].includes(model) ? model : undefined) || process.env.TEMPEST_LOCAL_MODEL?.trim() || process.env.OLLAMA_MODEL?.trim() || 'llama3';
+        apiKey = process.env.TEMPEST_LOCAL_API_KEY?.trim() || process.env.OLLAMA_API_KEY?.trim() || process.env.ZAI_API_KEY?.trim() || process.env.ZHIPUAI_API_KEY?.trim();
+        break;
+      case 'ollama':
+        // First-class Ollama provider (issue #164): same native wire format as the `local`
+        // default (base URL ends in /api, model list at /api/tags), but selectable by name in
+        // the UI so self-hosters don't have to know Ollama hides behind `local`. Env
+        // precedence: OLLAMA_BASE_URL / OLLAMA_MODEL over the generic local vars.
+        baseUrl = process.env.OLLAMA_BASE_URL?.trim() || process.env.TEMPEST_LOCAL_BASE_URL?.trim() || 'http://localhost:11434/api';
+        actualModel = (model && !['local-model', 'local/ollama'].includes(model) ? model : undefined) || process.env.OLLAMA_MODEL?.trim() || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3';
+        apiKey = process.env.OLLAMA_API_KEY?.trim() || process.env.TEMPEST_LOCAL_API_KEY?.trim() || undefined;
         break;
       default:
         throw new Error(`Unknown provider: ${actualProvider}`);
@@ -1073,7 +1453,7 @@ class ConfigManager {
       // Local inference is far slower than cloud APIs, so it must not inherit the cloud-tuned
       // default timeout: floor it at 120s (matching the frontend llmTimeoutFor) and let the
       // operator override via TEMPEST_LOCAL_TIMEOUT for very slow reasoning models.
-      timeout: actualProvider === 'local'
+      timeout: actualProvider === 'local' || actualProvider === 'ollama'
         ? ((): number => {
             const parsed = Number(process.env.TEMPEST_LOCAL_TIMEOUT);
             return Number.isFinite(parsed) && parsed > 0
@@ -1095,11 +1475,11 @@ class ConfigManager {
    * authorization context is restated — honest escalation, no jailbreak prompts
    * (see LLMBackbone.chat).
    */
-  private buildFallbackChain(primary: LLMProvider): FallbackEntry[] {
+  buildFallbackChain(primary: LLMProvider): FallbackEntry[] {
     const flag = (process.env.TEMPEST_MODEL_FALLBACK || '').trim().toLowerCase();
     if (!flag || ['0', 'false', 'off', 'no'].includes(flag)) return [];
     const chain: FallbackEntry[] = [];
-    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita') => {
+    const add = (p: 'openrouter' | 'venice' | 'anthropic' | 'openai' | 'xai' | 'gemini' | 'litellm' | 'deepseek' | 'huggingface' | 'nanogpt' | 'novita' | 'refuseless') => {
       if (p === primary) return;
       if (p === 'litellm' ? !this.hasLiteLLMProxy() : !this.hasApiKey(p)) return;
       chain.push({
@@ -1120,6 +1500,7 @@ class ConfigManager {
     add('huggingface');
     add('nanogpt');
     add('novita');
+    add('refuseless');
     return chain;
   }
 
@@ -1152,6 +1533,9 @@ class ConfigManager {
       case 'nanogpt':
         this.config.set('defaultModel', this.config.get('nanogpt').defaultModel);
         break;
+      case 'refuseless':
+        this.config.set('defaultModel', this.config.get('refuseless').defaultModel);
+        break;
       case 'xai':
         this.config.set('defaultModel', this.config.get('xai').defaultModel);
         break;
@@ -1166,6 +1550,9 @@ class ConfigManager {
         break;
       case 'local':
         this.config.set('defaultModel', process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3');
+        break;
+      case 'ollama':
+        this.config.set('defaultModel', process.env.OLLAMA_MODEL?.trim() || process.env.TEMPEST_LOCAL_MODEL?.trim() || 'llama3');
         break;
     }
   }
@@ -1195,6 +1582,9 @@ class ConfigManager {
         break;
       case 'nanogpt':
         this.config.set('nanogpt', { ...this.config.get('nanogpt'), defaultModel: model });
+        break;
+      case 'refuseless':
+        this.config.set('refuseless', { ...this.config.get('refuseless'), defaultModel: model });
         break;
       case 'xai':
         this.config.set('xai', { ...this.config.get('xai'), defaultModel: model });
@@ -1248,6 +1638,7 @@ class ConfigManager {
         huggingface: settings.apiKeys.huggingface ? '***REDACTED***' : undefined,
         nanogpt: settings.apiKeys.nanogpt ? '***REDACTED***' : undefined,
         novita: settings.apiKeys.novita ? '***REDACTED***' : undefined,
+        refuseless: settings.apiKeys.refuseless ? '***REDACTED***' : undefined,
         litellm: settings.apiKeys.litellm ? '***REDACTED***' : undefined,
       },
     };
@@ -1308,6 +1699,10 @@ NANOGPT_API_KEY=
 # Novita AI API Key (OpenAI-compatible API serving open-source and frontier models)
 # Get your key at: https://novita.ai/settings/key-management
 NOVITA_API_KEY=
+
+# Refuseless API Key (OpenAI-compatible API serving abliterated open models)
+# Create a key in the console at: https://refuseless.com/console
+REFUSELESS_API_KEY=
 
 # Local model (Ollama / LM Studio / vLLM / llama.cpp, or any OpenAI-compatible server)
 # Point TEMPEST_LOCAL_BASE_URL at the server root (Ollama default shown below).

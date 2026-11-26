@@ -58,7 +58,7 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) { try { rmSync(d, { recursive: true, force: true }); } catch { /* noop */ } }
 });
 
-describe.runIf(process.platform !== 'win32')('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () => {
+describe.skipIf(process.platform === 'win32')('resolveBin — macOS/POSIX well-known-dir resolution (issue #78)', () => {
   it('finds a CLI in ~/.local/bin even when PATH omits it (the reported bug)', () => {
     const home = scratch();
     const bin = putExe(join(home, '.local', 'bin'), 'faketool');
@@ -165,22 +165,9 @@ describe.runIf(process.platform !== 'win32')('resolveBin — macOS/POSIX well-kn
     expect(resolveBin('definitely-not-a-real-cli-xyz')).toBe('definitely-not-a-real-cli-xyz');
   });
 
-  it('does NOT scan POSIX dirs on win32 — unresolved shims fail closed', () => {
-    const home = scratch();
-    putExe(join(home, '.local', 'bin'), 'faketool');
-    process.env.T3MP3ST_AGENT_HOME = home;
-    process.env.PATH = '/usr/bin:/bin';
-    const orig = Object.getOwnPropertyDescriptor(process, 'platform') || { value: process.platform, configurable: true };
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-    try {
-      expect(resolveBin('faketool')).toBeUndefined();
-    } finally {
-      Object.defineProperty(process, 'platform', orig);
-    }
-  });
 });
 
-describe.runIf(process.platform !== 'win32')('detectLocalAgents — wiring: a well-known-dir CLI is reported installed (issue #78)', () => {
+describe.skipIf(process.platform === 'win32')('detectLocalAgents — wiring: a well-known-dir CLI is reported installed (issue #78)', () => {
   it('reports Claude Code installed + versioned when `claude` lives in ~/.local/bin and PATH omits it', async () => {
     const home = scratch();
     const claudePath = putExe(join(home, '.local', 'bin'), 'claude');
@@ -217,7 +204,7 @@ describe.runIf(process.platform !== 'win32')('detectLocalAgents — wiring: a we
   });
 });
 
-describe.runIf(process.platform !== 'win32')('spawn call-sites use the resolved path (issue #78 — detected-but-unspawnable would be worse)', () => {
+describe.skipIf(process.platform === 'win32')('spawn call-sites use the resolved path (issue #78 — detected-but-unspawnable would be worse)', () => {
   // Behavioral, not a spawn spy: if the rewiring regressed to the bare `spec.bin`, spawn('claude')
   // under PATH=/usr/bin:/bin throws ENOENT → ok:false / reject. Success proves the resolved path ran.
   it('runLocalAgent launches the well-known-dir CLI (not the bare name)', async () => {
@@ -322,7 +309,7 @@ case "$*" in
 esac
 `;
 
-describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
+describe.skipIf(process.platform === 'win32')('localAgentChat — stale Claude session fallback (Tier 2)', () => {
   it('retries WITHOUT --resume when the resumed session is stale, and succeeds', async () => {
     const home = scratch();
     putExe(join(home, '.local', 'bin'), 'claude', FAKE_CLI_RESUME_STALE);
@@ -400,5 +387,20 @@ describe('localAgentChat — stale Claude session fallback (Tier 2)', () => {
 
     const out = await localAgentChat('claude', 'ONLY-PROMPT-CONTENT', { sessionId: 'stale-uuid', timeoutMs: 4000 });
     expect(out).toBe('ONLY-PROMPT-CONTENT');
+  });
+});
+describe('resolveBin — win32 boundary (runs on every platform; unresolved shims fail closed)', () => {
+  it('does NOT scan POSIX dirs on win32 — unresolved shims fail closed', () => {
+    const home = scratch();
+    putExe(join(home, '.local', 'bin'), 'faketool');
+    process.env.T3MP3ST_AGENT_HOME = home;
+    process.env.PATH = '/usr/bin:/bin';
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform') || { value: process.platform, configurable: true };
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      expect(resolveBin('faketool')).toBeUndefined();
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+    }
   });
 });

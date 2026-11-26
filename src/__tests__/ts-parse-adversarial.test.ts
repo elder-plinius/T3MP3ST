@@ -130,7 +130,12 @@ describe('adversarial crawl / ingest', () => {
     }
     const t0 = Date.now();
     const result = ingestRepository(createMultiLangIngestConfig(root));
-    expect(Date.now() - t0).toBeLessThan(10000); // did not spin on the loop
+    // The point is TERMINATION — a followed symlink loop spins forever and the
+    // runner would hang rather than fail — so a wall-clock bound is only ever a
+    // proxy. A tight one fails on a loaded box (this measured 11.2s on a busy
+    // Windows run while behaving correctly) without catching anything real.
+    expect(Date.now() - t0).toBeLessThan(60_000); // did not spin on the loop
+    // ...and the crawl completed correctly rather than bailing out.
     expect(result.analysisUnits.some((u) => u.block.name === 'A')).toBe(true);
   });
 });

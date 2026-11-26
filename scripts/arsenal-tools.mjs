@@ -249,8 +249,20 @@ export function selectArsenal(spec) {
   return [...names].map(name => ({ name, schema: ARSENAL[name].schema, build: ARSENAL[name].build }));
 }
 
-/** Return the subset of tool entries whose binary is actually on PATH (async, via `which`). */
+/** Return the subset of tool entries whose binary is actually on PATH (async, host or WSL). */
 export async function filterInstalled(tools) {
+  if (process.platform === 'win32') {
+    const checks = await Promise.all(tools.map(async t => {
+      try { await execFileAsync('where.exe', [t.name], { timeout: 1500 }); return true; } catch {}
+      try {
+        const distro = process.env.T3MP3ST_WSL_DISTRO || 'kali-linux';
+        const res = await execFileAsync('wsl.exe', ['-d', distro, '-e', 'which', t.name], { timeout: 2000 });
+        if (res.stdout && res.stdout.trim().startsWith('/')) return true;
+      } catch {}
+      return false;
+    }));
+    return tools.filter((_, i) => checks[i]);
+  }
   const checks = await Promise.all(tools.map(async t => {
     try { await execFileAsync('which', [t.name], { timeout: 1500 }); return true; }
     catch { return false; }

@@ -920,5 +920,5 @@ catalog lookups, not engines. The MCP server exposes the real, tool-backed surfa
 
 ---
 
-*Last updated: 2026-07*
-*Version: 1.0.0*
+*Last updated: 2026-09*
+*Version: 1.5.0*

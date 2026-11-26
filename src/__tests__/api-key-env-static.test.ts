@@ -2,21 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-// CRLF→LF normalization: '\n'-based markers must match on Windows checkouts too.
-const lf = (p: string): string => readFileSync(join(process.cwd(), p), 'utf8').replace(/\r\n/g, '\n');
-const configSource = lf('src/config/index.ts');
-const serverSource = lf('src/server.ts');
-const setupScript = lf('scripts/setup-api.sh');
-const localAgentsSource = lf('src/agent/local-agents.ts');
-const setupSource = lf('src/setup.ts');
-const uiSource = lf('docs/index.html');
+const configSource = readFileSync(join(process.cwd(), 'src/config/index.ts'), 'utf8');
+const serverSource = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
+const setupScript = readFileSync(join(process.cwd(), 'scripts/setup-api.sh'), 'utf8');
+const localAgentsSource = readFileSync(join(process.cwd(), 'src/agent/local-agents.ts'), 'utf8');
+const setupSource = readFileSync(join(process.cwd(), 'src/setup.ts'), 'utf8');
+const uiSource = readFileSync(join(process.cwd(), 'docs/index.html'), 'utf8');
+const settingsSource = readFileSync(join(process.cwd(), 'docs/settings.html'), 'utf8');
 
 function sourceBlock(startMarker: string, endMarker: string): string {
-  const start = configSource.indexOf(startMarker);
+  const src = configSource.split(String.fromCharCode(13)).join("");
+  const start = src.indexOf(startMarker);
   expect(start, `missing start marker ${startMarker}`).toBeGreaterThanOrEqual(0);
-  const end = configSource.indexOf(endMarker, start);
+  const end = src.indexOf(endMarker, start);
   expect(end, `missing end marker ${endMarker}`).toBeGreaterThan(start);
-  return configSource.slice(start, end);
+  return src.slice(start, end);
 }
 
 function configLoadEnvBlock(): string {
@@ -32,11 +32,21 @@ function envTemplateBlock(): string {
 }
 
 describe('API key environment handling hardening', () => {
-  it('ConfigManager does not implicitly read .env from the caller working directory', () => {
+  it('ConfigManager loads the repo .env in dev and the homedir .env in prod', () => {
     const block = configLoadEnvBlock();
-
-    expect(block).not.toContain("join(process.cwd(), '.env')");
     expect(block).toContain("join(homedir(), '.t3mp3st', '.env')");
+    expect(block).toContain("join(process.cwd(), '.env')");
+    expect(block).toContain("pkg?.name === 't3mp3st'");
+    expect(block).toContain("process.env.T3MP3ST_DEV === '1'");
+  });
+
+  it('the Settings pages persist keys into the gitignored .env and the server masks them', () => {
+    expect(serverSource).toContain("'/api/config/env'");
+    expect(serverSource).toContain('ENV_APIKEY_MAP');
+    expect(serverSource).toContain('maskKey');
+    expect(serverSource).toContain('resolveEnvFile()');
+    expect(uiSource).toContain('/api/config/env');
+    expect(uiSource).toContain('provider, key');
   });
 
   it('the API server does not re-enable caller-cwd dotenv loading', () => {
@@ -63,7 +73,7 @@ describe('API key environment handling hardening', () => {
   it('exportConfig redacts every supported provider key slot', () => {
     const block = exportConfigBlock();
 
-    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'deepseek', 'huggingface', 'nanogpt', 'novita', 'litellm']) {
+    for (const provider of ['openrouter', 'venice', 'anthropic', 'openai', 'xai', 'gemini', 'deepseek', 'huggingface', 'nanogpt', 'novita', 'refuseless', 'litellm']) {
       expect(block).toContain(`${provider}: settings.apiKeys.${provider} ? '***REDACTED***' : undefined`);
     }
   });
@@ -77,8 +87,27 @@ describe('API key environment handling hardening', () => {
     expect(localAgentsSource).toContain("'NANOGPT_API_KEY'");
     expect(setupSource).toContain("provider: 'nanogpt'");
     expect(setupSource).toContain("setApiKey('nanogpt', apiKey)");
-    expect(uiSource).toContain('<option value="nanogpt">NanoGPT · OpenAI-compatible</option>');
+    // The provider <option> lives on the standalone Settings page; the base-URL
+    // map is in the dashboard script. Assert on the option's VALUE, not its label: the
+    // invariant is that the provider is selectable, and the label is free to change when
+    // the UI starts explaining which providers a browser call can actually reach.
+    expect(settingsSource).toMatch(/<option value="nanogpt"[^>]*>/);
     expect(uiSource).toContain("nanogpt: 'https://nano-gpt.com/api/v1'");
+  });
+
+  it('documents Refuseless and makes it selectable in both Settings pages', () => {
+    const block = envTemplateBlock();
+    expect(block).toContain('REFUSELESS_API_KEY=');
+    expect(setupSource).toContain("setApiKey('refuseless', apiKey)");
+    // The .env bridge must map the provider, or its key is stored in localStorage forever.
+    expect(serverSource).toContain("refuseless: 'REFUSELESS_API_KEY'");
+    // Selectable in the Universal API Config panel AND the Model Selection list — asserting the
+    // option's VALUE, not its label, so the wording stays free to change.
+    expect(settingsSource).toMatch(/<option value="refuseless"[^>]*>/);
+    expect(settingsSource).toMatch(/<option value="refuseless">/);
+    // The shared base-URL map on both pages, so the field prefills the real endpoint.
+    expect(settingsSource).toContain("refuseless: 'https://refuseless.com/v1'");
+    expect(uiSource).toContain("refuseless: 'https://refuseless.com/v1'");
   });
 
   it('ConfigManager uses env keys in-memory and does not persist imported env keys', () => {

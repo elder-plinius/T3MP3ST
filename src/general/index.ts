@@ -491,6 +491,49 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
   }
 
   /**
+   * Salvage a JSON object from a TRUNCATED LLM response: walk candidate cut points from the
+   * end, close the open containers, and return the first prefix that parses. Returns null
+   * when nothing salvageable exists. Built for maxTokens-truncated plans — never used when
+   * a complete parse already succeeded.
+   */
+  private salvageTruncatedJson(raw: string): unknown | null {
+    const start = raw.indexOf('{');
+    if (start === -1) return null;
+    const body = raw.slice(start);
+    const cuts: number[] = [body.length];
+    for (let i = body.length - 1; i >= 0 && cuts.length < 500; i--) {
+      const c = body[i];
+      if (c === ',' || c === '}' || c === ']' || c === '"' || c === '\n') cuts.push(i);
+    }
+    for (const cut of cuts) {
+      let prefix = body.slice(0, cut).replace(/[\s,]+$/, '');
+      const stack: string[] = [];
+      let inStr = false, esc = false, malformed = false;
+      for (let i = 0; i < prefix.length; i++) {
+        const c = prefix[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (c === '\\') esc = true;
+          else if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') { inStr = true; continue; }
+        if (c === '{' || c === '[') stack.push(c === '{' ? '}' : ']');
+        else if (c === '}' || c === ']') {
+          if (!stack.length || stack[stack.length - 1] !== c) { malformed = true; break; }
+          stack.pop();
+        }
+      }
+      if (malformed || inStr) continue; // cut mid-string or structurally broken — try a shorter prefix
+      // drop a dangling `"key":` with no value before closing up
+      prefix = prefix.replace(/,?\s*"[^"]*"\s*:\s*$/, '');
+      prefix = prefix.replace(/[\s,]+$/, '');
+      const candidate = prefix + stack.reverse().join('');
+      try { return JSON.parse(candidate); } catch { continue; }
+    }
+    return null;
+  }
+  /**
    * Parse the LLM response into an OpPlan
    */
   private parsePlanResponse(response: string, directive: Directive): OpPlan {
@@ -515,7 +558,9 @@ Return only a valid JSON object wrapped in a json code block. Keep it compact, c
       }
     }
 
-    // If parsing failed entirely, build a minimal plan
+    // Truncated LLM output (maxTokens cut mid-JSON) is the most common planning failure —
+    // salvage the parseable prefix before giving up on the whole 60-90s generation.
+    if (!json) json = this.salvageTruncatedJson(response);
     if (!json) {
       return this.buildFallbackPlan(directive);
     }

@@ -300,9 +300,33 @@ export class MissionControl extends EventEmitter<MissionEvents> {
     );
     if (alreadyHasTasksForTarget) return;
 
-    // Always start with recon tasks
-    const reconTasks = createReconTasks(mission.id, targetAddress);
-    this.taskQueue.addMany(reconTasks);
+    // Seed tasks for the mission's CURRENT phase — not always recon. A normal mission starts at
+    // RECON, so this is unchanged. But a SITREP-focused re-engagement starts AT a later phase (e.g.
+    // exploitation), and its recon is already covered by prior scan notes — seeding recon there would
+    // re-run the whole scan (the bug: scanner/recon launching on an exploitation job). Map the start
+    // phase to the right task set instead.
+    const tasks = this.tasksForStartPhase(mission.id, mission.currentPhase, targetAddress);
+    this.taskQueue.addMany(tasks);
+  }
+
+  /** Task set to SEED for a mission that starts at `phase`. Exploit tasks are stamped DELIVER, so
+   *  EXPLOIT/DELIVER share the exploit set; post-ex phases (install/C2/actions) share the analysis
+   *  set. RECON (the default start) keeps the original recon seed. */
+  private tasksForStartPhase(missionId: string, phase: KillChainPhase, targetAddress: string): Task[] {
+    switch (phase) {
+      case KillChainPhase.WEAPONIZE:
+        return createVulnScanTasks(missionId, targetAddress);
+      case KillChainPhase.DELIVER:
+      case KillChainPhase.EXPLOIT:
+        return createExploitTasks(missionId, targetAddress);
+      case KillChainPhase.INSTALL:
+      case KillChainPhase.C2:
+      case KillChainPhase.ACTIONS:
+        return createAnalysisTasks(missionId, targetAddress);
+      case KillChainPhase.RECON:
+      default:
+        return createReconTasks(missionId, targetAddress);
+    }
   }
 
   /**

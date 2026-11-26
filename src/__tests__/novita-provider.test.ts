@@ -8,6 +8,7 @@ describe('Novita AI provider wiring', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
+    delete process.env.T3MP3ST_FORCE_UNCONFIGURED;
     delete process.env.NOVITA_API_KEY;
     delete process.env.TEMPEST_MODEL_FALLBACK;
     global.fetch = originalFetch;
@@ -34,6 +35,9 @@ describe('Novita AI provider wiring', () => {
   });
 
   it('requires the provider-specific key instead of reporting an OpenAI credential error', () => {
+    // Isolate from any key persisted in the operator's Conf store (getApiKey falls back to it);
+    // the sanctioned force-unconfigured switch makes the no-key state reproducible everywhere.
+    process.env.T3MP3ST_FORCE_UNCONFIGURED = '1';
     expect(createNovitaBackbone().validateConfig()).toEqual({
       valid: false,
       error: expect.stringContaining('NOVITA_API_KEY'),

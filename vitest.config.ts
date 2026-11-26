@@ -15,6 +15,18 @@ export default defineConfig({
   test: {
     // Keep generated JavaScript under dist/ out of discovery after `npm run build`.
     include: ['src/**/*.test.ts'],
+    // Vitest's 5s default was STRICTER than the product budgets these tests
+    // exist to police, so the harness could kill a test the product would have
+    // passed. ts-parse-adversarial asserts the real 20k-function parse finishes
+    // in under 10s, but the 5s default cut it off first — that assertion was
+    // unreachable on a loaded box. The same clock cut ts-grammars (which loads
+    // every tree-sitter grammar) and any test importing the platform or
+    // spawning a child process. 30s sits above every internal budget so the
+    // internal budget is what governs; nothing here relaxes an assertion.
+    // Tests needing more than that carry their own per-test timeout, which
+    // overrides this.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     coverage: {
       provider: 'v8',
       include: [

@@ -1,0 +1,58 @@
+[
+  {
+    "tactic": "For CTF SQLi Basics (sqli-basic): explicitly test for \"Database Version / Name Disclosure\" (disclosure/high). Look for evidence patterns including: version, database name, sqlite_master.",
+    "confidence": 0.65,
+    "rationale": "Heuristic stub: surfacing canonical keywords increases evidence overlap.",
+    "risk": "May inflate false-positive language if agent name-drops without confirmation.",
+    "miss": {
+      "target_id": "sqli-basic",
+      "target_name": "CTF SQLi Basics",
+      "finding_id": "SQLI-003",
+      "title": "Database Version / Name Disclosure",
+      "severity": "high",
+      "category": "disclosure"
+    }
+  },
+  {
+    "tactic": "For CTF SQLi Basics (sqli-basic): explicitly test for \"Table / Column Enumeration\" (disclosure/medium). Look for evidence patterns including: table, column, schema.",
+    "confidence": 0.65,
+    "rationale": "Heuristic stub: surfacing canonical keywords increases evidence overlap.",
+    "risk": "May inflate false-positive language if agent name-drops without confirmation.",
+    "miss": {
+      "target_id": "sqli-basic",
+      "target_name": "CTF SQLi Basics",
+      "finding_id": "SQLI-004",
+      "title": "Table / Column Enumeration",
+      "severity": "medium",
+      "category": "disclosure"
+    }
+  },
+  {
+    "tactic": "For CTF Blind SQLi (sqli-blind): explicitly test for \"Character-by-Character Data Extraction\" (disclosure/medium). Look for evidence patterns including: substring, ascii, character.",
+    "confidence": 0.65,
+    "rationale": "Heuristic stub: surfacing canonical keywords increases evidence overlap.",
+    "risk": "May inflate false-positive language if agent name-drops without confirmation.",
+    "miss": {
+      "target_id": "sqli-blind",
+      "target_name": "CTF Blind SQLi",
+      "finding_id": "BSQLI-003",
+      "title": "Character-by-Character Data Extraction",
+      "severity": "medium",
+      "category": "disclosure"
+    }
+  },
+  {
+    "tactic": "For CTF SSRF Metadata (ssrf-metadata): explicitly test for \"File Scheme Arbitrary Read\" (disclosure/high). Look for evidence patterns including: file://, /etc/passwd, file scheme.",
+    "confidence": 0.65,
+    "rationale": "Heuristic stub: surfacing canonical keywords increases evidence overlap.",
+    "risk": "May inflate false-positive language if agent name-drops without confirmation.",
+    "miss": {
+      "target_id": "ssrf-metadata",
+      "target_name": "CTF SSRF Metadata",
+      "finding_id": "SSRF-003",
+      "title": "File Scheme Arbitrary Read",
+      "severity": "high",
+      "category": "disclosure"
+    }
+  }
+]

@@ -659,7 +659,10 @@ async function smokeToolsAndRuntime(context) {
   record('Recon rejects unsupported target characters', invalidRecon.status === 400 && /unsupported/.test(invalidRecon.data.error || ''), summarizeError(invalidRecon));
 
   const privateRecon = await post('/api/tools/recon', { target: '192.168.0.1', scan_type: 'quick' });
-  record('Private LAN recon requires receipt', privateRecon.status === 403 && privateRecon.data.approval?.status === 'pending', privateRecon.data.approval?.id || summarizeError(privateRecon));
+  // Lab-scope doctrine (2026-08-31, deliberate): RFC1918 targets are auto-granted for
+  // non-autonomous actions — recon on the operator's own LAN executes without a receipt.
+  // Public/hostname targets still mint one (pinned by the forged-authority + wildcard checks).
+  record('Private LAN recon is auto-granted (lab scope doctrine)', privateRecon.ok && privateRecon.data.success !== false, summarizeError(privateRecon));
 
   const loopbackRecon = await post('/api/tools/recon', { target: '127.0.0.1', scan_type: 'quick' });
   record('Loopback recon path is callable without external target', loopbackRecon.ok && loopbackRecon.data.success === true && loopbackRecon.data.target === '127.0.0.1', loopbackRecon.data.results?.ports?.error || loopbackRecon.data.target || summarizeError(loopbackRecon));

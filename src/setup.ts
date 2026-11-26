@@ -128,7 +128,7 @@ async function setupVeniceKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'venice',
-      model: 'llama-3.3-70b',
+      model: 'qwen-3-8-27b',
       apiKey,
       maxTokens: 10,
       temperature: 0,
@@ -267,7 +267,7 @@ async function setupHuggingFaceKey(): Promise<boolean> {
   try {
     const llm = new LLMBackbone({
       provider: 'huggingface',
-      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      model: 'Qwen/Qwen3.8-27B',
       baseUrl: 'https://router.huggingface.co/v1',
       apiKey,
       maxTokens: 10,
@@ -373,6 +373,53 @@ async function setupNovitaKey(): Promise<boolean> {
 
     setApiKey('novita', apiKey);
     showSuccess('Novita AI API key saved successfully!');
+
+    return true;
+  } catch (error) {
+    spinner.fail('API key validation failed');
+    showError(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+async function setupRefuselessKey(): Promise<boolean> {
+  console.log('');
+  showInfo('Refuseless serves abliterated open models over an OpenAI-compatible API.');
+  showInfo('Create an API key in the console at: ' + chalk.underline('https://refuseless.com/console'));
+  console.log('');
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: 'password',
+      name: 'apiKey',
+      message: 'Enter your Refuseless API key:',
+      mask: '*',
+      validate: (input: string) => {
+        if (!input || input.length < 10) {
+          return 'Please enter a valid API key';
+        }
+        return true;
+      },
+    },
+  ]);
+
+  const spinner = ora('Testing API key...').start();
+
+  try {
+    const llm = new LLMBackbone({
+      provider: 'refuseless',
+      model: 'glm-5.3-abliterated',
+      baseUrl: 'https://refuseless.com/v1',
+      apiKey,
+      maxTokens: 10,
+      temperature: 0,
+    });
+
+    await llm.prompt('Hello', undefined, { maxTokens: 10 });
+    spinner.succeed('API key is valid!');
+
+    setApiKey('refuseless', apiKey);
+    showSuccess('Refuseless API key saved successfully!');
 
     return true;
   } catch (error) {
@@ -679,6 +726,10 @@ async function setupApiKeys(): Promise<void> {
           value: 'novita',
         },
         {
+          name: `Refuseless ${hasApiKey('refuseless') ? chalk.green('(configured)') : chalk.gray('(abliterated models, OpenAI-compatible)')}`,
+          value: 'refuseless',
+        },
+        {
           name: `LiteLLM Proxy ${config.hasLiteLLMProxy() ? chalk.green('(configured)') : chalk.gray('(100+ providers via gateway)')}`,
           value: 'litellm',
         },
@@ -712,6 +763,9 @@ async function setupApiKeys(): Promise<void> {
       case 'novita':
         await setupNovitaKey();
         break;
+      case 'refuseless':
+        await setupRefuselessKey();
+        break;
       case 'litellm':
         await setupLiteLLMProxy();
         break;
@@ -731,6 +785,7 @@ async function setupProvider(): Promise<void> {
   if (hasApiKey('huggingface')) configuredProviders.push({ name: 'HuggingFace', value: 'huggingface' });
   if (hasApiKey('nanogpt')) configuredProviders.push({ name: 'NanoGPT', value: 'nanogpt' });
   if (hasApiKey('novita')) configuredProviders.push({ name: 'Novita AI', value: 'novita' });
+  if (hasApiKey('refuseless')) configuredProviders.push({ name: 'Refuseless', value: 'refuseless' });
   if (config.hasLiteLLMProxy()) configuredProviders.push({ name: 'LiteLLM Proxy', value: 'litellm' });
 
   const { provider } = await inquirer.prompt([

@@ -15,6 +15,42 @@ Use this as the team-facing view of what a workstation needs. The UI and API rem
 | Reverse/mobile/fuzz | `radamsa`, `afl-fuzz`, `r2`, `apktool`, `jadx`, `exiftool`, `binwalk`, `yara` | Homebrew | Distro packages or upstream releases | Local-read lab artifacts |
 | Gated/import | `msfconsole`, `hydra`, `bloodhound` | Optional | Optional | Catalog-only or import-only until narrow adapters exist |
 
+## Kali Linux / Debian
+
+Kali is a supported platform — the codebase has no Windows-only runtime paths —
+but stock Kali/Debian `nodejs` packages are usually older than the required
+floor and will make `npm install` or startup fail partway. Use NodeSource or
+nvm:
+
+```bash
+# Node.js 22.x via NodeSource (Debian/Ubuntu line)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
+sudo apt-get install -y nodejs build-essential
+node --version   # must be >= 22.19.0
+
+# or via nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash
+nvm install 22 && nvm use 22
+```
+
+Then from the repo:
+
+```bash
+npm install
+npm run doctor     # flags a too-old Node BEFORE the confusing failures it causes
+npm run server
+```
+
+`build-essential` covers any native module rebuilds. Most arsenal tools in the
+table above are already packaged on Kali (`nmap`, `sqlmap`, `nikto`, `hashcat`,
+`john`, `binwalk`, `exiftool`, ...) — run `npm run doctor` and
+`npm run arsenal:doctor` to see exactly what is missing rather than installing
+everything blindly.
+
+If a run still fails, include the actual output (`npm run doctor`, the failing
+command, and the last ~50 log lines) in your bug report — "it doesn't complete"
+with no output is not actionable.
+
 ## macOS Homebrew Repair
 
 If Homebrew is owned by a different local user, installs may fail with `Cellar is not writable` or tap permission errors. Repair the prefix before installing tools:

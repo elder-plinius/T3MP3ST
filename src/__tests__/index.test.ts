@@ -367,6 +367,11 @@ describe('OpGeneral v2 Campaign Control', () => {
   });
 });
 
+/** Tests in this block that `await import('../index.js')` pay for a full
+ *  module-graph load, which overruns vitest's 5s default under parallel
+ *  load. Budget only — the assertions are unchanged. */
+const INDEX_IMPORT_TIMEOUT_MS = 30_000;
+
 describe('Wedged-dispatch timeout backstop', () => {
   // A fake AgentLoop whose run() never settles — simulates a truly-hung LLM call
   // (the wedge symptom: operator pinned in `executing` forever).
@@ -423,7 +428,7 @@ describe('Wedged-dispatch timeout backstop', () => {
     expect(command.getStatus().running).toBe(false);
     expect(command.mission.getActiveMission()).toBeUndefined();
     expect(stopped).toBe(true);
-  });
+  }, INDEX_IMPORT_TIMEOUT_MS);
 
   it('a wedged mission stalls instead of advancing after required recon dispatches time out', async () => {
     // Tiny backstop so the test is fast and deterministic.
@@ -497,7 +502,7 @@ describe('Wedged-dispatch timeout backstop', () => {
     await (opB as any).llm.chat([{ role: 'user', content: 'hello B' }]);
 
     expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
-  });
+  }, INDEX_IMPORT_TIMEOUT_MS);
 
   // PR #149 review, round 3 (jmagly): cross-OPERATOR isolation isn't enough — the SAME operator
   // running a second task must not resume the first task's session either. The old session belongs
@@ -520,7 +525,7 @@ describe('Wedged-dispatch timeout backstop', () => {
     await (op as any).llm.chat([{ role: 'system', content: 'TASK-2' }, { role: 'user', content: 'do task 2' }]);
 
     expect(localAgentCli.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: undefined });
-  });
+  }, INDEX_IMPORT_TIMEOUT_MS);
 });
 
 describe('Codex account provider', () => {

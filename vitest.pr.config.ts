@@ -5,6 +5,11 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
+    // Same rationale as vitest.config.ts: the 5s default was stricter than the
+    // product budgets these tests police. Kept in step so a PR run and a release
+    // run cannot disagree about which tests are allowed to finish.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

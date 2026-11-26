@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="manifest" href="manifest.webmanifest">
+    <title>T3MP3ST — Cairn Search</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        try { var _t3mpTheme = localStorage.getItem('t3mp3st_theme'); if (_t3mpTheme && _t3mpTheme !== 'storm') document.documentElement.setAttribute('data-theme', _t3mpTheme); } catch (e) {}
+    </script>
+    <script>
+        (function () {
+            var embedded = false;
+            try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+            if (embedded && !/[?&]standalone/.test(location.search)) {
+                document.documentElement.classList.add('t3mp-embedded');
+                var s = document.createElement('style');
+                s.id = 't3mpEmbedGuard';
+                s.textContent = '.t3mp-embedded .sidebar{display:none!important}' +
+                    '.t3mp-embedded .main-content{margin-left:0!important;width:100%!important}' +
+                    '.t3mp-embedded .mobile-toggle{display:none!important}';
+                document.head.appendChild(s);
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --bg-primary: #071017;
+            --bg-secondary: #0b1822;
+            --bg-tertiary: #102534;
+            --bg-card: #0c1b25;
+            --surface: #10212d;
+            --card-bg: #0c1b25;
+            --border-color: #1e4053;
+            --border-glow: #2fffd255;
+            --text-primary: #e0e0e0;
+            --text-secondary: #9baeb8;
+            --text-muted: #6f8794;
+            --accent: #2fffd2;
+            --accent-dim: #17c7a8;
+            --accent-glow: #2fffd233;
+            --brand: #00ff88;
+            --brand-rgb: 0, 255, 136;
+            --accent-rgb: 47, 255, 210;
+            --cyan-rgb: 0, 212, 255;
+            --danger: #ff4757;
+            --warning: #ffa502;
+            --info: #3742fa;
+            --error: #ff4757;
+            --purple: #a855f7;
+            --cyan: #00d4ff;
+            --storm-blue: #0b3d5c;
+            --deep-sea: #06111a;
+            --brass: #f5b84b;
+            --brass-glow: #f5b84b33;
+            --strix: #2b9246;
+            --strix-glow: #2b924633;
+            --strix-rgb: 43, 146, 70;
+            --sidebar-width: 240px;
+        }
+        html[data-theme="ember"] {
+            --accent: #ffab40; --accent-dim: #f5871f; --accent-glow: #ffab4033; --border-glow: #ffab4055;
+            --cyan: #ffd15c; --storm-blue: #5c320b; --brass: #ff8c42; --brass-glow: #ff8c4233;
+            --brand: #ffab40; --brand-rgb: 255, 171, 64; --accent-rgb: 255, 171, 64; --cyan-rgb: 255, 209, 92;
+        }
+        html[data-theme="crimson"] {
+            --accent: #ff5470; --accent-dim: #e23e5a; --accent-glow: #ff547033; --border-glow: #ff547055;
+            --cyan: #ff8fa3; --storm-blue: #5c0b1e; --brass: #ff7a8a; --brass-glow: #ff7a8a33;
+            --brand: #ff5470; --brand-rgb: 255, 84, 112; --accent-rgb: 255, 84, 112; --cyan-rgb: 255, 143, 163;
+        }
+        html[data-theme="void"] {
+            --accent: #b57bff; --accent-dim: #9d5cf0; --accent-glow: #b57bff33; --border-glow: #b57bff55;
+            --cyan: #d4a5ff; --storm-blue: #2e0b5c; --brass: #c79bff; --brass-glow: #c79bff33;
+            --brand: #b57bff; --brand-rgb: 181, 123, 255; --accent-rgb: 181, 123, 255; --cyan-rgb: 212, 165, 255;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background:
+                linear-gradient(180deg, rgba(7, 16, 23, 0.94), rgba(4, 12, 18, 0.98)),
+                repeating-linear-gradient(90deg, rgba(var(--accent-rgb), 0.03) 0 1px, transparent 1px 120px),
+                var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .bg-grid {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background-image:
+                linear-gradient(rgba(var(--accent-rgb), 0.035) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(var(--accent-rgb), 0.03) 1px, transparent 1px),
+                repeating-linear-gradient(135deg, transparent 0 42px, rgba(245, 184, 75, 0.035) 42px 43px, transparent 43px 86px);
+            background-size: 50px 50px; pointer-events: none; z-index: 0;
+        }
+        .app-container { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+        .sidebar {
+            width: var(--sidebar-width);
+            background: linear-gradient(180deg, #081621, var(--bg-secondary) 42%, #071017);
+            border-right: 1px solid var(--border-color);
+            display: flex; flex-direction: column; position: fixed; height: 100vh; z-index: 100; transition: transform 0.3s;
+        }
+        .sidebar-header { padding: 20px; border-bottom: 1px solid var(--border-color); }
+        .api-status-bar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 15px; background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid var(--border-color); font-size: 11px;
+        }
+        .api-status-indicator { display: flex; align-items: center; gap: 8px; }
+        .api-dot { width: 8px; height: 8px; border-radius: 50%; background: #666; animation: pulse 2s infinite; }
+        .api-dot.connected { background: var(--brand); box-shadow: 0 0 8px var(--brand); }
+        .api-dot.disconnected { background: #ff4444; box-shadow: 0 0 8px #ff4444; animation: none; }
+        .api-dot.llm-ready { background: var(--brand); box-shadow: 0 0 10px var(--brand), 0 0 24px var(--brand); animation: llmGlowPulse 1.6s ease-in-out infinite; }
+        .api-text { color: #888; font-family: 'JetBrains Mono', monospace; }
+        .api-text.connected { color: var(--brand); }
+        .api-text.llm-ready { color: var(--brand); text-shadow: 0 0 8px var(--brand); }
+        .api-status-bar:has(.api-dot.llm-ready) { border-bottom-color: var(--brand); box-shadow: inset 0 -10px 18px -14px var(--brand), 0 2px 12px -7px var(--brand); }
+        @keyframes llmGlowPulse { 0%,100%{box-shadow:0 0 6px var(--brand),0 0 14px var(--brand);} 50%{box-shadow:0 0 10px var(--brand),0 0 26px var(--brand);} }
+        .api-reconnect-btn { background:none; border:1px solid #444; color:#888; width:22px; height:22px; border-radius:4px; cursor:pointer; font-size:12px; transition:all 0.2s; }
+        .api-reconnect-btn:hover { border-color:var(--accent); color:var(--accent); transform:rotate(180deg); }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+        .logo { font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:700; color:var(--accent); text-shadow:0 0 20px var(--accent-glow); display:flex; align-items:center; gap:10px; }
+        .logo-icon { width:36px; height:36px; background:linear-gradient(135deg,var(--accent),var(--storm-blue)); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:18px; }
+        .version-badge { font-size:10px; background:var(--bg-tertiary); padding:2px 6px; border-radius:4px; color:var(--text-secondary); margin-left:auto; }
+        .nav-section { padding:15px 10px; flex:1; overflow-y:auto; }
+        .nav-label { font-size:10px; text-transform:uppercase; color:var(--text-muted); padding:10px 15px 5px; letter-spacing:1px; }
+        .nav-item { display:flex; align-items:center; gap:12px; padding:11px 15px; border-radius:8px; cursor:pointer; transition:all 0.2s; margin:2px 5px; color:var(--text-secondary); font-size:14px; text-decoration:none; }
+        .nav-item:hover { background:var(--bg-tertiary); color:var(--text-primary); }
+        .nav-item.active { background:var(--accent-glow); color:var(--accent); border:1px solid var(--border-glow); }
+        .nav-item.strix-active { background:rgba(var(--strix-rgb),0.14); color:var(--strix); border:1px solid rgba(var(--strix-rgb),0.35); box-shadow:0 0 14px var(--strix-glow); }
+        .nav-item .icon { font-size:16px; width:22px; text-align:center; }
+        .nav-item .badge { margin-left:auto; background:var(--danger); color:white; font-size:10px; padding:2px 7px; border-radius:10px; }
+        .sidebar-footer { padding:15px; border-top:1px solid var(--border-color); }
+        .status-indicator { display:flex; align-items:center; gap:10px; padding:10px; background:var(--bg-tertiary); border-radius:8px; font-size:12px; }
+        .status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); animation:pulse 2s infinite; }
+        .status-dot.offline { background:var(--text-muted); animation:none; }
+        .theme-switcher { display:flex; align-items:center; gap:8px; margin-top:10px; padding:8px 10px; background:var(--bg-tertiary); border-radius:8px; }
+        .theme-switcher .ts-label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--text-muted); margin-right:auto; }
+        .theme-swatch { width:18px; height:18px; border-radius:50%; cursor:pointer; padding:0; border:2px solid transparent; background-clip:padding-box; transition:transform 0.15s,border-color 0.15s; }
+        .theme-swatch:hover { transform:scale(1.18); }
+        .theme-swatch.active { border-color:var(--text-primary); box-shadow:0 0 8px currentColor; }
+        .mobile-toggle { display:none; position:fixed; top:12px; left:12px; z-index:200; background:var(--bg-card); border:1px solid var(--border-color); color:var(--text-primary); width:36px; height:36px; border-radius:6px; font-size:18px; cursor:pointer; }
+        @media (max-width:768px){ .mobile-toggle{display:block;} .sidebar{transform:translateX(-100%);} .sidebar.open{transform:translateX(0);} .main-content{margin-left:0!important;width:100%!important;} }
+        .main-content { margin-left:var(--sidebar-width); flex:1; display:flex; flex-direction:column; min-height:100vh; background:radial-gradient(circle at 50% 0%, rgba(43,146,70,0.06) 0%, transparent 58%); }
+        .header { height:60px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; justify-content:space-between; padding:0 24px; background:rgba(7,16,23,0.85); backdrop-filter:blur(8px); position:sticky; top:0; z-index:100; }
+        .header-title { font-size:16px; font-weight:700; letter-spacing:1px; color:#fff; display:flex; align-items:center; gap:10px; }
+        .header-actions { display:flex; align-items:center; gap:12px; }
+        .egress-badge { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:6px; cursor:pointer; user-select:none; font-size:11px; font-family:'JetBrains Mono',monospace; border:1px solid rgba(255,255,255,0.14); background:rgba(255,255,255,0.04); transition:background .15s,border-color .15s; }
+        .egress-badge:hover{ background:rgba(255,255,255,0.08); }
+        .egress-badge .egress-dot{width:8px;height:8px;border-radius:50%;background:#888;flex:0 0 auto;}
+        .egress-badge .egress-label{color:#9aa;font-weight:600;letter-spacing:.5px;}
+        .egress-badge .egress-ip{color:#cfd;font-weight:700;}
+        .egress-loading .egress-dot{background:#888;animation:egressPulse 1s ease-in-out infinite;}
+        .egress-proxied{border-color:rgba(0,255,136,0.4);background:rgba(0,255,136,0.08);}
+        .egress-proxied .egress-dot{background:#00ff88;box-shadow:0 0 6px rgba(0,255,136,0.7);}
+        .egress-proxied .egress-ip{color:#7CFFC4;}
+        .egress-leak{border-color:#ff0033!important;background:rgba(255,0,51,0.16)!important;animation:egressGlowPulse 1.2s ease-in-out infinite!important;}
+        .egress-leak .egress-dot{background:#ff0033!important;box-shadow:0 0 10px #ff0033,0 0 20px #ff0033!important;animation:egressDotPulse 1.2s ease-in-out infinite!important;}
+        .egress-leak .egress-label{color:#ff4d6d!important;font-weight:700!important;text-shadow:0 0 8px rgba(255,0,51,0.8)!important;}
+        .egress-leak .egress-ip{color:#fff!important;font-weight:800!important;text-shadow:0 0 10px #ff0033,0 0 20px #ff0033!important;animation:egressTextPulse 1.2s ease-in-out infinite!important;}
+        @keyframes egressPulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+        @keyframes egressGlowPulse{0%,100%{border-color:#ff0033;background:rgba(255,0,51,0.22);box-shadow:0 0 15px rgba(255,0,51,0.85),0 0 30px rgba(255,0,51,0.45),inset 0 0 12px rgba(255,0,51,0.35);}50%{border-color:rgba(255,0,51,0.45);background:rgba(255,0,51,0.08);box-shadow:0 0 6px rgba(255,0,51,0.35),inset 0 0 4px rgba(255,0,51,0.1);}}
+        @keyframes egressDotPulse{0%,100%{transform:scale(1.2);box-shadow:0 0 12px #ff0033,0 0 22px #ff0033;}50%{transform:scale(0.85);box-shadow:0 0 4px #ff0033;}}
+        @keyframes egressTextPulse{0%,100%{opacity:1;text-shadow:0 0 10px #ff0033,0 0 22px #ff0033,0 0 35px rgba(255,0,51,0.8);}50%{opacity:0.55;text-shadow:0 0 4px #ff0033,0 0 8px rgba(255,0,51,0.4);}}
+        .page-content{padding:24px;max-width:1440px;width:100%;margin:0 auto;}
+        .btn{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:0.5px;padding:10px 16px;border-radius:7px;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:8px;transition:all .15s;}
+        .btn:disabled{opacity:0.45;cursor:not-allowed;}
+        .btn-primary{background:var(--strix);color:#fff;box-shadow:0 0 14px var(--strix-glow);}
+        .btn-primary:hover{filter:brightness(1.12);}
+        .btn-ghost{background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border-color);}
+        .btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+        .btn-accent{background:var(--brand);color:#000;}
+        .btn-accent:hover{filter:brightness(1.08);}
+        /* Strix page specifics */
+        .strix-hero{
+            display:flex;justify-content:space-between;align-items:center;
+            background:
+                radial-gradient(circle at 18% 50%, rgba(var(--strix-rgb),0.20), transparent 22%),
+                radial-gradient(circle at 88% 20%, rgba(var(--cyan-rgb),0.08), transparent 18%),
+                linear-gradient(135deg, rgba(10,28,22,0.96), rgba(11,24,34,0.98));
+            border:1px solid rgba(var(--strix-rgb),0.45);border-radius:12px;
+            padding:22px 24px;margin-bottom:18px;position:relative;overflow:hidden;
+            box-shadow:0 0 0 1px rgba(var(--strix-rgb),0.08), 0 18px 40px rgba(0,0,0,0.35);
+        }
+        .strix-hero::before{content:'';position:absolute;inset:0 0 auto 0;height:2px;background:linear-gradient(90deg,var(--strix),var(--brand),transparent);}
+        .strix-hero h1{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:#fff;letter-spacing:1px;display:flex;align-items:center;gap:12px;}
+        .strix-hero h1 span.sx{color:var(--strix);text-shadow:0 0 14px var(--strix-glow);}
+        .strix-hero p{color:var(--text-secondary);font-size:13px;margin-top:6px;max-width:640px;line-height:1.5;}
+        .strix-badge{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 8px;border-radius:999px;background:rgba(var(--strix-rgb),0.16);color:var(--strix);border:1px solid rgba(var(--strix-rgb),0.35);}
+        .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+        @media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,1fr);}}
+        @media(max-width:500px){.stats-grid{grid-template-columns:1fr;}}
+        .stat-card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;padding:16px 18px;position:relative;overflow:hidden;}
+        .stat-card::after{content:'';position:absolute;top:0;left:0;width:3px;height:100%;background:var(--strix);}
+        .stat-card.accent::after{background:var(--brand);}
+        .stat-card.cyan::after{background:var(--cyan);}
+        .stat-card.brass::after{background:var(--brass);}
+        .stat-value{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:#fff;}
+        .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-secondary);margin-top:4px;}
+        .strix-grid{display:grid;grid-template-columns:1.15fr 0.85fr;gap:16px;margin-bottom:16px;}
+        @media(max-width:1000px){.strix-grid{grid-template-columns:1fr;}}
+        .card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;overflow:hidden;}
+        .card-head{padding:14px 16px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.18);}
+        .card-title{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:0.8px;color:#fff;display:flex;align-items:center;gap:8px;}
+        .card-body{padding:16px;}
+        .kv{font-size:12px;color:var(--text-secondary);line-height:1.6;}
+        .kv b{color:var(--text-primary);}
+        .field{margin-bottom:12px;}
+        .field label{font-size:11px;font-weight:600;letter-spacing:0.6px;color:var(--text-secondary);display:block;margin-bottom:6px;text-transform:uppercase;}
+        .field input,.field select,.field textarea{
+            width:100%;background:rgba(0,0,0,0.35);border:1px solid var(--border-color);border-radius:7px;
+            padding:10px 12px;color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-size:12px;outline:none;transition:border-color .15s,box-shadow .15s;
+        }
+        .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--strix);box-shadow:0 0 0 3px rgba(var(--strix-rgb),0.18);}
+        .field textarea{min-height:72px;resize:vertical;}
+        .row{display:flex;gap:10px;flex-wrap:wrap;}
+        .chip{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:0.5px;padding:4px 8px;border-radius:999px;border:1px solid var(--border-color);color:var(--text-secondary);background:rgba(255,255,255,0.04);}
+        .chip.on{color:var(--strix);border-color:rgba(var(--strix-rgb),0.45);background:rgba(var(--strix-rgb),0.10);}
+        .run-list{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto;padding-right:4px;}
+        .run-item{border:1px solid var(--border-color);border-radius:8px;padding:12px;background:rgba(0,0,0,0.18);cursor:pointer;transition:border-color .15s,background .15s;}
+        .run-item:hover{border-color:rgba(var(--strix-rgb),0.45);background:rgba(var(--strix-rgb),0.06);}
+        .run-item.active{border-color:var(--strix);box-shadow:0 0 12px var(--strix-glow);}
+        .run-name{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .run-meta{font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap;}
+        .sev-dot{width:8px;height:8px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:4px;}
+        .sev-critical{background:var(--danger);box-shadow:0 0 6px rgba(255,71,87,0.7);}
+        .sev-high{background:var(--warning);} .sev-medium{background:var(--brass);} .sev-low{background:var(--cyan);} .sev-info{background:var(--text-muted);}
+        .viewer-frame{width:100%;height:520px;border:1px solid var(--border-color);border-radius:8px;background:#000;overflow:hidden;}
+        .viewer-frame iframe{width:100%;height:100%;border:0;background:#0a0f14;}
+        .mono{font-family:'JetBrains Mono',monospace;}
+        .hint{font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;}
+        .callout{border-left:3px solid var(--strix);background:rgba(var(--strix-rgb),0.08);padding:12px 14px;border-radius:6px;font-size:12px;line-height:1.6;color:var(--text-secondary);}
+        .callout a{color:var(--strix);text-decoration:none;border-bottom:1px dashed rgba(var(--strix-rgb),0.5);}
+        .callout a:hover{color:#3bc05a;}
+        .toast-container{position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+        .toast{pointer-events:auto;background:var(--bg-tertiary);color:#fff;border:1px solid var(--border-color);padding:10px 16px;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+        ::-webkit-scrollbar{width:6px;height:6px;}
+        ::-webkit-scrollbar-track{background:var(--bg-primary);}
+        ::-webkit-scrollbar-thumb{background:var(--border-color);border-radius:3px;}
+        ::-webkit-scrollbar-thumb:hover{background:var(--text-muted);}
+    </style>
+<script src="sfx.js"></script></head>
+<body>
+<div class="bg-grid"></div>
+<button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+<div class="app-container">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo"><div class="logo-icon">⚡</div>T3MP3ST<span class="version-badge">v1.5</span></div>
+        </div>
+        <div class="api-status-bar" id="apiStatusBar">
+            <div class="api-status-indicator"><span class="api-dot" id="apiDot"></span><span class="api-text" id="apiText">Checking...</span></div>
+            <button class="api-reconnect-btn" id="apiReconnectBtn" onclick="T3MP3ST_API.checkHealth()" title="Reconnect">↻</button>
+        </div>
+        <nav class="nav-section">
+            <div class="nav-label">Main</div>
+            <a class="nav-item" href="index.html"><span class="icon">⚔️</span> War Room</a>
+            <a class="nav-item" href="live-scan.html"><span class="icon">📡</span> Live Scan <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="receipts.html"><span class="icon">🧾</span> Scope Receipts <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span><span class="badge" id="pendingReceiptCount">0</span></a>
+            <a class="nav-item" href="operators.html"><span class="icon">🤖</span> Operatives <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span><span class="badge" id="activeOperatorCount">0</span></a>
+            <a class="nav-item" href="evidence.html"><span class="icon">🔐</span> Evidence Vault <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <div class="nav-label">Ranges</div>
+            <a class="nav-item" href="obsidivm.html"><span class="icon">📈</span> OBSIDIVM <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="ctf.html"><span class="icon">🚩</span> CTF Range <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span><span class="badge" id="ctfActiveCount" style="background:#ff8800;">0</span></a>
+            <div class="nav-label">Toolkit</div>
+            <a class="nav-item" href="arsenal.html"><span class="icon">📡</span> Arsenal <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="cves.html"><span class="icon">⚡</span> CVE Vault <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="osint.html"><span class="icon">🕵️</span> OSINT <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="geospy.html" title="Geospy — image & video geolocation (social engineering lab)"><span class="icon">&#127758;</span> Geospy Lab</a>
+            <a class="nav-item" href="gps.html"><span class="icon">🛰️</span> GPS Map <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="dfir.html"><span class="icon">🛡️</span> DFIR Response <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item strix-active" href="strix.html" title="Strix — autonomous AI pentesters (K:\coding\appDev\strix)"><span class="icon">🦊</span> Strix <span style="margin-left:auto; font-size:9px; letter-spacing:0.6px; opacity:0.7;">AI PENTEST</span></a>
+            <a class="nav-item active" href="search.html" title="Cairn — state-space search over a fact-intent graph"><span class="icon">🧭</span> Cairn Search <span style="margin-left:auto; font-size:9px; letter-spacing:0.6px; opacity:0.7;">STATE SEARCH</span></a>
+            <a class="nav-item" href="terminal.html"><span class="icon">💻</span> Terminal <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="configs.html"><span class="icon">💾</span> Config Library <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <div class="nav-label">Command</div>
+            <a class="nav-item" href="general.html"><span class="icon">★</span> Op Admiral <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span><span class="badge" id="generalStatusBadge" style="background:#ff4444;display:none;">LIVE</span></a>
+            <div class="nav-label">System</div>
+            <a class="nav-item" href="self-improve.html"><span class="icon">🧬</span> Self-Improvement <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="settings.html"><span class="icon">⚙️</span> Settings <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+            <a class="nav-item" href="help.html" title="Help and field manual - how to use and configure every tool" style="text-decoration:none;"><span class="icon">&#10067;</span> Help <span style="margin-left:auto; font-size:10px; opacity:0.6;">&#8599;</span></a>
+            <a class="nav-item" href="about.html"><span class="icon">ℹ️</span> About <span style="margin-left:auto; font-size:10px; opacity:0.6;">↗</span></a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="status-indicator"><div class="status-dot" id="connectionStatus"></div><span id="connectionText">Initializing...</span></div>
+            <div class="theme-switcher" id="themeSwitcher"><span class="ts-label">Theme</span></div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="header">
+            <button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+            <div class="header-title"><span>🧭</span> CAIRN SEARCH — STATE-SPACE SEARCH <span style="font-size:10px; font-weight:700; letter-spacing:1px; color:var(--text-secondary); border:1px solid var(--border-color); padding:2px 7px; border-radius:999px;">FACT-INTENT GRAPH</span></div>
+            <div class="header-actions">
+                <button class="btn btn-ghost" onclick="refreshSearch()" title="Refresh the live graph">↻ REFRESH</button>
+            </div>
+        </header>
+        <div class="page-content">
+            <div class="hint" style="margin-bottom:14px; line-height:1.6;">
+                A general <b>state-space search engine</b>: given an ORIGIN and a GOAL it searches for a path through an unknown space on a
+                blackboard of <b>Facts</b> (confirmed findings), <b>Intents</b> (declared-but-unexplored directions) and <b>Hints</b> (your judgment,
+                injected live and absorbed on the next reasoning round). Tasks are synthesized at runtime from the graph's own state —
+                bootstrap tries the goal directly, reason decides what is worth exploring, explore claims exactly one intent and returns
+                exactly one fact. Coordination is stigmergic: tasks see only the board. Techniques reimplemented from
+                <a href="https://github.com/oritera/Cairn" target="_blank" rel="noopener" style="color:var(--border-glow);">oritera/Cairn</a>
+                (AGPL-3.0) — no upstream code vendored.
+            </div>
+            <div style="display:grid; grid-template-columns:340px 1fr; gap:14px; align-items:start;">
+                <div>
+                    <div class="card" style="padding:14px;">
+                        <div class="mono" style="font-size:11px; font-weight:700; color:var(--border-glow); margin-bottom:10px;">NEW SEARCH</div>
+                        <label class="mono" style="font-size:10px; color:var(--text-muted);">ORIGIN</label>
+                        <input id="originInput" class="input" placeholder="e.g. target 10.0.0.9, known web server" style="width:100%; margin:4px 0 10px;">
+                        <label class="mono" style="font-size:10px; color:var(--text-muted);">GOAL</label>
+                        <input id="goalInput" class="input" placeholder="e.g. obtain a shell and prove it" style="width:100%; margin:4px 0 10px;">
+                        <label class="mono" style="font-size:10px; color:var(--text-muted);">HINTS (one per line)</label>
+                        <textarea id="hintsInput" class="input" rows="3" placeholder="operator judgment, absorbed from round one" style="width:100%; margin:4px 0 10px; resize:vertical;"></textarea>
+                        <div style="display:flex; gap:8px;">
+                            <div style="flex:1;"><label class="mono" style="font-size:10px; color:var(--text-muted);">BUDGET</label>
+                                <select id="budgetInput" class="input" style="width:100%; margin:4px 0;">
+                                    <option value="120000">2 min</option>
+                                    <option value="360000" selected>6 min</option>
+                                    <option value="900000">15 min</option>
+                                </select></div>
+                            <div style="flex:1;"><label class="mono" style="font-size:10px; color:var(--text-muted);">MAX INTENTS</label>
+                                <select id="maxIntentsInput" class="input" style="width:100%; margin:4px 0;">
+                                    <option>2</option><option selected>4</option><option>6</option><option>8</option>
+                                </select></div>
+                            <div style="flex:1;"><label class="mono" style="font-size:10px; color:var(--text-muted);">WORKERS</label>
+                                <select id="workersInput" class="input" style="width:100%; margin:4px 0;">
+                                    <option>1</option><option>2</option><option selected>3</option><option>4</option>
+                                </select></div>
+                        </div>
+                        <button class="btn btn-primary" id="startBtn" onclick="startSearch()" style="width:100%; margin-top:8px;">▶ START SEARCH</button>
+                    </div>
+                    <div class="card" style="padding:14px; margin-top:14px;">
+                        <div class="mono" style="font-size:11px; font-weight:700; color:var(--border-glow); margin-bottom:10px;">INJECT HINT (LIVE)</div>
+                        <input id="hintInput" class="input" placeholder="what you know that the board does not" style="width:100%; margin:4px 0 10px;">
+                        <button class="btn btn-ghost" id="hintBtn" onclick="injectHint()" style="width:100%;">✎ INJECT — RE-REASONS NEXT ROUND</button>
+                        <div class="hint" style="margin-top:8px; font-size:10px;">A new hint is a new situation: the reasoner re-reads the graph and may course-correct.</div>
+                    </div>
+                </div>
+                <div>
+                    <div class="card" style="padding:14px;">
+                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                            <span class="chip" id="stateChip">IDLE</span>
+                            <span class="mono" id="searchMeta" style="font-size:11px; color:var(--text-muted);">no search yet</span>
+                        </div>
+                        <div id="completionBanner" style="display:none; margin-top:12px; border:1px solid var(--border-glow); background:rgba(47,255,210,0.07); border-radius:8px; padding:12px;">
+                            <div class="mono" style="font-size:11px; font-weight:700; color:var(--border-glow);">GOAL COMPLETE</div>
+                            <div id="completionText" style="font-size:12px; margin-top:6px;"></div>
+                            <div id="completionFrom" class="mono" style="font-size:10px; color:var(--text-muted); margin-top:6px;"></div>
+                        </div>
+                        <div id="endBanner" style="display:none; margin-top:12px; border:1px solid #ffaa00; background:rgba(255,170,0,0.07); border-radius:8px; padding:12px;">
+                            <div class="mono" style="font-size:11px; font-weight:700; color:#ffaa00;" id="endTitle">SEARCH ENDED</div>
+                            <div id="endText" style="font-size:12px; margin-top:6px; color:var(--text-secondary);"></div>
+                        </div>
+                    </div>
+                    <div class="card" style="padding:14px; margin-top:14px;">
+                        <div class="mono" style="font-size:11px; font-weight:700; color:var(--border-glow); margin-bottom:10px;">BOARD — FACTS</div>
+                        <div id="factsList" style="display:flex; flex-direction:column; gap:6px;"><div class="hint">facts land here as the search runs</div></div>
+                    </div>
+                    <div class="card" style="padding:14px; margin-top:14px;">
+                        <div class="mono" style="font-size:11px; font-weight:700; color:var(--border-glow); margin-bottom:10px;">BOARD — INTENTS (edges: grew-from → direction)</div>
+                        <div id="intentsList" style="display:flex; flex-direction:column; gap:6px;"><div class="hint">proposed directions appear here, claimed ones while being explored</div></div>
+                    </div>
+                    <div class="card" style="padding:14px; margin-top:14px;">
+                        <div class="mono" style="font-size:11px; font-weight:700; color:var(--border-glow); margin-bottom:10px;">TASK JOURNAL</div>
+                        <table style="width:100%; border-collapse:collapse; font-size:11px;" class="mono">
+                            <thead><tr>
+                                <th style="text-align:left; padding:4px 6px; color:var(--text-muted); border-bottom:1px solid var(--border-color);">TASK</th>
+                                <th style="text-align:left; padding:4px 6px; color:var(--text-muted); border-bottom:1px solid var(--border-color);">OUTCOME</th>
+                                <th style="text-align:right; padding:4px 6px; color:var(--text-muted); border-bottom:1px solid var(--border-color);">MS</th>
+                            </tr></thead>
+                            <tbody id="journalBody"><tr><td colspan="3" style="padding:6px; color:var(--text-muted);">bootstrap → reason → explore rounds land here</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+<div id="toastContainer" class="toast-container"></div>
+<script>
+function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); }
+function getApiBase(){
+    if(window.T3MP3ST_API && window.T3MP3ST_API.baseUrl) return window.T3MP3ST_API.baseUrl;
+    const isLocal = location.hostname==='localhost'||location.hostname==='127.0.0.1';
+    return isLocal ? (location.port==='3333' ? '' : 'http://'+location.hostname+':3333') : '';
+}
+function toggleSidebar(){ const s=document.getElementById('sidebar'); if(s) s.classList.toggle('open'); }
+const THEMES=[{id:'storm',label:'Storm',accent:'#2fffd2'},{id:'ember',label:'Ember',accent:'#ffab40'},{id:'crimson',label:'Crimson',accent:'#ff5470'},{id:'void',label:'Void',accent:'#b57bff'}];
+const t3mpTheme={ apply(id){
+    if(id==='storm') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme',id);
+    try{localStorage.setItem('t3mp3st_theme',id);}catch(e){}
+    document.querySelectorAll('.theme-swatch').forEach(s=>s.classList.toggle('active',s.dataset.theme===id));
+}, init(){
+    const host=document.getElementById('themeSwitcher');
+    if(host && !host.dataset.built){ host.dataset.built='1'; THEMES.forEach(t=>{ const b=document.createElement('button'); b.type='button'; b.className='theme-swatch'; b.dataset.theme=t.id; b.title=t.label+' theme'; b.setAttribute('aria-label',t.label+' theme'); b.style.background=t.accent; b.style.color=t.accent; b.addEventListener('click',()=>this.apply(t.id)); host.appendChild(b); }); }
+    const saved=localStorage.getItem('t3mp3st_theme')||'storm'; this.apply(saved);
+}};
+window.t3mpTheme=t3mpTheme;
+const T3MP3ST_API={
+    _isLocal: location.hostname==='localhost'||location.hostname==='127.0.0.1',
+    _hasCustomUrl: !!localStorage.getItem('t3mp3st_api_url'),
+    baseUrl: localStorage.getItem('t3mp3st_api_url') || (location.hostname==='localhost'||location.hostname==='127.0.0.1' ? `http://${location.hostname}:3333` : ''),
+    connected:false, llmAvailable:false, serverLLM:null,
+    async checkHealth(){
+        const dot=document.getElementById('apiDot'), text=document.getElementById('apiText');
+        const connDot=document.getElementById('connectionStatus'), connText=document.getElementById('connectionText');
+        if(!this.baseUrl){
+            this.connected=false; this.llmAvailable=false;
+            if(dot&&text){ dot.className='api-dot'; dot.style.background='#ffaa00'; dot.style.boxShadow='0 0 8px #ffaa00'; text.className='api-text'; text.style.color='#ffaa00'; text.textContent='Standalone Mode'; }
+            if(connDot&&connText){ connDot.className='status-dot'; connText.textContent='Standalone Mode'; }
+            return {status:'standalone'};
+        }
+        try{
+            const c=new AbortController(); const t=setTimeout(()=>c.abort(),5000);
+            const res=await fetch(`${this.baseUrl}/api/health`,{signal:c.signal}); clearTimeout(t);
+            const data=await res.json();
+            this.connected=data.status==='operational';
+            this.llmAvailable=data.llm==='connected' || !!(data.llm && data.llm.connected);
+            this.serverLLM=data.llm && typeof data.llm==='object' ? data.llm : null;
+            if(dot&&text){
+                dot.className='api-dot'; dot.style.cssText=''; text.className='api-text'; text.style.cssText='';
+                if(this.llmAvailable){ dot.classList.add('llm-ready'); text.classList.add('llm-ready'); text.textContent='API + LLM Ready'; }
+                else if(this.connected){ dot.classList.add('connected'); text.classList.add('connected'); text.textContent='API Connected'; }
+            }
+            if(connDot&&connText){ connDot.className='status-dot'; connText.textContent=this.llmAvailable?'Operational · LLM Ready':(this.connected?'Operational':'API Connected'); }
+            return data;
+        }catch(e){
+            this.connected=false; this.llmAvailable=false;
+            if(!this._isLocal && !this._hasCustomUrl){
+                this.baseUrl='';
+                if(dot&&text){ dot.className='api-dot'; dot.style.background='#ffaa00'; dot.style.boxShadow='0 0 8px #ffaa00'; text.className='api-text'; text.style.color='#ffaa00'; text.textContent='Standalone Mode'; }
+            }else if(dot&&text){ dot.className='api-dot disconnected'; text.className='api-text'; text.style.color='#ff4444'; text.textContent='API Offline'; }
+            if(connDot&&connText){ connDot.className='status-dot offline'; connText.textContent='Disconnected'; }
+            return null;
+        }
+    }
+};
+window.T3MP3ST_API=T3MP3ST_API;
+async function refreshEgressIp(force){
+    const badge=document.getElementById('egressIpBadge'), val=document.getElementById('egressIpValue');
+    if(!badge||!val) return;
+    const label=badge.querySelector('.egress-label');
+    try{
+        const res=await fetch(`${getApiBase()}/api/net/ip${force?'?force=1':''}`);
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const d=await res.json(); window._lastEgressCheck=d;
+        const ip=(d.exit&&d.exit.ip)?d.exit.ip:'—';
+        badge.className='egress-badge';
+        if(d.leak){
+            badge.classList.add('egress-leak');
+            if(label) label.textContent=d.proxyEnabled?'LEAK:':'IP:';
+            val.textContent=ip;
+            badge.title=d.proxyEnabled ? `⚠ LEAK: exit IP equals your real IP (${ip}). SOCKS5 proxy configured but NOT changing egress.` : `⚠ No proxy: test traffic leaves from your real IP (${ip}).`;
+        }else{
+            badge.classList.add('egress-proxied');
+            if(label) label.textContent='IP:'; val.textContent=ip;
+            const cc=(d.exit&&d.exit.country)?` · ${d.exit.country}`:'';
+            const via=(d.proxy&&d.proxy.url)?d.proxy.url:'SOCKS5';
+            badge.title=`Proxied egress via ${via}${cc}. Real IP hidden.`;
+        }
+    }catch(e){
+        badge.className='egress-badge egress-error';
+        if(label) label.textContent='IP:'; val.textContent='n/a';
+        badge.title='Egress IP check failed: '+((e&&e.message)?e.message:e);
+    }
+}
+function toast(msg){
+    const c=document.getElementById('toastContainer')||(function(){ const el=document.createElement('div'); el.id='toastContainer'; el.className='toast-container'; document.body.appendChild(el); return el; })();
+    const t=document.createElement('div'); t.className='toast'; t.style.cssText='background:var(--bg-tertiary);color:#fff;border:1px solid var(--border-color);padding:10px 16px;border-radius:6px;margin-top:8px;font-size:12px;font-family:"JetBrains Mono",monospace;box-shadow:0 4px 12px rgba(0,0,0,0.5);'; t.innerText=msg; c.appendChild(t); setTimeout(()=>t.remove(),4000);
+}
+
+let currentSearchId = null;
+let pollTimer = null;
+function api(path, opts){
+    return fetch(getApiBase()+path, opts).then(async r=>{
+        const text=await r.text();
+        let data; try{ data=text?JSON.parse(text):{}; }catch{ data={raw:text}; }
+        if(!r.ok) throw new Error((data&&data.error)||('HTTP '+r.status));
+        return data;
+    });
+}
+async function startSearch(){
+    const origin=document.getElementById('originInput').value.trim();
+    const goal=document.getElementById('goalInput').value.trim();
+    if(!origin||!goal){ toast('origin and goal are both required — no path exists without them'); return; }
+    const hints=document.getElementById('hintsInput').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+    const btn=document.getElementById('startBtn');
+    btn.disabled=true; btn.textContent='STARTING…';
+    try{
+        const r=await api('/api/search/start',{ method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ origin, goal, hints,
+                budgetMs:Number(document.getElementById('budgetInput').value),
+                maxIntents:Number(document.getElementById('maxIntentsInput').value),
+                maxProjectWorkers:Number(document.getElementById('workersInput').value) }) });
+        currentSearchId=r.searchId;
+        toast('search '+r.searchId+' running');
+        if(pollTimer) clearInterval(pollTimer);
+        pollTimer=setInterval(refreshSearch, 2500);
+        refreshSearch();
+    }catch(e){ toast('start failed: '+e.message); }
+    finally{ btn.disabled=false; btn.textContent='▶ START SEARCH'; }
+}
+async function injectHint(){
+    const text=document.getElementById('hintInput').value.trim();
+    if(!text){ toast('write the hint first'); return; }
+    try{
+        const r=await api('/api/search/hint',{ method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ id:currentSearchId, text }) });
+        document.getElementById('hintInput').value='';
+        toast('hint injected — '+(r.hints?r.hints.length:'?')+' on the board');
+        refreshSearch();
+    }catch(e){ toast('hint failed: '+e.message); }
+}
+async function refreshSearch(){
+    try{
+        const s=await api('/api/search/status'+(currentSearchId?('?id='+currentSearchId):''));
+        renderSearch(s);
+    }catch(e){ /* offline or none yet — keep the last render */ }
+}
+const TERMINAL_STATES = { complete: 1, stalled: 1, budget_exhausted: 1, failed: 1 };
+function renderSearch(s){
+    const chip=document.getElementById('stateChip');
+    const running=!s.error && (!s.state || s.state==='running');
+    const ended=!running && TERMINAL_STATES[s.state];
+    chip.textContent=String(s.state||'running').toUpperCase().replace('_',' ');
+    chip.className='chip';
+    chip.style.borderColor=s.state==='failed'?'#ff5470':(s.state==='complete'?'var(--border-glow)':(s.state==='budget_exhausted'||s.state==='stalled'?'#ffaa00':(running?'#ffaa00':'')));
+    if(ended) chip.style.color = s.state==='complete' ? 'var(--border-glow)' : (s.state==='failed' ? '#ff5470' : '#ffaa00');
+    else chip.style.color='';
+    document.getElementById('searchMeta').textContent=s.id?('search '+s.id+' · '+s.facts.length+' facts · '+s.intents.length+' intents · '+((s.ms/1000)|0)+'s'):'no search yet';
+    if(ended && pollTimer){ clearInterval(pollTimer); pollTimer=null; }
+    const banner=document.getElementById('completionBanner');
+    if(s.completion){
+        banner.style.display='block';
+        document.getElementById('completionText').textContent=s.completion.description;
+        document.getElementById('completionFrom').textContent='proven by: '+s.completion.from.join(', ');
+    } else { banner.style.display='none'; }
+    const endBanner=document.getElementById('endBanner');
+    if(ended && !s.completion){
+        endBanner.style.display='block';
+        const endTitle=document.getElementById('endTitle'), endText=document.getElementById('endText');
+        if(s.state==='budget_exhausted'){
+            endTitle.textContent='BUDGET EXHAUSTED';
+            endText.textContent='the search ran out of wall-clock and the goal is not yet proven. Raise BUDGET, narrow the GOAL, or inject a hint and start again — the facts on the board are real and reusable as origin knowledge.';
+        } else if(s.state==='stalled'){
+            endTitle.textContent='STALLED — FRONTIER EMPTY';
+            endText.textContent='no dispatchable work remains and the model proposed no new directions. Restate the goal, inject a hint with what you know, or accept the board as the honest end of this search.';
+        } else {
+            endTitle.textContent='SEARCH FAILED';
+            endText.textContent=s.error||'the backbone failed mid-search — check the LLM provider and start again.';
+        }
+    } else { endBanner.style.display='none'; }
+    const facts=document.getElementById('factsList');
+    facts.innerHTML=(s.facts||[]).map(f=>'<div style="border:1px solid var(--border-color); border-radius:6px; padding:8px 10px; background:rgba(0,0,0,0.18);">'
+        +'<span class="mono" style="font-size:10px; color:var(--border-glow);">'+escapeHtml(f.id)+'</span>'
+        +'<span style="font-size:12px; margin-left:8px;">'+escapeHtml(f.description)+'</span></div>').join('')
+        ||'<div class="hint">facts land here as the search runs</div>';
+    const intents=document.getElementById('intentsList');
+    intents.innerHTML=(s.intents||[]).map(i=>{
+        const color=i.state==='concluded'?'var(--text-muted)':'#ffaa00';
+        return '<div style="border:1px solid var(--border-color); border-left:3px solid '+color+'; border-radius:6px; padding:8px 10px; background:rgba(0,0,0,0.18);">'
+            +'<span class="mono" style="font-size:10px; color:'+color+';">'+escapeHtml(i.id)+'</span>'
+            +'<span class="mono" style="font-size:10px; color:var(--text-muted); margin-left:6px;">from ['+i.from.map(escapeHtml).join(', ')+']</span>'
+            +'<span style="font-size:12px; margin-left:8px;">'+escapeHtml(i.description)+'</span>'
+            +(i.claimedBy?'<span class="mono" style="font-size:10px; color:#ffaa00; margin-left:8px;">◈ exploring</span>':'')
+            +(i.factId?'<span class="mono" style="font-size:10px; color:var(--border-glow); margin-left:8px;">→ '+escapeHtml(i.factId)+'</span>':'')
+            +'</div>';
+    }).join('')||'<div class="hint">proposed directions appear here</div>';
+    const body=document.getElementById('journalBody');
+    const rows=(s.journal||[]).slice(-40).reverse().map(j=>'<tr>'
+        +'<td style="padding:4px 6px; border-bottom:1px solid var(--border-color);">'+escapeHtml(j.task)+(j.intentId?' <span style="color:var(--text-muted);">'+escapeHtml(j.intentId)+'</span>':'')+'</td>'
+        +'<td style="padding:4px 6px; border-bottom:1px solid var(--border-color);">'+escapeHtml(j.outcome)+(j.detail?' <span style="color:var(--text-muted);">— '+escapeHtml(j.detail)+'</span>':'')+'</td>'
+        +'<td style="padding:4px 6px; text-align:right; border-bottom:1px solid var(--border-color);">'+j.ms+'</td></tr>').join('');
+    body.innerHTML=rows||'<tr><td colspan="3" style="padding:6px; color:var(--text-muted);">bootstrap → reason → explore rounds land here</td></tr>';
+}
+t3mpTheme.init();
+T3MP3ST_API.checkHealth().then(()=>refreshSearch());
+</script>
+</body>
+</html>
