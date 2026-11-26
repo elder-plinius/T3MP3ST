@@ -36,6 +36,8 @@ export { SignatureMatcher, createSignatureMatcher } from './signatures.js';
 export { ATTACKRuleEngine, createATTACKRuleEngine } from './attack-rules.js';
 export { AnomalyEngine, createAnomalyEngine } from './anomaly.js';
 export { AIAgentDetector, createAIAgentDetector } from './ai-detector.js';
+export { isKnownScannerIdentifier } from './scanner-guard.js';
+export { isKnownHuntSkillSlug } from './hunt-skill-guard.js';
 export { AlertCorrelator, createAlertCorrelator } from './correlator.js';
 export { SIEMConnector, EnvCredentialProvider } from './connectors/types.js';
 export { WazuhConnector, createWazuhConnector } from './connectors/wazuh.js';

@@ -24,6 +24,7 @@ import type { AgentLoop } from '../agent/index.js';
 import type { Target } from '../types/index.js';
 import { OPERATOR_SYSTEM_PROMPTS } from '../prompts/index.js';
 import { gateLiveFinding } from '../evidence/gate.js';
+import { quoteMatches } from '../evidence/quote-gate.js';
 import type { RiskTierGate } from '../governance/risk-tiers.js';
 import type { HITLGateManager } from '../governance/hitl.js';
 
@@ -494,7 +495,7 @@ export class OperatorAgent extends EventEmitter<OperatorEvents> {
             : [],
           remediation: finding.remediation,
           discoveredAt: Date.now(),
-        });
+        }, '');
       }
 
       return {
@@ -628,15 +629,14 @@ Respond in a structured format.`;
   /**
    * Record a finding
    */
-  recordFinding(finding: Finding): void {
-    // HONESTY SPINE — load-bearing, IN the live path (not an opt-in verifyFinding call).
-    // A finding is stamped verified ONLY if it passes the provenance gate (real tool
-    // output). A model-asserted finding is still recorded — but left UNVERIFIED with the
-    // gate's reasons attached. This enforces the invariant the project sells, at the point
-    // of creation, so a model can no longer assert a "critical" into the record for free.
+  recordFinding(finding: Finding, quote: string): void {
+    // HONESTY SPINE — provenance first, then a verbatim quote in this finding's tool evidence.
     const gate = gateLiveFinding(finding);
-    finding.verifyGate = { passed: gate.passed, provenance: gate.provenance, reasons: gate.reasons, checkedAt: gate.checkedAt };
-    if (gate.passed) {
+    const quoteGate = gate.passed ? quoteMatches(finding.evidence, quote) : { passed: false, reasons: [] as string[] };
+    const reasons = gate.passed ? [...gate.reasons, ...quoteGate.reasons] : gate.reasons;
+    const passed = gate.passed && quoteGate.passed;
+    finding.verifyGate = { passed, provenance: gate.provenance, reasons, checkedAt: gate.checkedAt };
+    if (passed) {
       finding.verifiedAt = finding.verifiedAt ?? Date.now();
     } else {
       delete finding.verifiedAt;
@@ -644,7 +644,7 @@ Respond in a structured format.`;
     this.findings.push(finding);
     this._state.findingsCount++;
     this.emit('finding:discovered', { finding });
-    if (!gate.passed) this.emit('finding:gate-blocked', { finding, reasons: gate.reasons });
+    if (!passed) this.emit('finding:gate-blocked', { finding, reasons });
   }
 
   /**

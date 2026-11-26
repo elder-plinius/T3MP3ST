@@ -14,6 +14,7 @@ import type {
   Vulnerability,
 } from '../types/index.js';
 import { gateLiveFinding } from './gate.js';
+import { quoteMatches } from './quote-gate.js';
 import type { SCPClient } from '../governance/scp-client.js';
 
 // =============================================================================
@@ -168,16 +169,18 @@ export class EvidenceVault extends EventEmitter<EvidenceVaultEvents> {
    * if it passes the live verification gate (real tool-output provenance). Otherwise
    * it is left UNVERIFIED with the gate's reasons recorded — the gate is the door.
    */
-  verifyFinding(findingId: string): Finding | undefined {
+  verifyFinding(findingId: string, quote: string): Finding | undefined {
     const finding = this.findings.get(findingId);
     if (!finding) return finding;
     const gate = gateLiveFinding(finding);
-    finding.verifyGate = { passed: gate.passed, provenance: gate.provenance, reasons: gate.reasons, checkedAt: gate.checkedAt };
-    if (gate.passed) {
+    const quoteGate = gate.passed ? quoteMatches(finding.evidence, quote) : { passed: false, reasons: [] as string[] };
+    const reasons = gate.passed ? [...gate.reasons, ...quoteGate.reasons] : gate.reasons;
+    const passed = gate.passed && quoteGate.passed;
+    finding.verifyGate = { passed, provenance: gate.provenance, reasons, checkedAt: gate.checkedAt };
+    if (passed) {
       finding.verifiedAt = Date.now();
       this.emit('finding:verified', finding);
     } else {
-      // refuse to stamp verified on a finding the gate could not back
       delete finding.verifiedAt;
       this.emit('finding:gate-blocked', finding);
     }

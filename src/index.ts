@@ -68,6 +68,12 @@ export {
 } from './operators/index.js';
 export type { OperatorEvents, CellEvents, ArchetypeProfile } from './operators/index.js';
 
+export { AssetGraph } from './asset-graph/index.js';
+export { InvestigationGraph } from './investigation/index.js';
+export { coverageReport } from './coverage-ledger/index.js';
+export { quoteMatches } from './evidence/quote-gate.js';
+export { defenderTriage } from './governance/defender-triage.js';
+
 // Mission
 export {
   MissionControl,
